@@ -156,8 +156,7 @@ const MODERATOR_NUMBERS = ['8018366183', '9175979964'];
  * Send SMS to moderators via vsfy.com/txt. Fire-and-forget; does not block.
  */
 function notify_moderators_new_case(string $caseNumber, string $deponentName, string $caseId): void {
-    $baseUrl = ($_SERVER['REQUEST_SCHEME'] ?? 'https') . '://' . ($_SERVER['HTTP_HOST'] ?? 'deposim.com') . dirname($_SERVER['REQUEST_URI'] ?? '/demo');
-    $simLink = rtrim($baseUrl, '/') . '/sim.php?case_id=' . urlencode($caseId);
+    $simLink = 'https://deposim.com/demo/sim.php?case_id=' . urlencode($caseId);
     $msg = 'New DepoSim case: Case #' . $caseNumber . ' - ' . $deponentName . '. ' . $simLink;
     $urlBase = 'https://vsfy.com/txt/?to=';
     $ctx = stream_context_create(['http' => ['timeout' => 5, 'ignore_errors' => true]]);
@@ -765,7 +764,7 @@ $csrf = csrf_token();
           Case created: <span class="chip"><?php echo h($createdId); ?></span>
         </div>
         <div>
-          <a class="link" href="index.php?case_id=<?php echo h($createdId); ?>">Start DepoSim</a>
+          <a class="link" href="https://deposim.com/demo/sim.php?case_id=<?php echo h($createdId); ?>">Start DepoSim</a>
         </div>
       </div>
     <?php endif; ?>
@@ -1032,7 +1031,7 @@ $csrf = csrf_token();
 
     // practice link
     const pl = $('simLink');
-    pl.href = `index.php?case_id=${encodeURIComponent(c.case_id)}`;
+    pl.href = `https://deposim.com/demo/sim.php?case_id=${encodeURIComponent(c.case_id)}`;
 
     // Calls
     const container = $('callsContainer');
