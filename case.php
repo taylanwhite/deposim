@@ -1051,14 +1051,14 @@ $csrf = csrf_token();
           return `<div class="turn ${escapeHtml(role)}"><div class="r">${escapeHtml(roleLabel)}</div><div>${escapeHtml(msg)}</div></div>`;
         }).join('');
         const hasTranscript = transcript.length > 0;
+        const expandId = 'exp-' + idx;
+        const rowId = 'row-' + idx;
         const wr = call.win_ready != null ? Number(call.win_ready) : null;
         const wrHue = wr != null ? Math.round(120 * wr / 100) : 0;
         const wrBg = wr != null ? `hsl(${wrHue}, 65%, 38%)` : 'transparent';
         const wrTag = wr != null ? `<button type="button" class="win-ready-pill expand-btn" data-expand="${expandId}" aria-expanded="false" title="Click to view transcript and analysis" style="background:${wrBg};color:rgba(255,255,255,.95);border:none;cursor:pointer;">${wr}</button>` : '—';
         const wrReason = (call.win_ready_reason || '').trim();
         const wrAnalysis = (call.win_ready_analysis || '').trim();
-        const expandId = 'exp-' + idx;
-        const rowId = 'row-' + idx;
         const detailsHtml = (hasTranscript ? `<div class="transcript" style="margin-top:8px;">${transcriptHtml}</div>` : '') +
           (wrReason ? `<div class="muted" style="margin-top:6px;font-size:12px;">${escapeHtml(wrReason)}</div>` : '') +
           (wrAnalysis ? `<details style="margin-top:8px;"><summary>Win ready analysis</summary><div class="muted" style="white-space:pre-wrap;font-size:12px;margin-top:6px;">${escapeHtml(wrAnalysis)}</div></details>` : '');
