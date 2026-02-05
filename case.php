@@ -678,6 +678,9 @@ $csrf = csrf_token();
       color:var(--muted2);
       text-transform:uppercase;
     }
+    .turn.agent, .turn.agent .r{ color:#fff; }
+    .turn.user{ color:#b8e0ff; margin-left:10%; }
+    .turn.user .r{ color:#b8e0ff; }
 
     /* Form */
     .formgrid{
@@ -919,7 +922,7 @@ $csrf = csrf_token();
           </div>
         </div>
         <div class="detail-history">
-          <h3>History</h3>
+          <h3>Simulation History</h3>
           <div id="callsContainer"></div>
         </div>
       </div>
@@ -1089,6 +1092,10 @@ $csrf = csrf_token();
           if (!row) return;
           const isOpen = row.style.display !== 'none';
           row.style.display = isOpen ? 'none' : 'table-row';
+          if (!isOpen && this.classList.contains('win-ready-pill')) {
+            const details = row.querySelector('details');
+            if (details) details.setAttribute('open', 'open');
+          }
           const mainTr = row.previousElementSibling;
           mainTr.querySelectorAll('.expand-btn').forEach(b => {
             b.setAttribute('aria-expanded', isOpen ? 'false' : 'true');
