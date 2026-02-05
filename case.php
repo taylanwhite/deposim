@@ -884,7 +884,7 @@ $csrf = csrf_token();
             <h3>Case</h3>
             <div class="kv" id="detailKv"></div>
             <div style="margin-top:12px;">
-              <a class="link" id="practiceLink" href="#" target="_blank" rel="noopener">Open Practice (index.php)</a>
+              <a class="link" id="practiceLink" href="#" target="_blank" rel="noopener">Open Practice</a>
             </div>
           </div>
 
