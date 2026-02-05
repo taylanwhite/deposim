@@ -896,12 +896,10 @@ $csrf = csrf_token();
         <button class="iconbtn" data-close="detailModal">✕</button>
       </div>
       <div class="bd">
-        <div class="detail-top">
-          <div class="panel">
-            <h3>Case</h3>
-            <div class="kv" id="detailKv"></div>
-          </div>
-          <div class="btn-wrap">
+        <div class="panel">
+          <h3>Case</h3>
+          <div class="kv" id="detailKv"></div>
+          <div style="margin-top:14px;">
             <a class="btn primary link" id="simLink" href="#" target="_blank" rel="noopener">Start DepoSim</a>
           </div>
         </div>
@@ -1056,7 +1054,7 @@ $csrf = csrf_token();
             <td>${escapeHtml(title)}</td>
             <td>${escapeHtml(dur)}</td>
             <td>${wrTag}</td>
-            <td><button type="button" class="expand-btn" data-expand="${expandId}" aria-expanded="false">View transcript</button></td>
+            <td><button type="button" class="expand-btn" data-expand="${expandId}" aria-expanded="false">View transcript</button> <button type="button" class="expand-btn" data-expand="${expandId}" aria-expanded="false">Win ready analysis</button></td>
           </tr>
           <tr id="${expandId}" class="expand-row" style="display:none;"><td colspan="5">${detailsHtml}</td></tr>
         `;
@@ -1064,7 +1062,7 @@ $csrf = csrf_token();
 
       container.innerHTML = `
         <table class="detail-history-table">
-          <thead><tr><th>Date</th><th>Title</th><th>Duration</th><th>Win ready</th><th>Transcript</th></tr></thead>
+          <thead><tr><th>Date</th><th>Title</th><th>Duration</th><th>Win ready</th><th>Actions</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       `;
@@ -1074,10 +1072,14 @@ $csrf = csrf_token();
           const id = this.getAttribute('data-expand');
           const row = $(id);
           if (!row) return;
-          const open = row.style.display !== 'none';
-          row.style.display = open ? 'none' : 'table-row';
-          this.setAttribute('aria-expanded', open ? 'false' : 'true');
-          this.textContent = open ? 'View transcript' : 'Hide transcript';
+          const isOpen = row.style.display !== 'none';
+          row.style.display = isOpen ? 'none' : 'table-row';
+          const mainTr = row.previousElementSibling;
+          const btns = mainTr.querySelectorAll('.expand-btn');
+          btns.forEach((b, i) => {
+            b.setAttribute('aria-expanded', isOpen ? 'false' : 'true');
+            b.textContent = isOpen ? (i === 0 ? 'View transcript' : 'Win ready analysis') : (i === 0 ? 'Hide transcript' : 'Hide analysis');
+          });
         });
       });
     }
