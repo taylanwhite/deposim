@@ -6,7 +6,7 @@ date_default_timezone_set('America/Denver');
 $casesDir = '/var/www/visyfy_com/deposim/cases';
 
 // Per your request:
-$WEBHOOK_SECRET = 'wsec_37420ab8a195a710077cced33afa466168604fed669675f97654a3fe7bc9c8fd';
+$WEBHOOK_SECRET = 'wsec_7a13e9f6814291732bf1d466179d2ff0a973a659c6b2f25295b9943515b2394b';
 
 // Optional log file (ensure writable by web user if you want logs)
 $logFile = '/var/www/visyfy_com/deposim/webhook.log';
