@@ -149,8 +149,8 @@ function require_csrf(): void {
 }
 
 /** Moderator phone numbers to notify when a new case is added */
-// '9175979964'
-const MODERATOR_NUMBERS = ['8018366183'];
+
+const MODERATOR_NUMBERS = ['8018366183', '9175979964'];
 
 /**
  * Send SMS to moderators via vsfy.com/txt. Fire-and-forget; does not block.
