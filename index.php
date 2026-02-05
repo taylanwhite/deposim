@@ -225,7 +225,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             } else {
                 $deponentName = trim($first_name . ' ' . $last_name) ?: 'Unknown';
                 notify_moderators_new_case($case_number, $deponentName, $case_id);
-                header('Location: case.php?created=' . urlencode($case_id));
+                header('Location: /demo/?created=' . urlencode($case_id));
                 exit;
             }
         }
