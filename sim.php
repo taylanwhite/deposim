@@ -115,6 +115,9 @@ if ($firstMessage === '') {
     $firstMessage = "No first message found in {$firstMessageDir}. Add a .txt file to configure the agent's greeting.";
 }
 
+$firstMessageSpanishDir = $firstMessageDir . '/spanish';
+$primerMensaje = latest_prompt_text($firstMessageSpanishDir);
+
 // -------------------- build dynamic vars --------------------
 
 $caseInfo =
@@ -125,10 +128,11 @@ $caseInfo =
 
 $dynamicVars = json_encode(
     [
-        "depo_prompt"   => $depoPrompt,
-        "first_message" => $firstMessage,
-        "case_id"       => $caseId,
-        "case_info"     => $caseInfo,
+        "depo_prompt"    => $depoPrompt,
+        "first_message"  => $firstMessage,
+        "primer_mensaje" => $primerMensaje,
+        "case_id"        => $caseId,
+        "case_info"      => $caseInfo,
     ],
     JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
 );
