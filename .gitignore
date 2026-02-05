@@ -1,0 +1,14 @@
+# runtime/data
+cases/
+webhook.log
+
+# editor / OS junk
+*.swp
+*.swo
+.DS_Store
+.idea/
+.vscode/
+
+# temp
+*.tmp
+*.tar.gz
