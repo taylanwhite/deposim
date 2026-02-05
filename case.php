@@ -157,8 +157,8 @@ const MODERATOR_NUMBERS = ['8018366183', '9175979964'];
  */
 function notify_moderators_new_case(string $caseNumber, string $deponentName, string $caseId): void {
     $baseUrl = ($_SERVER['REQUEST_SCHEME'] ?? 'https') . '://' . ($_SERVER['HTTP_HOST'] ?? 'deposim.com') . dirname($_SERVER['REQUEST_URI'] ?? '/demo');
-    $practiceLink = rtrim($baseUrl, '/') . '/index.php?case_id=' . urlencode($caseId);
-    $msg = 'New DepoSim case: Case #' . $caseNumber . ' - ' . $deponentName . '. ' . $practiceLink;
+    $simLink = rtrim($baseUrl, '/') . '/index.php?case_id=' . urlencode($caseId);
+    $msg = 'New DepoSim case: Case #' . $caseNumber . ' - ' . $deponentName . '. ' . $simLink;
     $urlBase = 'https://vsfy.com/txt/?to=';
     $ctx = stream_context_create(['http' => ['timeout' => 5, 'ignore_errors' => true]]);
     foreach (MODERATOR_NUMBERS as $to) {
@@ -558,6 +558,23 @@ $csrf = csrf_token();
       .grid2{grid-template-columns:1fr}
     }
 
+    .detail-top{
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:16px;
+      width:100%;
+    }
+    .detail-top .panel{ flex:1; min-width:0; }
+    .detail-top .btn-wrap{ flex-shrink:0; }
+    .detail-history{ width:100%; margin-top:18px; }
+    .detail-history h3{ margin:0 0 10px; font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted2); }
+    .detail-history-table{ width:100%; border-collapse:collapse; font-size:13px; }
+    .detail-history-table th{ text-align:left; padding:10px 12px; border-bottom:1px solid var(--border); color:var(--muted2); font-weight:800; text-transform:uppercase; letter-spacing:.05em; font-size:11px; }
+    .detail-history-table td{ padding:12px; border-bottom:1px solid rgba(255,255,255,.08); vertical-align:top; }
+    .detail-history-table tr.expand-row td{ background:rgba(0,0,0,.2); }
+    .detail-history-table .expand-btn{ background:none; border:none; color:var(--ok); cursor:pointer; font-weight:800; text-decoration:underline; padding:0; }
+
     .panel{
       background:rgba(255,255,255,.05);
       border:1px solid rgba(255,255,255,.10);
@@ -734,7 +751,7 @@ $csrf = csrf_token();
           Case created: <span class="chip"><?php echo h($createdId); ?></span>
         </div>
         <div>
-          <a class="link" href="index.php?case_id=<?php echo h($createdId); ?>">Open Practice</a>
+          <a class="link" href="index.php?case_id=<?php echo h($createdId); ?>">Start DepoSim</a>
         </div>
       </div>
     <?php endif; ?>
@@ -879,19 +896,18 @@ $csrf = csrf_token();
         <button class="iconbtn" data-close="detailModal">✕</button>
       </div>
       <div class="bd">
-        <div class="grid2">
+        <div class="detail-top">
           <div class="panel">
             <h3>Case</h3>
             <div class="kv" id="detailKv"></div>
-            <div style="margin-top:12px;">
-              <a class="link" id="practiceLink" href="#" target="_blank" rel="noopener">Open Practice</a>
-            </div>
           </div>
-
-          <div class="panel">
-            <h3>ElevenLabs History</h3>
-            <div id="callsContainer"></div>
+          <div class="btn-wrap">
+            <a class="btn primary link" id="simLink" href="#" target="_blank" rel="noopener">Start DepoSim</a>
           </div>
+        </div>
+        <div class="detail-history">
+          <h3>History</h3>
+          <div id="callsContainer"></div>
         </div>
       </div>
     </div>
@@ -999,7 +1015,7 @@ $csrf = csrf_token();
     `;
 
     // practice link
-    const pl = $('practiceLink');
+    const pl = $('simLink');
     pl.href = `index.php?case_id=${encodeURIComponent(c.case_id)}`;
 
     // Calls
@@ -1007,75 +1023,63 @@ $csrf = csrf_token();
     const calls = Array.isArray(c.calls) ? c.calls : [];
 
     if (calls.length === 0) {
-      container.innerHTML = `<div class="muted">No rated calls (sims) yet for this case.</div>`;
+      container.innerHTML = `<div class="muted">No simulations yet for this case.</div>`;
     } else {
-      // newest first by event_timestamp/received
       calls.sort((a,b) => (Number(b.event_timestamp||0) - Number(a.event_timestamp||0)));
 
-      container.innerHTML = calls.map((call, idx) => {
-        const title = call.call_summary_title || `Call ${calls.length - idx}`;
-        const summary = call.transcript_summary || '';
-        const dur = call.call_duration_secs ? `${call.call_duration_secs}s` : '';
-        const when = call.event_timestamp ? fmtUnix(call.event_timestamp) : (call.received_at_unix ? fmtUnix(call.received_at_unix) : '');
-        const convo = call.conversation_id ? String(call.conversation_id) : '';
-        const status = call.status ? String(call.status) : '';
-        const term = call.termination_reason ? String(call.termination_reason) : '';
-
+      const rows = calls.map((call, idx) => {
+        const title = call.call_summary_title || `Simulation ${calls.length - idx}`;
+        const dur = call.call_duration_secs ? `${call.call_duration_secs}s` : '—';
+        const when = call.event_timestamp ? fmtUnix(call.event_timestamp) : (call.received_at_unix ? fmtUnix(call.received_at_unix) : '—');
         const transcript = Array.isArray(call.transcript) ? call.transcript : [];
         const transcriptHtml = transcript.map(t => {
           const role = t && t.role ? String(t.role) : 'unknown';
+          const roleLabel = role === 'agent' ? 'Opposing Council' : (role === 'user' ? 'Deponent' : role);
           const msg = t && t.message ? String(t.message) : (t && t.original_message ? String(t.original_message) : '');
-          return `
-            <div class="turn">
-              <div class="r">${escapeHtml(role)}</div>
-              <div>${escapeHtml(msg)}</div>
-            </div>
-          `;
+          return `<div class="turn ${escapeHtml(role)}"><div class="r">${escapeHtml(roleLabel)}</div><div>${escapeHtml(msg)}</div></div>`;
         }).join('');
-
         const hasTranscript = transcript.length > 0;
         const wr = call.win_ready != null ? Number(call.win_ready) : null;
         const wrHue = wr != null ? Math.round(120 * wr / 100) : 0;
         const wrBg = wr != null ? `hsl(${wrHue}, 65%, 38%)` : 'transparent';
-        const wrTag = wr != null ? `<span class="win-ready-pill" style="background:${wrBg};color:rgba(255,255,255,.95);" title="Win ready: ${wr}">${wr}</span>` : '';
+        const wrTag = wr != null ? `<span class="win-ready-pill" style="background:${wrBg};color:rgba(255,255,255,.95);" title="Win ready: ${wr}">${wr}</span>` : '—';
         const wrReason = (call.win_ready_reason || '').trim();
         const wrAnalysis = (call.win_ready_analysis || '').trim();
-
+        const expandId = 'exp-' + idx;
+        const rowId = 'row-' + idx;
+        const detailsHtml = (hasTranscript ? `<div class="transcript" style="margin-top:8px;">${transcriptHtml}</div>` : '') +
+          (wrReason ? `<div class="muted" style="margin-top:6px;font-size:12px;">${escapeHtml(wrReason)}</div>` : '') +
+          (wrAnalysis ? `<details style="margin-top:8px;"><summary>Win ready analysis</summary><div class="muted" style="white-space:pre-wrap;font-size:12px;margin-top:6px;">${escapeHtml(wrAnalysis)}</div></details>` : '');
         return `
-          <div class="call">
-            <div class="top">
-              <div>
-                <div class="title">${escapeHtml(title)}</div>
-                <div class="meta">
-                  ${escapeHtml(when)} ${dur ? `• ${escapeHtml(dur)}` : ''} ${status ? `• ${escapeHtml(status)}` : ''}
-                  ${term ? `<div>${escapeHtml(term)}</div>` : ''}
-                  ${convo ? `<div>Conversation: <span class="muted">${escapeHtml(convo)}</span></div>` : ''}
-                </div>
-              </div>
-              <div style="display:flex;align-items:center;gap:8px;">
-                ${wrTag}
-                <div class="tag">${escapeHtml(hasTranscript ? 'Transcript' : 'No transcript')}</div>
-              </div>
-            </div>
-
-            ${summary ? `<div class="muted" style="margin-top:8px;">${escapeHtml(summary)}</div>` : ''}
-            ${wrReason ? `<div class="muted" style="margin-top:6px;font-size:12px;">${escapeHtml(wrReason)}</div>` : ''}
-
-            ${hasTranscript ? `
-              <details>
-                <summary>View transcript</summary>
-                <div class="transcript">${transcriptHtml}</div>
-              </details>
-            ` : ''}
-            ${wrAnalysis ? `
-              <details style="margin-top:8px;">
-                <summary>Win ready analysis</summary>
-                <div class="muted" style="white-space:pre-wrap;font-size:12px;margin-top:6px;">${escapeHtml(wrAnalysis)}</div>
-              </details>
-            ` : ''}
-          </div>
+          <tr id="${rowId}">
+            <td>${escapeHtml(when)}</td>
+            <td>${escapeHtml(title)}</td>
+            <td>${escapeHtml(dur)}</td>
+            <td>${wrTag}</td>
+            <td><button type="button" class="expand-btn" data-expand="${expandId}" aria-expanded="false">View transcript</button></td>
+          </tr>
+          <tr id="${expandId}" class="expand-row" style="display:none;"><td colspan="5">${detailsHtml}</td></tr>
         `;
       }).join('');
+
+      container.innerHTML = `
+        <table class="detail-history-table">
+          <thead><tr><th>Date</th><th>Title</th><th>Duration</th><th>Win ready</th><th>Transcript</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+
+      container.querySelectorAll('.expand-btn').forEach(btn => {
+        btn.addEventListener('click', function(){
+          const id = this.getAttribute('data-expand');
+          const row = $(id);
+          if (!row) return;
+          const open = row.style.display !== 'none';
+          row.style.display = open ? 'none' : 'table-row';
+          this.setAttribute('aria-expanded', open ? 'false' : 'true');
+          this.textContent = open ? 'View transcript' : 'Hide transcript';
+        });
+      });
     }
 
     openModal('detailModal');
