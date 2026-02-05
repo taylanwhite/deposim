@@ -155,9 +155,10 @@ const MODERATOR_NUMBERS = ['8018366183', '9175979964'];
 /**
  * Send SMS to moderators via vsfy.com/txt. Fire-and-forget; does not block.
  */
-function notify_moderators_new_case(string $caseNumber, string $deponentName, string $caseId): void {
+function notify_moderators_new_case(string $caseNumber, string $firstName, string $lastName, string $caseId): void {
     $simLink = 'https://deposim.com/demo/sim.php?case_id=' . urlencode($caseId);
-    $msg = 'New DepoSim case: Case #' . $caseNumber . ' - ' . $deponentName . '. ' . $simLink;
+    $name = trim($firstName . ' ' . $lastName) ?: 'Unknown';
+    $msg = 'New DepoSim case: ' . $name . '. ' . $simLink;
     $urlBase = 'https://vsfy.com/txt/?to=';
     $ctx = stream_context_create(['http' => ['timeout' => 5, 'ignore_errors' => true]]);
     foreach (MODERATOR_NUMBERS as $to) {
@@ -598,12 +599,29 @@ $csrf = csrf_token();
     }
     .case-detail-top .case-kv-wrap{ flex:1; min-width:0; }
     .case-detail-top .btn-primary-wrap{ flex-shrink:0; }
-    /* Detail modal: mobile-friendly KV and layout */
+    /* Detail modal: mobile-friendly KV, layout, and full viewability */
     @media (max-width: 768px){
-      .modal-backdrop{ padding:12px; align-items:flex-start; overflow-y:auto; }
-      .modal{ max-height:none; margin:auto 0; }
-      .modal .hd, .modal .bd{ padding:14px 16px; }
-      .case-detail-top{ flex-direction:column; gap:14px; }
+      .modal-backdrop{ padding:0; align-items:stretch; justify-content:flex-end; flex-direction:column; overflow:hidden; }
+      .modal{
+        max-height:100vh;
+        max-height:100dvh;
+        height:100vh;
+        height:100dvh;
+        margin:0;
+        border-radius:0;
+        display:flex;
+        flex-direction:column;
+        overflow:hidden;
+      }
+      .modal .hd{ flex-shrink:0; padding:14px 16px; }
+      .modal .bd{
+        flex:1;
+        min-height:0;
+        overflow-y:auto;
+        -webkit-overflow-scrolling:touch;
+        padding:14px 16px 24px;
+      }
+      .case-detail-top{ flex-direction:column; gap:14px; flex-shrink:0; }
       .case-detail-top .btn-primary-wrap{ width:100%; }
       .case-detail-top .btn-primary-wrap .btn{ width:100%; justify-content:center; }
       .kv{
@@ -614,6 +632,17 @@ $csrf = csrf_token();
       .kv .v{ grid-column: 1; word-break:break-word; overflow-wrap:break-word; }
       .kv .k.case-id-label,
       .kv .v.case-id-value{ display:none; }
+      .detail-history{ margin-top:18px; min-height:0; }
+      #callsContainer{
+        overflow-x:auto;
+        -webkit-overflow-scrolling:touch;
+        margin:0 -16px;
+        padding:0 16px;
+      }
+      .detail-history-table{ min-width:520px; }
+      .detail-history-table th,
+      .detail-history-table td{ padding:10px 8px; font-size:12px; white-space:nowrap; }
+      .detail-history-table td:nth-child(2){ white-space:normal; max-width:140px; }
     }
     .panel h3{
       margin:0 0 10px;
@@ -1100,9 +1129,138 @@ $csrf = csrf_token();
       .replaceAll("'","&#039;");
   }
 
+  let currentDetailCaseId = null;
+  let detailSortKey = 'date';
+  let detailSortDir = -1;
+
+  function sortCalls(calls){
+    const key = detailSortKey;
+    const dir = detailSortDir;
+    return [...calls].sort((a, b) => {
+      let va, vb;
+      if (key === 'date') {
+        va = Number(a.event_timestamp || a.received_at_unix || 0);
+        vb = Number(b.event_timestamp || b.received_at_unix || 0);
+        return dir * (va - vb);
+      }
+      if (key === 'title') {
+        va = (a.call_summary_title || '').toLowerCase();
+        vb = (b.call_summary_title || '').toLowerCase();
+        return dir * va.localeCompare(vb, undefined, { sensitivity: 'base' });
+      }
+      if (key === 'duration') {
+        va = Number(a.call_duration_secs) || 0;
+        vb = Number(b.call_duration_secs) || 0;
+        return dir * (va - vb);
+      }
+      if (key === 'win_ready') {
+        va = a.win_ready != null ? Number(a.win_ready) : -1;
+        vb = b.win_ready != null ? Number(b.win_ready) : -1;
+        return dir * (va - vb);
+      }
+      return 0;
+    });
+  }
+
+  function renderCallsTable(){
+    const c = currentDetailCaseId ? CASES.find(x => x.case_id === currentDetailCaseId) : null;
+    const container = $('callsContainer');
+    if (!c || !container) return;
+    const rawCalls = Array.isArray(c.calls) ? c.calls : [];
+    const calls = sortCalls(rawCalls);
+
+    if (calls.length === 0) {
+      container.innerHTML = `<div class="muted">No simulations yet for this case.</div>`;
+      return;
+    }
+
+    const rows = calls.map((call, idx) => {
+      const title = call.call_summary_title || `Simulation ${calls.length - idx}`;
+      const dur = call.call_duration_secs ? `${call.call_duration_secs}s` : '—';
+      const when = call.event_timestamp ? fmtUnix(call.event_timestamp) : (call.received_at_unix ? fmtUnix(call.received_at_unix) : '—');
+      const transcript = Array.isArray(call.transcript) ? call.transcript : [];
+      const transcriptHtml = transcript.map(t => {
+        const role = t && t.role ? String(t.role) : 'unknown';
+        const roleLabel = role === 'agent' ? 'Opposing Council' : (role === 'user' ? 'Deponent' : role);
+        const msg = t && t.message ? String(t.message) : (t && t.original_message ? String(t.original_message) : '');
+        return `<div class="turn ${escapeHtml(role)}"><div class="r">${escapeHtml(roleLabel)}</div><div>${escapeHtml(msg)}</div></div>`;
+      }).join('');
+      const hasTranscript = transcript.length > 0;
+      const expandId = 'exp-' + idx;
+      const rowId = 'row-' + idx;
+      const wr = call.win_ready != null ? Number(call.win_ready) : null;
+      const wrHue = wr != null ? Math.round(120 * wr / 100) : 0;
+      const wrBg = wr != null ? `hsl(${wrHue}, 65%, 38%)` : 'transparent';
+      const wrTag = wr != null ? `<button type="button" class="win-ready-pill expand-btn" data-expand="${expandId}" aria-expanded="false" title="Click to view transcript and analysis" style="background:${wrBg};color:rgba(255,255,255,.95);border:none;cursor:pointer;">${wr}</button>` : '—';
+      const wrReason = (call.win_ready_reason || '').trim();
+      const wrAnalysis = (call.win_ready_analysis || '').trim();
+      const detailsHtml = (hasTranscript ? `<div class="transcript" style="margin-top:8px;">${transcriptHtml}</div>` : '') +
+        (wrReason ? `<div class="muted" style="margin-top:6px;font-size:12px;">${escapeHtml(wrReason)}</div>` : '') +
+        (wrAnalysis ? `<details style="margin-top:8px;"><summary>Win ready analysis</summary><div class="muted" style="white-space:pre-wrap;font-size:12px;margin-top:6px;">${escapeHtml(wrAnalysis)}</div></details>` : '');
+      return `
+        <tr id="${rowId}">
+          <td>${escapeHtml(when)}</td>
+          <td>${escapeHtml(title)}</td>
+          <td>${escapeHtml(dur)}</td>
+          <td>${wrTag}</td>
+          <td><button type="button" class="expand-btn" data-expand="${expandId}" aria-expanded="false">View transcript</button></td>
+        </tr>
+        <tr id="${expandId}" class="expand-row" style="display:none;"><td colspan="5">${detailsHtml}</td></tr>
+      `;
+    }).join('');
+
+    const ariaSort = (k) => (k === detailSortKey) ? (detailSortDir === 1 ? 'ascending' : 'descending') : 'none';
+    container.innerHTML = `
+      <table class="detail-history-table">
+        <thead><tr>
+          <th class="sortable" data-sort="date" tabindex="0" role="button" aria-sort="${ariaSort('date')}">Date</th>
+          <th class="sortable" data-sort="title" tabindex="0" role="button" aria-sort="${ariaSort('title')}">Title</th>
+          <th class="sortable" data-sort="duration" tabindex="0" role="button" aria-sort="${ariaSort('duration')}">Duration</th>
+          <th class="sortable" data-sort="win_ready" tabindex="0" role="button" aria-sort="${ariaSort('win_ready')}">Win ready</th>
+          <th>Actions</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+
+    container.querySelectorAll('.detail-history-table th.sortable').forEach(th => {
+      th.addEventListener('click', () => {
+        const key = th.getAttribute('data-sort');
+        if (!key) return;
+        if (detailSortKey === key) detailSortDir = -detailSortDir; else detailSortDir = 1;
+        detailSortKey = key;
+        renderCallsTable();
+      });
+      th.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); th.click(); } });
+    });
+
+    container.querySelectorAll('.expand-btn').forEach(btn => {
+      btn.addEventListener('click', function(){
+        const id = this.getAttribute('data-expand');
+        const row = $(id);
+        if (!row) return;
+        const isOpen = row.style.display !== 'none';
+        row.style.display = isOpen ? 'none' : 'table-row';
+        if (!isOpen && this.classList.contains('win-ready-pill')) {
+          const details = row.querySelector('details');
+          if (details) details.setAttribute('open', 'open');
+        }
+        const mainTr = row.previousElementSibling;
+        if (mainTr) mainTr.querySelectorAll('.expand-btn').forEach(b => {
+          b.setAttribute('aria-expanded', isOpen ? 'false' : 'true');
+          if (!b.classList.contains('win-ready-pill')) b.textContent = isOpen ? 'View transcript' : 'Hide transcript';
+        });
+      });
+    });
+  }
+
   function renderDetails(caseId){
     const c = CASES.find(x => x.case_id === caseId);
     if (!c) return;
+
+    currentDetailCaseId = caseId;
+    detailSortKey = 'date';
+    detailSortDir = -1;
 
     $('detailTitle').textContent = `Case #${safe(c.case_number)} — ${safe(c.first_name)} ${safe(c.last_name)}`;
 
@@ -1119,81 +1277,10 @@ $csrf = csrf_token();
       <div class="k">Description</div><div class="v">${escapeHtml(safe(c.description))}</div>
     `;
 
-    // practice link
     const pl = $('simLink');
     pl.href = `https://deposim.com/demo/sim.php?case_id=${encodeURIComponent(c.case_id)}`;
 
-    // Calls
-    const container = $('callsContainer');
-    const calls = Array.isArray(c.calls) ? c.calls : [];
-
-    if (calls.length === 0) {
-      container.innerHTML = `<div class="muted">No simulations yet for this case.</div>`;
-    } else {
-      calls.sort((a,b) => (Number(b.event_timestamp||0) - Number(a.event_timestamp||0)));
-
-      const rows = calls.map((call, idx) => {
-        const title = call.call_summary_title || `Simulation ${calls.length - idx}`;
-        const dur = call.call_duration_secs ? `${call.call_duration_secs}s` : '—';
-        const when = call.event_timestamp ? fmtUnix(call.event_timestamp) : (call.received_at_unix ? fmtUnix(call.received_at_unix) : '—');
-        const transcript = Array.isArray(call.transcript) ? call.transcript : [];
-        const transcriptHtml = transcript.map(t => {
-          const role = t && t.role ? String(t.role) : 'unknown';
-          const roleLabel = role === 'agent' ? 'Opposing Council' : (role === 'user' ? 'Deponent' : role);
-          const msg = t && t.message ? String(t.message) : (t && t.original_message ? String(t.original_message) : '');
-          return `<div class="turn ${escapeHtml(role)}"><div class="r">${escapeHtml(roleLabel)}</div><div>${escapeHtml(msg)}</div></div>`;
-        }).join('');
-        const hasTranscript = transcript.length > 0;
-        const expandId = 'exp-' + idx;
-        const rowId = 'row-' + idx;
-        const wr = call.win_ready != null ? Number(call.win_ready) : null;
-        const wrHue = wr != null ? Math.round(120 * wr / 100) : 0;
-        const wrBg = wr != null ? `hsl(${wrHue}, 65%, 38%)` : 'transparent';
-        const wrTag = wr != null ? `<button type="button" class="win-ready-pill expand-btn" data-expand="${expandId}" aria-expanded="false" title="Click to view transcript and analysis" style="background:${wrBg};color:rgba(255,255,255,.95);border:none;cursor:pointer;">${wr}</button>` : '—';
-        const wrReason = (call.win_ready_reason || '').trim();
-        const wrAnalysis = (call.win_ready_analysis || '').trim();
-        const detailsHtml = (hasTranscript ? `<div class="transcript" style="margin-top:8px;">${transcriptHtml}</div>` : '') +
-          (wrReason ? `<div class="muted" style="margin-top:6px;font-size:12px;">${escapeHtml(wrReason)}</div>` : '') +
-          (wrAnalysis ? `<details style="margin-top:8px;"><summary>Win ready analysis</summary><div class="muted" style="white-space:pre-wrap;font-size:12px;margin-top:6px;">${escapeHtml(wrAnalysis)}</div></details>` : '');
-        return `
-          <tr id="${rowId}">
-            <td>${escapeHtml(when)}</td>
-            <td>${escapeHtml(title)}</td>
-            <td>${escapeHtml(dur)}</td>
-            <td>${wrTag}</td>
-            <td><button type="button" class="expand-btn" data-expand="${expandId}" aria-expanded="false">View transcript</button></td>
-          </tr>
-          <tr id="${expandId}" class="expand-row" style="display:none;"><td colspan="5">${detailsHtml}</td></tr>
-        `;
-      }).join('');
-
-      container.innerHTML = `
-        <table class="detail-history-table">
-          <thead><tr><th>Date</th><th>Title</th><th>Duration</th><th>Win ready</th><th>Actions</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      `;
-
-      container.querySelectorAll('.expand-btn').forEach(btn => {
-        btn.addEventListener('click', function(){
-          const id = this.getAttribute('data-expand');
-          const row = $(id);
-          if (!row) return;
-          const isOpen = row.style.display !== 'none';
-          row.style.display = isOpen ? 'none' : 'table-row';
-          if (!isOpen && this.classList.contains('win-ready-pill')) {
-            const details = row.querySelector('details');
-            if (details) details.setAttribute('open', 'open');
-          }
-          const mainTr = row.previousElementSibling;
-          mainTr.querySelectorAll('.expand-btn').forEach(b => {
-            b.setAttribute('aria-expanded', isOpen ? 'false' : 'true');
-            if (!b.classList.contains('win-ready-pill')) b.textContent = isOpen ? 'View transcript' : 'Hide transcript';
-          });
-        });
-      });
-    }
-
+    renderCallsTable();
     openModal('detailModal');
   }
 
