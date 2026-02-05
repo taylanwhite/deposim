@@ -1177,7 +1177,9 @@ $csrf = csrf_token();
 
     const rows = calls.map((call, idx) => {
       const title = call.call_summary_title || `Simulation ${calls.length - idx}`;
-      const dur = call.call_duration_secs ? `${call.call_duration_secs}s` : '—';
+      const secs = Number(call.call_duration_secs) || 0;
+      const mins = secs ? Math.ceil(secs / 60) : 0;
+      const dur = mins ? `${mins} min${mins === 1 ? '' : 's'}` : '—';
       const when = call.event_timestamp ? fmtUnix(call.event_timestamp) : (call.received_at_unix ? fmtUnix(call.received_at_unix) : '—');
       const transcript = Array.isArray(call.transcript) ? call.transcript : [];
       const transcriptHtml = transcript.map(t => {
