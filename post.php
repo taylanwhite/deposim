@@ -8,12 +8,32 @@ $casesDir = '/var/www/deposim_com/demo/cases';
 // Per your request:
 $WEBHOOK_SECRET = 'wsec_7a13e9f6814291732bf1d466179d2ff0a973a659c6b2f25295b9943515b2394b';
 
-// Optional log file (ensure writable by web user if you want logs)
-$logFile = '/var/www/deposim_com/demo/webhook.log';
+// Log files (use __DIR__ so they work next to script, or set absolute paths)
+$logFile      = __DIR__ . '/webhook.log';
+$errorLogFile = __DIR__ . '/webhook_errors.log';
+
+ini_set('log_errors', '1');
+ini_set('error_log', $errorLogFile);
 
 function log_line(string $path, string $msg): void {
     @file_put_contents($path, '[' . date('c') . '] ' . $msg . "\n", FILE_APPEND);
 }
+
+function log_webhook_error(string $path, Throwable $e): void {
+    $msg = 'ERROR ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine() . "\n" . $e->getTraceAsString();
+    log_line($path, $msg);
+}
+
+// Catch fatal errors and log them (run at end of script or on fatal)
+register_shutdown_function(function () use ($logFile, $errorLogFile) {
+    $err = error_get_last();
+    if ($err === null || !in_array($err['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+        return;
+    }
+    $msg = 'FATAL ' . ($err['message'] ?? '') . ' in ' . ($err['file'] ?? '') . ':' . ($err['line'] ?? '');
+    log_line($logFile, $msg);
+    log_line($errorLogFile, $msg);
+});
 
 function send_json(int $code, array $body): never {
     http_response_code($code);
@@ -184,14 +204,18 @@ $record = [
     'dynamic_variables' => $dyn,
 ];
 
-// ---------- Run deposition win_ready analysis and write to /sims/ ----------
-$simsDir = __DIR__ . '/sims';
-if (!is_dir($simsDir)) {
-    @mkdir($simsDir, 0775, true);
-}
-require_once __DIR__ . '/functions/chatcompletion.php';
-$analysisResult = deposition_win_ready_analysis($record);
-if (!empty($analysisResult['success'])) {
+try {
+    // ---------- Run deposition win_ready analysis and write to /sims/ ----------
+    $simsDir = __DIR__ . '/sims';
+    log_line($logFile, 'webhook: case_id=' . $caseId . ' type=' . $type . ' step=start');
+    if (!is_dir($simsDir)) {
+        @mkdir($simsDir, 0775, true);
+    }
+    require_once __DIR__ . '/functions/chatcompletion.php';
+    log_line($logFile, 'webhook: case_id=' . $caseId . ' step=chatcompletion_required');
+    $analysisResult = deposition_win_ready_analysis($record);
+    log_line($logFile, 'webhook: case_id=' . $caseId . ' step=analysis_done success=' . (!empty($analysisResult['success']) ? '1' : '0'));
+    if (!empty($analysisResult['success'])) {
     $meta = is_array($record['metadata'] ?? null) ? $record['metadata'] : [];
     $analysis = is_array($record['analysis'] ?? null) ? $record['analysis'] : [];
 
@@ -227,51 +251,63 @@ if (!empty($analysisResult['success'])) {
     } else {
         log_line($logFile, 'Warning: could not write sim file. case_id=' . $caseId);
     }
-}
+    }
 
-// ---------- Idempotency: skip if conversation_id already stored ----------
-$incomingConversationId = (string)($record['conversation_id'] ?? '');
-if ($incomingConversationId !== '') {
-    foreach ($caseJson['elevenlabs']['post_call'] as $entry) {
-        if (!is_array($entry)) continue;
-        if ((string)($entry['conversation_id'] ?? '') === $incomingConversationId) {
-            send_json(200, [
-                'ok' => true,
-                'duplicate' => true,
-                'case_id' => $caseId,
-                'conversation_id' => $incomingConversationId,
-            ]);
+    // ---------- Idempotency: skip if conversation_id already stored ----------
+    $incomingConversationId = (string)($record['conversation_id'] ?? '');
+    if ($incomingConversationId !== '') {
+        foreach ($caseJson['elevenlabs']['post_call'] as $entry) {
+            if (!is_array($entry)) continue;
+            if ((string)($entry['conversation_id'] ?? '') === $incomingConversationId) {
+                send_json(200, [
+                    'ok' => true,
+                    'duplicate' => true,
+                    'case_id' => $caseId,
+                    'conversation_id' => $incomingConversationId,
+                ]);
+            }
         }
     }
+
+    // ---------- Append + save ----------
+    $caseJson['elevenlabs']['post_call'][] = $record;
+
+    if (!isset($caseJson['meta']) || !is_array($caseJson['meta'])) $caseJson['meta'] = [];
+    $caseJson['meta']['updated_at'] = date('c');
+
+    $tmp = $caseFile . '.tmp';
+    $out = json_encode($caseJson, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if ($out === false) {
+        log_line($logFile, '500 failed encoding case JSON. case_id=' . $caseId);
+        send_json(500, ['error' => 'Failed to encode updated case']);
+    }
+
+    if (file_put_contents($tmp, $out . PHP_EOL, LOCK_EX) === false) {
+        log_line($logFile, '500 failed writing temp file. case_id=' . $caseId);
+        send_json(500, ['error' => 'Failed writing temp case']);
+    }
+
+    if (!rename($tmp, $caseFile)) {
+        @unlink($tmp);
+        log_line($logFile, '500 failed renaming temp file. case_id=' . $caseId);
+        send_json(500, ['error' => 'Failed replacing case file']);
+    }
+
+    log_line($logFile, 'webhook: case_id=' . $caseId . ' step=done ok');
+    send_json(200, [
+        'ok' => true,
+        'case_id' => $caseId,
+        'event_type' => $type,
+        'conversation_id' => $incomingConversationId,
+    ]);
+
+} catch (Throwable $e) {
+    log_webhook_error($logFile, $e);
+    log_webhook_error($errorLogFile, $e);
+    if (!headers_sent()) {
+        http_response_code(500);
+        header('Content-Type: application/json');
+        echo json_encode(['error' => 'Internal server error'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    }
+    exit(1);
 }
-
-// ---------- Append + save ----------
-$caseJson['elevenlabs']['post_call'][] = $record;
-
-if (!isset($caseJson['meta']) || !is_array($caseJson['meta'])) $caseJson['meta'] = [];
-$caseJson['meta']['updated_at'] = date('c');
-
-$tmp = $caseFile . '.tmp';
-$out = json_encode($caseJson, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-if ($out === false) {
-    log_line($logFile, '500 failed encoding case JSON. case_id=' . $caseId);
-    send_json(500, ['error' => 'Failed to encode updated case']);
-}
-
-if (file_put_contents($tmp, $out . PHP_EOL, LOCK_EX) === false) {
-    log_line($logFile, '500 failed writing temp file. case_id=' . $caseId);
-    send_json(500, ['error' => 'Failed writing temp case']);
-}
-
-if (!rename($tmp, $caseFile)) {
-    @unlink($tmp);
-    log_line($logFile, '500 failed renaming temp file. case_id=' . $caseId);
-    send_json(500, ['error' => 'Failed replacing case file']);
-}
-
-send_json(200, [
-    'ok' => true,
-    'case_id' => $caseId,
-    'event_type' => $type,
-    'conversation_id' => $incomingConversationId,
-]);
