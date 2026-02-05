@@ -8,7 +8,7 @@ declare(strict_types=1);
  * - Production-style UI: case list table + “New Case” modal
  * - Creates new case JSON files in ./cases/case_<uuid>.json
  * - Click a row to open a Case Details dialog
- * - Details dialog shows ElevenLabs post_call history (conversation list)
+ * - Details dialog shows simulation history
  * - Safe output escaping + basic CSRF protection
  *
  * Requirements:
@@ -490,6 +490,8 @@ $csrf = csrf_token();
       font-weight:800;
       white-space:nowrap;
     }
+    button.win-ready-pill{ font-family:inherit; cursor:pointer; border:none; }
+    button.win-ready-pill:hover{ opacity:.9; }
 
     .toast{
       margin:10px 0 14px;
@@ -581,6 +583,14 @@ $csrf = csrf_token();
       border-radius:16px;
       padding:14px;
     }
+    .case-detail-top{
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:16px;
+    }
+    .case-detail-top .case-kv-wrap{ flex:1; min-width:0; }
+    .case-detail-top .btn-primary-wrap{ flex-shrink:0; }
     .panel h3{
       margin:0 0 10px;
       font-size:13px;
@@ -733,7 +743,7 @@ $csrf = csrf_token();
     <div class="topbar">
       <div class="brand">
         <h1>DepoSim</h1>
-        <div class="sub">Case intake and conversation history. Click a case to view ElevenLabs post-call transcripts.</div>
+        <div class="sub">Case intake and simulation history. Click a case to view simulation transcripts.</div>
       </div>
 
       <div class="actions">
@@ -897,10 +907,14 @@ $csrf = csrf_token();
       </div>
       <div class="bd">
         <div class="panel">
-          <h3>Case</h3>
-          <div class="kv" id="detailKv"></div>
-          <div style="margin-top:14px;">
-            <a class="btn primary link" id="simLink" href="#" target="_blank" rel="noopener">Start DepoSim</a>
+          <div class="case-detail-top">
+            <div class="case-kv-wrap">
+              <h3>Case</h3>
+              <div class="kv" id="detailKv"></div>
+            </div>
+            <div class="btn-primary-wrap">
+              <a class="btn primary link" id="simLink" href="#" target="_blank" rel="noopener">Start DepoSim</a>
+            </div>
           </div>
         </div>
         <div class="detail-history">
@@ -1040,7 +1054,7 @@ $csrf = csrf_token();
         const wr = call.win_ready != null ? Number(call.win_ready) : null;
         const wrHue = wr != null ? Math.round(120 * wr / 100) : 0;
         const wrBg = wr != null ? `hsl(${wrHue}, 65%, 38%)` : 'transparent';
-        const wrTag = wr != null ? `<span class="win-ready-pill" style="background:${wrBg};color:rgba(255,255,255,.95);" title="Win ready: ${wr}">${wr}</span>` : '—';
+        const wrTag = wr != null ? `<button type="button" class="win-ready-pill expand-btn" data-expand="${expandId}" aria-expanded="false" title="Click to view transcript and analysis" style="background:${wrBg};color:rgba(255,255,255,.95);border:none;cursor:pointer;">${wr}</button>` : '—';
         const wrReason = (call.win_ready_reason || '').trim();
         const wrAnalysis = (call.win_ready_analysis || '').trim();
         const expandId = 'exp-' + idx;
@@ -1054,7 +1068,7 @@ $csrf = csrf_token();
             <td>${escapeHtml(title)}</td>
             <td>${escapeHtml(dur)}</td>
             <td>${wrTag}</td>
-            <td><button type="button" class="expand-btn" data-expand="${expandId}" aria-expanded="false">View transcript</button> <button type="button" class="expand-btn" data-expand="${expandId}" aria-expanded="false">Win ready analysis</button></td>
+            <td><button type="button" class="expand-btn" data-expand="${expandId}" aria-expanded="false">View transcript</button></td>
           </tr>
           <tr id="${expandId}" class="expand-row" style="display:none;"><td colspan="5">${detailsHtml}</td></tr>
         `;
@@ -1075,10 +1089,9 @@ $csrf = csrf_token();
           const isOpen = row.style.display !== 'none';
           row.style.display = isOpen ? 'none' : 'table-row';
           const mainTr = row.previousElementSibling;
-          const btns = mainTr.querySelectorAll('.expand-btn');
-          btns.forEach((b, i) => {
+          mainTr.querySelectorAll('.expand-btn').forEach(b => {
             b.setAttribute('aria-expanded', isOpen ? 'false' : 'true');
-            b.textContent = isOpen ? (i === 0 ? 'View transcript' : 'Win ready analysis') : (i === 0 ? 'Hide transcript' : 'Hide analysis');
+            if (!b.classList.contains('win-ready-pill')) b.textContent = isOpen ? 'View transcript' : 'Hide transcript';
           });
         });
       });
