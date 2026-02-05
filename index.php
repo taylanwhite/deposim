@@ -128,7 +128,7 @@ function safe_arr(mixed $v): array {
 function fmt_date(?string $iso): string {
     if (!$iso) return '';
     $ts = strtotime($iso);
-    return $ts ? date('Y-m-d H:i', $ts) : $iso;
+    return $ts ? date('M j, Y, g:i A', $ts) : $iso;
 }
 
 function csrf_token(): string {
@@ -757,11 +757,9 @@ $csrf = csrf_token();
       text-align:center;
     }
 
-    /* Mobile: case table as cards, first col = Case # + Deponent */
+    /* Mobile: case table as cards */
     @media (max-width: 768px){
       .page{ padding:16px 12px 32px; }
-      #caseTable thead th:nth-child(2),
-      #caseTable tbody td.deponent-col{ display:none; }
       #caseTable thead{ display:none; }
       #caseTable, #caseTable tbody, #caseTable tr, #caseTable td{ display:block; }
       #caseTable tr{
@@ -845,7 +843,6 @@ $csrf = csrf_token();
           <thead>
             <tr>
               <th class="sortable" data-sort="case_number" tabindex="0" role="button" aria-sort="none">Case</th>
-              <th class="sortable" data-sort="deponent" tabindex="0" role="button" aria-sort="none">Deponent</th>
               <th class="sortable" data-sort="phone" tabindex="0" role="button" aria-sort="none">Phone</th>
               <th class="sortable" data-sort="updated" tabindex="0" role="button" aria-sort="none">Updated</th>
               <th class="sortable" data-sort="sims" tabindex="0" role="button" aria-sort="none">Sims</th>
@@ -863,11 +860,7 @@ $csrf = csrf_token();
             ?>
               <tr
                 data-case-id="<?php echo h($c['case_id']); ?>"
-                data-search="<?php echo h(strtolower(
-                  ($c['case_number'] . ' ' . $fullName . ' ' . $c['phone'] . ' ' . ($c['email'] ?? '') . ' ' . $desc . ' ' . $c['case_id'])
-                )); ?>"
                 data-case-number="<?php echo h($c['case_number'] ?? ''); ?>"
-                data-deponent="<?php echo h(strtolower($fullName)); ?>"
                 data-phone="<?php echo h($c['phone'] ?? ''); ?>"
                 data-updated="<?php echo h($updatedTs); ?>"
                 data-sims="<?php echo (int)$callCount; ?>"
@@ -876,10 +869,6 @@ $csrf = csrf_token();
                 <td data-label="Case">
                   <div class="name">Case #<?php echo h($c['case_number'] ?: '(none)'); ?></div>
                   <div class="muted"><?php echo h($fullName ?: '(none)'); ?></div>
-                </td>
-
-                <td data-label="Deponent" class="deponent-col">
-                  <div class="name"><?php echo h($fullName ?: '(none)'); ?></div>
                 </td>
 
                 <td data-label="Phone">
@@ -1042,7 +1031,9 @@ $csrf = csrf_token();
 
     let shown = 0;
     [...tbody.querySelectorAll('tr')].forEach(tr => {
-      const hay = (tr.dataset.search || '');
+      const caseId = tr.dataset.caseId;
+      const c = CASES.find(x => x.case_id === caseId);
+      const hay = c ? JSON.stringify(c).toLowerCase() : '';
       const ok = q === '' || hay.includes(q);
       tr.style.display = ok ? '' : 'none';
       if (ok) shown++;
@@ -1069,8 +1060,8 @@ $csrf = csrf_token();
         const attr = 'data-' + key.replace(/_/g, '-');
         const va = a.getAttribute(attr) ?? '';
         const vb = b.getAttribute(attr) ?? '';
-        const numA = key === 'updated' || key === 'sims' || key === 'win_ready' ? Number(va) : 0;
-        const numB = key === 'updated' || key === 'sims' || key === 'win_ready' ? Number(vb) : 0;
+        const numA = (key === 'updated' || key === 'sims' || key === 'win_ready') ? Number(va) : 0;
+        const numB = (key === 'updated' || key === 'sims' || key === 'win_ready') ? Number(vb) : 0;
         if (key === 'updated' || key === 'sims' || key === 'win_ready') {
           return sortDir * (numA - numB);
         }
@@ -1090,7 +1081,14 @@ $csrf = csrf_token();
     if (!u) return '';
     const d = new Date(Number(u) * 1000);
     if (isNaN(d.getTime())) return '';
-    return d.toLocaleString();
+    return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  }
+
+  function formatDateHuman(iso){
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return String(iso);
+    return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
   }
 
   function escapeHtml(s){
@@ -1116,8 +1114,8 @@ $csrf = csrf_token();
       <div class="k">Deponent</div><div class="v">${escapeHtml(`${safe(c.first_name)} ${safe(c.last_name)}`.trim())}</div>
       <div class="k">Phone</div><div class="v">${escapeHtml(safe(c.phone))}</div>
       <div class="k">Email</div><div class="v">${escapeHtml(safe(c.email))}</div>
-      <div class="k">Created</div><div class="v">${escapeHtml(safe(c.created_at))}</div>
-      <div class="k">Updated</div><div class="v">${escapeHtml(safe(c.updated_at))}</div>
+      <div class="k">Created</div><div class="v">${escapeHtml(formatDateHuman(c.created_at))}</div>
+      <div class="k">Updated</div><div class="v">${escapeHtml(formatDateHuman(c.updated_at))}</div>
       <div class="k">Description</div><div class="v">${escapeHtml(safe(c.description))}</div>
     `;
 
