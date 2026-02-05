@@ -148,6 +148,25 @@ function require_csrf(): void {
     }
 }
 
+/** Moderator phone numbers to notify when a new case is added */
+// '9175979964'
+const MODERATOR_NUMBERS = ['8018366183'];
+
+/**
+ * Send SMS to moderators via vsfy.com/txt. Fire-and-forget; does not block.
+ */
+function notify_moderators_new_case(string $caseNumber, string $deponentName, string $caseId): void {
+    $baseUrl = ($_SERVER['REQUEST_SCHEME'] ?? 'https') . '://' . ($_SERVER['HTTP_HOST'] ?? 'deposim.com') . dirname($_SERVER['REQUEST_URI'] ?? '/demo');
+    $caseLink = rtrim($baseUrl, '/') . '/case.php';
+    $msg = 'New DepoSim case: Case #' . $caseNumber . ' - ' . $deponentName . '. ' . $caseLink;
+    $urlBase = 'https://vsfy.com/txt/?to=';
+    $ctx = stream_context_create(['http' => ['timeout' => 5, 'ignore_errors' => true]]);
+    foreach (MODERATOR_NUMBERS as $to) {
+        $url = $urlBase . $to . '&msg=' . rawurlencode($msg);
+        @file_get_contents($url, false, $ctx);
+    }
+}
+
 // ---------- Handle create case (POST) ----------
 if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
     require_csrf();
@@ -202,6 +221,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
                 @unlink($tmp);
                 $create_error = 'Unable to write case file. Check permissions on ./cases.';
             } else {
+                $deponentName = trim($first_name . ' ' . $last_name) ?: 'Unknown';
+                notify_moderators_new_case($case_number, $deponentName, $case_id);
                 header('Location: case.php?created=' . urlencode($case_id));
                 exit;
             }
