@@ -483,10 +483,10 @@ $csrf = csrf_token();
       display:inline-flex;
       align-items:center;
       justify-content:center;
-      min-width:2.5em;
-      padding:10px 16px;
+      min-width:3.25em;
+      padding:14px 28px;
       border-radius:999px;
-      font-size:13px;
+      font-size:14px;
       font-weight:800;
       white-space:nowrap;
     }
