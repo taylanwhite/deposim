@@ -483,10 +483,10 @@ $csrf = csrf_token();
       display:inline-flex;
       align-items:center;
       justify-content:center;
-      min-width:3.25em;
-      padding:14px 28px;
+      min-width:2.5em;
+      padding:10px 16px;
       border-radius:999px;
-      font-size:14px;
+      font-size:13px;
       font-weight:800;
       white-space:nowrap;
     }
@@ -576,6 +576,7 @@ $csrf = csrf_token();
     .detail-history-table td{ padding:12px; border-bottom:1px solid rgba(255,255,255,.08); vertical-align:top; }
     .detail-history-table tr.expand-row td{ background:rgba(0,0,0,.2); }
     .detail-history-table .expand-btn{ background:none; border:none; color:var(--ok); cursor:pointer; font-weight:800; text-decoration:underline; padding:0; }
+    .detail-history-table td button.win-ready-pill{ padding:10px 16px; min-width:2.5em; text-decoration:none; }
 
     .panel{
       background:rgba(255,255,255,.05);
