@@ -20,9 +20,13 @@ session_start();
 
 $baseDir  = __DIR__;
 $casesDir = $baseDir . '/cases';
+$simsDir  = $baseDir . '/sims';
 
 if (!is_dir($casesDir)) {
     @mkdir($casesDir, 0775, true);
+}
+if (!is_dir($simsDir)) {
+    @mkdir($simsDir, 0775, true);
 }
 
 function h(string $v): string {
@@ -48,6 +52,29 @@ function read_case_file(string $file): ?array {
     if ($raw === false) return null;
     $d = json_decode($raw, true);
     return is_array($d) ? $d : null;
+}
+
+/**
+ * Get latest win_ready for a case from sims directory.
+ * Sim files are named {case_id}_{unix_ts}.json; we take the latest by timestamp.
+ */
+function latest_win_ready_from_sims(string $simsDir, string $caseId): ?int {
+    $pattern = $simsDir . '/' . $caseId . '_*.json';
+    $files = glob($pattern);
+    if ($files === false || $files === []) {
+        return null;
+    }
+    usort($files, function (string $a, string $b) {
+        $ta = (int) preg_replace('/^.*_(\d+)\.json$/', '$1', $a);
+        $tb = (int) preg_replace('/^.*_(\d+)\.json$/', '$1', $b);
+        return $tb <=> $ta;
+    });
+    $latestFile = $files[0];
+    $raw = @file_get_contents($latestFile);
+    if ($raw === false) return null;
+    $data = json_decode($raw, true);
+    if (!is_array($data) || !isset($data['win_ready'])) return null;
+    return max(0, min(100, (int) $data['win_ready']));
 }
 
 function safe_str(mixed $v): string {
@@ -157,6 +184,8 @@ foreach ($caseFiles as $file) {
     $created_at = safe_str($meta['created_at'] ?? '');
     $updated_at = safe_str($meta['updated_at'] ?? '');
 
+    $latestWinReady = latest_win_ready_from_sims($simsDir, $cid);
+
     $cases[] = [
         'case_id' => $cid,
         'case_number' => $cnum,
@@ -167,6 +196,7 @@ foreach ($caseFiles as $file) {
         'created_at' => $created_at,
         'updated_at' => $updated_at,
         'elevenlabs' => safe_arr($c['elevenlabs'] ?? []),
+        'latest_win_ready' => $latestWinReady,
     ];
 }
 
@@ -212,6 +242,7 @@ foreach ($cases as $c) {
         'description' => $c['description'],
         'created_at' => $c['created_at'],
         'updated_at' => $c['updated_at'],
+        'latest_win_ready' => $c['latest_win_ready'] ?? null,
         'calls' => $calls,
     ];
 }
@@ -398,6 +429,18 @@ $csrf = csrf_token();
       background:var(--chip);
       font-size:12px;
       color:var(--muted);
+      white-space:nowrap;
+    }
+
+    .win-ready-pill{
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      min-width:2.25em;
+      padding:6px 10px;
+      border-radius:999px;
+      font-size:13px;
+      font-weight:800;
       white-space:nowrap;
     }
 
@@ -671,6 +714,7 @@ $csrf = csrf_token();
               <th>Phone</th>
               <th>Updated</th>
               <th>Calls</th>
+              <th>Win ready</th>
             </tr>
           </thead>
           <tbody id="tbody">
@@ -707,6 +751,19 @@ $csrf = csrf_token();
 
                 <td>
                   <span class="chip"><?php echo (int)$callCount; ?> call<?php echo $callCount === 1 ? '' : 's'; ?></span>
+                </td>
+
+                <td>
+                  <?php
+                  $wr = $c['latest_win_ready'] ?? null;
+                  if ($wr !== null):
+                    $hue = (int) round(120 * $wr / 100);
+                    $bg = "hsl({$hue}, 65%, 38%)";
+                  ?>
+                    <span class="win-ready-pill" style="background:<?php echo h($bg); ?>; color: rgba(255,255,255,.95);" title="Win ready: <?php echo (int)$wr; ?>"><?php echo (int)$wr; ?></span>
+                  <?php else: ?>
+                    <span class="muted">—</span>
+                  <?php endif; ?>
                 </td>
               </tr>
             <?php endforeach; ?>

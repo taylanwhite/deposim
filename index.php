@@ -3,9 +3,9 @@ declare(strict_types=1);
 
 date_default_timezone_set('America/Denver');
 
-$casesDir          = '/var/www/visyfy_com/deposim/cases';
-$promptDir         = '/var/www/visyfy_com/deposim/prompt_learning';
-$firstMessageDir   = '/var/www/visyfy_com/deposim/prompt_learning/first_message';
+$casesDir          = '/var/www/deposim_com/demo/cases';
+$promptDir         = '/var/www/deposim_com/demo/prompt_learning';
+$firstMessageDir   = '/var/www/deposim_com/demo/prompt_learning/first_message';
 $agentId           = 'agent_5901kgjwqbjsfxh8rjeas6778fxq';
 
 function h(string $v): string {

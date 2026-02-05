@@ -184,6 +184,51 @@ $record = [
     'dynamic_variables' => $dyn,
 ];
 
+// ---------- Run deposition win_ready analysis and write to /sims/ ----------
+$simsDir = __DIR__ . '/sims';
+if (!is_dir($simsDir)) {
+    @mkdir($simsDir, 0775, true);
+}
+require_once __DIR__ . '/functions/chatcompletion.php';
+$analysisResult = deposition_win_ready_analysis($record);
+if (!empty($analysisResult['success'])) {
+    $meta = is_array($record['metadata'] ?? null) ? $record['metadata'] : [];
+    $analysis = is_array($record['analysis'] ?? null) ? $record['analysis'] : [];
+
+    $simPayload = [
+        'case_id' => $caseId,
+        'created_at_unix' => time(),
+        'conversation_id' => $record['conversation_id'] ?? null,
+        'win_ready' => max(0, min(100, (int) ($analysisResult['win_ready'] ?? 0))),
+        'win_ready_reason' => isset($analysisResult['win_ready_reason']) ? (string) $analysisResult['win_ready_reason'] : '',
+        'call' => [
+            'received_at_unix' => $record['received_at_unix'] ?? null,
+            'event_timestamp' => $record['event_timestamp'] ?? null,
+            'event_type' => $record['event_type'] ?? null,
+            'status' => $record['status'] ?? null,
+            'agent_id' => $record['agent_id'] ?? null,
+            'call_duration_secs' => $meta['call_duration_secs'] ?? null,
+            'termination_reason' => $meta['termination_reason'] ?? null,
+            'start_time_unix_secs' => $meta['start_time_unix_secs'] ?? null,
+            'main_language' => $meta['main_language'] ?? null,
+            'transcript_summary' => $analysis['transcript_summary'] ?? null,
+            'call_summary_title' => $analysis['call_summary_title'] ?? null,
+            'call_successful' => $analysis['call_successful'] ?? null,
+            'transcript' => $record['transcript'] ?? null,
+        ],
+    ];
+    if (!empty($analysisResult['full_analysis'])) {
+        $simPayload['win_ready_analysis'] = (string) $analysisResult['full_analysis'];
+    }
+    $simFile = $simsDir . '/' . $caseId . '_' . time() . '.json';
+    $simJson = json_encode($simPayload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if ($simJson !== false && @file_put_contents($simFile, $simJson . "\n", LOCK_EX) !== false) {
+        // sim saved
+    } else {
+        log_line($logFile, 'Warning: could not write sim file. case_id=' . $caseId);
+    }
+}
+
 // ---------- Idempotency: skip if conversation_id already stored ----------
 $incomingConversationId = (string)($record['conversation_id'] ?? '');
 if ($incomingConversationId !== '') {

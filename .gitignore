@@ -12,3 +12,5 @@ webhook.log
 # temp
 *.tmp
 *.tar.gz
+
+.env
