@@ -3,13 +3,13 @@ declare(strict_types=1);
 
 date_default_timezone_set('America/Denver');
 
-$casesDir = '/var/www/visyfy_com/deposim/cases';
+$casesDir = '/var/www/deposim_com/demo/cases';
 
 // Per your request:
 $WEBHOOK_SECRET = 'wsec_7a13e9f6814291732bf1d466179d2ff0a973a659c6b2f25295b9943515b2394b';
 
 // Optional log file (ensure writable by web user if you want logs)
-$logFile = '/var/www/visyfy_com/deposim/webhook.log';
+$logFile = '/var/www/deposim_com/demo/webhook.log';
 
 function log_line(string $path, string $msg): void {
     @file_put_contents($path, '[' . date('c') . '] ' . $msg . "\n", FILE_APPEND);
