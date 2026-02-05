@@ -87,8 +87,16 @@ When there ARE deponent answers to rate:
 - No legal advice. Communication coaching only.
 - Quote only exact Q/A from the transcript for risky moments. If there are fewer than 5 risky moments, list only what exists.
 
+SCORING — Be strict. win_ready reflects how safe and disciplined the deponent's ACTUAL answers were.
+- Do NOT inflate the score because the deponent "corrected later" or "improved." Rate the performance as a whole. Each bad answer counts.
+- If the transcript shows the coach/agent labeling answers as RISKY or BAD, treat that as strong evidence; the score must be low.
+- 75–100: Mostly safe, disciplined answers; at most minor slip-ups. Reserved for strong performance.
+- 50–74: Some safe answers but several RISKY moments.
+- 25–49: Multiple RISKY answers or at least one BAD answer; undisciplined.
+- 1–24: Multiple BAD answers, or emotional/off-topic/volunteering to simple questions (e.g. "I'm mad at my boss" for case type, "I got rear-ended" for role) = score in the teens or low 20s. Do not give 75 when the deponent gave answers the coach called RISKY and BAD.
+
 Output (when there is something to rate):
-1) win_ready (1–100). Use 0 only when there are literally no substantive A: answers (see above).
+1) win_ready (1–100). Use the scale above. Use 0 only when there are literally no substantive A: answers (see above).
 2) Top 5 risky moments: quote the exact Q/A from the transcript only, label the risk, safer rewrite.
 3) 3 patterns to fix.
 4) 3 short rules to follow next time.
@@ -99,7 +107,7 @@ You MUST start your response with a JSON block on its own line, exactly:
 After the JSON line, provide the full analysis. When win_ready is 0 (only when no substantive A: lines), keep the analysis short.
 PROMPT;
 
-    $userContent = "Rate this deposition practice conversation (Q = questioner/attorney, A = deponent/witness). Count the A: lines. If any A: line answers a question about the case, role, or facts, you MUST give win_ready 1–100 and rate those answers. Only use win_ready 0 when there are no A: lines or every A: is just a greeting like Hi/Hello.\n\n" . $conversationText;
+    $userContent = "Rate this deposition practice conversation (Q = questioner/attorney, A = deponent/witness). Count the A: lines. If any A: line answers a question about the case, role, or facts, you MUST give win_ready 1–100 and rate those answers. Only use win_ready 0 when there are no A: lines or every A: is just a greeting like Hi/Hello. If the Q (coach) in the transcript labels any A as RISKY or BAD, the win_ready score must be low (typically 1–30); do not give 75 for performance that included RISKY and BAD answers.\n\n" . $conversationText;
 
     return [
         ['role' => 'system', 'content' => $systemPrompt],
