@@ -461,8 +461,6 @@ $csrf = csrf_token();
       margin-bottom:4px;
     }
     .muted{color:var(--muted2); font-size:12px; line-height:1.3}
-    .uuid-cell{ }
-    .mobile-deponent{ display:none; }
     .desc{
       color:var(--muted);
       font-size:13px;
@@ -600,6 +598,23 @@ $csrf = csrf_token();
     }
     .case-detail-top .case-kv-wrap{ flex:1; min-width:0; }
     .case-detail-top .btn-primary-wrap{ flex-shrink:0; }
+    /* Detail modal: mobile-friendly KV and layout */
+    @media (max-width: 768px){
+      .modal-backdrop{ padding:12px; align-items:flex-start; overflow-y:auto; }
+      .modal{ max-height:none; margin:auto 0; }
+      .modal .hd, .modal .bd{ padding:14px 16px; }
+      .case-detail-top{ flex-direction:column; gap:14px; }
+      .case-detail-top .btn-primary-wrap{ width:100%; }
+      .case-detail-top .btn-primary-wrap .btn{ width:100%; justify-content:center; }
+      .kv{
+        grid-template-columns: 1fr;
+        gap:4px 0;
+      }
+      .kv .k{ grid-column: 1; }
+      .kv .v{ grid-column: 1; word-break:break-word; overflow-wrap:break-word; }
+      .kv .k.case-id-label,
+      .kv .v.case-id-value{ display:none; }
+    }
     .panel h3{
       margin:0 0 10px;
       font-size:13px;
@@ -615,7 +630,7 @@ $csrf = csrf_token();
       line-height:1.4;
     }
     .kv .k{color:var(--muted2)}
-    .kv .v{color:var(--text); word-break:break-word}
+    .kv .v{color:var(--text); word-break:break-word; min-width:0;}
 
     .call{
       padding:12px 12px;
@@ -742,11 +757,9 @@ $csrf = csrf_token();
       text-align:center;
     }
 
-    /* Mobile: case table as cards, hide UUID, first col = Case # + Deponent */
+    /* Mobile: case table as cards, first col = Case # + Deponent */
     @media (max-width: 768px){
       .page{ padding:16px 12px 32px; }
-      #caseTable .uuid-cell{ display:none; }
-      .mobile-deponent{ display:block; margin-top:2px; }
       #caseTable thead th:nth-child(2),
       #caseTable tbody td.deponent-col{ display:none; }
       #caseTable thead{ display:none; }
@@ -862,8 +875,7 @@ $csrf = csrf_token();
               >
                 <td data-label="Case">
                   <div class="name">Case #<?php echo h($c['case_number'] ?: '(none)'); ?></div>
-                  <div class="muted uuid-cell"><?php echo h($c['case_id']); ?></div>
-                  <div class="mobile-deponent muted"><?php echo h($fullName ?: '(none)'); ?></div>
+                  <div class="muted"><?php echo h($fullName ?: '(none)'); ?></div>
                 </td>
 
                 <td data-label="Deponent" class="deponent-col">
@@ -1099,7 +1111,7 @@ $csrf = csrf_token();
     // KV
     const kv = $('detailKv');
     kv.innerHTML = `
-      <div class="k">Case ID</div><div class="v">${escapeHtml(safe(c.case_id))}</div>
+      <div class="k case-id-label">Case ID</div><div class="v case-id-value">${escapeHtml(safe(c.case_id))}</div>
       <div class="k">Case #</div><div class="v">${escapeHtml(safe(c.case_number))}</div>
       <div class="k">Deponent</div><div class="v">${escapeHtml(`${safe(c.first_name)} ${safe(c.last_name)}`.trim())}</div>
       <div class="k">Phone</div><div class="v">${escapeHtml(safe(c.phone))}</div>
