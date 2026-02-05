@@ -174,6 +174,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
     $first_name  = trim((string)($_POST['first_name'] ?? ''));
     $last_name   = trim((string)($_POST['last_name'] ?? ''));
     $phone       = trim((string)($_POST['phone'] ?? ''));
+    $email       = trim((string)($_POST['email'] ?? ''));
     $case_number = trim((string)($_POST['case_number'] ?? ''));
     $description = trim((string)($_POST['description'] ?? ''));
 
@@ -200,6 +201,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
                 'last_name' => $last_name,
                 'phone' => $phone,
                 'phone_normalized' => $phone_normalized,
+                'email' => $email,
             ],
             'description' => $description,
             'meta' => [
@@ -255,6 +257,7 @@ foreach ($caseFiles as $file) {
         'first_name' => safe_str($p['first_name'] ?? ''),
         'last_name' => safe_str($p['last_name'] ?? ''),
         'phone' => safe_str($p['phone'] ?? ''),
+        'email' => safe_str($p['email'] ?? ''),
         'description' => safe_str($c['description'] ?? ''),
         'created_at' => $created_at,
         'updated_at' => $updated_at,
@@ -282,6 +285,7 @@ foreach ($cases as $c) {
         'first_name' => $c['first_name'],
         'last_name' => $c['last_name'],
         'phone' => $c['phone'],
+        'email' => $c['email'] ?? '',
         'description' => $c['description'],
         'created_at' => $c['created_at'],
         'updated_at' => $c['updated_at'],
@@ -739,7 +743,7 @@ $csrf = csrf_token();
       <div class="toolbar">
         <div class="search">
           <span style="opacity:.65;">🔎</span>
-          <input id="search" type="text" placeholder="Search case #, name, phone, description..." autocomplete="off" />
+          <input id="search" type="text" placeholder="Search case #, name, phone, email, description..." autocomplete="off" />
         </div>
         <span class="pill" id="countPill"><?php echo count($cases); ?> cases</span>
       </div>
@@ -770,7 +774,7 @@ $csrf = csrf_token();
               <tr
                 data-case-id="<?php echo h($c['case_id']); ?>"
                 data-search="<?php echo h(strtolower(
-                  ($c['case_number'] . ' ' . $fullName . ' ' . $c['phone'] . ' ' . $desc . ' ' . $c['case_id'])
+                  ($c['case_number'] . ' ' . $fullName . ' ' . $c['phone'] . ' ' . ($c['email'] ?? '') . ' ' . $desc . ' ' . $c['case_id'])
                 )); ?>"
               >
                 <td>
@@ -840,12 +844,17 @@ $csrf = csrf_token();
           <div class="formgrid" style="margin-top:12px;">
             <div>
               <label>Phone Number</label>
-              <input name="phone" required>
+              <input name="phone" required type="tel">
             </div>
             <div>
               <label>Case Number</label>
               <input name="case_number" required>
             </div>
+          </div>
+
+          <div style="margin-top:12px;">
+            <label>Email</label>
+            <input name="email" type="email" placeholder="optional">
           </div>
 
           <div style="margin-top:12px;">
@@ -983,6 +992,7 @@ $csrf = csrf_token();
       <div class="k">Case #</div><div class="v">${escapeHtml(safe(c.case_number))}</div>
       <div class="k">Deponent</div><div class="v">${escapeHtml(`${safe(c.first_name)} ${safe(c.last_name)}`.trim())}</div>
       <div class="k">Phone</div><div class="v">${escapeHtml(safe(c.phone))}</div>
+      <div class="k">Email</div><div class="v">${escapeHtml(safe(c.email))}</div>
       <div class="k">Created</div><div class="v">${escapeHtml(safe(c.created_at))}</div>
       <div class="k">Updated</div><div class="v">${escapeHtml(safe(c.updated_at))}</div>
       <div class="k">Description</div><div class="v">${escapeHtml(safe(c.description))}</div>

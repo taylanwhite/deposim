@@ -77,10 +77,10 @@ function chatcompletion_build_messages(string $conversationText): array {
     $systemPrompt = <<<'PROMPT'
 You are a deposition conversation rater. You rate ONLY what is in the transcript. You never invent, assume, or hallucinate Q/A that is not there.
 
-CRITICAL — When to give win_ready 0:
-- If the transcript has NO deponent answers (no "A:" turns), or only the agent/questioner greeting with no back-and-forth, you MUST set win_ready to 0.
-- win_ready_reason must state clearly that there was no deposition conversation to rate (e.g. "No deponent answers in transcript; only the agent greeting. Nothing to rate.").
-- Do NOT make up example Q/A. Do NOT score based on hypotheticals. Only the actual transcript counts.
+CRITICAL — When to give win_ready 0 (and ONLY then):
+- win_ready 0 ONLY when: (1) there are zero "A:" lines, OR (2) every "A:" line is purely a greeting with no deposition content (e.g. only "Hi", "Hello", "Hello?" and no Q/A about case type, role, danger topics, or any deposition question).
+- If there is ANY "A:" line that answers a question (case type, role, facts, danger topics, or any deposition-style Q), you MUST rate the conversation. Give a score 1–100 and analyze. Short answers like "Injury." or "Personal injury" COUNT. Interrupted or rambling answers COUNT. "I was in an accident..." COUNTS. Even one substantive deponent answer means you MUST rate, not 0.
+- Do NOT return 0 claiming "partial Q/A" or "no full deponent answers" when the transcript clearly has A: lines answering questions. Rate what is there.
 
 When there ARE deponent answers to rate:
 - Be blunt. Flag volunteering, guessing/speculating, "always/never," motives/intent, legal conclusions, privilege/work-product.
@@ -88,7 +88,7 @@ When there ARE deponent answers to rate:
 - Quote only exact Q/A from the transcript for risky moments. If there are fewer than 5 risky moments, list only what exists.
 
 Output (when there is something to rate):
-1) win_ready (0–100). Use 0 if no deponent answers.
+1) win_ready (1–100). Use 0 only when there are literally no substantive A: answers (see above).
 2) Top 5 risky moments: quote the exact Q/A from the transcript only, label the risk, safer rewrite.
 3) 3 patterns to fix.
 4) 3 short rules to follow next time.
@@ -96,11 +96,10 @@ Output (when there is something to rate):
 
 You MUST start your response with a JSON block on its own line, exactly:
 {"win_ready": <number 0-100>, "win_ready_reason": "<short explanation>"}
-If there are no deponent answers, that line must be: win_ready 0 and a reason stating there was nothing to rate.
-After the JSON line, provide the full analysis. When win_ready is 0 due to no answers, keep the analysis short: state there was no conversation to rate and do not invent examples.
+After the JSON line, provide the full analysis. When win_ready is 0 (only when no substantive A: lines), keep the analysis short.
 PROMPT;
 
-    $userContent = "Rate this deposition practice conversation (Q = questioner/attorney, A = deponent/witness). Rate ONLY what appears below. If there are no A: lines, set win_ready to 0.\n\n" . $conversationText;
+    $userContent = "Rate this deposition practice conversation (Q = questioner/attorney, A = deponent/witness). Count the A: lines. If any A: line answers a question about the case, role, or facts, you MUST give win_ready 1–100 and rate those answers. Only use win_ready 0 when there are no A: lines or every A: is just a greeting like Hi/Hello.\n\n" . $conversationText;
 
     return [
         ['role' => 'system', 'content' => $systemPrompt],
