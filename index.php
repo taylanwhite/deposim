@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * DepoSim – Case Manager (case.php)
+ * DepoSim – Case Manager 
  *
  * Features:
  * - Production-style UI: case list table + “New Case” modal
@@ -858,7 +858,7 @@ $csrf = csrf_token();
         <button class="iconbtn" data-close="newModal">✕</button>
       </div>
       <div class="bd">
-        <form method="post" action="case.php" id="newCaseForm">
+        <form method="post" action="" id="newCaseForm">
           <input type="hidden" name="csrf" value="<?php echo h($csrf); ?>">
 
           <div class="formgrid">
