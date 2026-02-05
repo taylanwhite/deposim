@@ -640,9 +640,10 @@ $csrf = csrf_token();
         padding:0 16px;
       }
       .detail-history-table{ min-width:520px; }
+      .detail-history-table th:nth-child(2),
+      .detail-history-table td:nth-child(2){ display:none; }
       .detail-history-table th,
       .detail-history-table td{ padding:10px 8px; font-size:12px; white-space:nowrap; }
-      .detail-history-table td:nth-child(2){ white-space:normal; max-width:140px; }
     }
     .panel h3{
       margin:0 0 10px;
