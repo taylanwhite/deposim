@@ -6,7 +6,7 @@ date_default_timezone_set('America/Denver');
 $casesDir = '/var/www/deposim_com/demo/cases';
 
 // Per your request:
-$WEBHOOK_SECRET = 'wsec_7a13e9f6814291732bf1d466179d2ff0a973a659c6b2f25295b9943515b2394b';
+$WEBHOOK_SECRET = 'wsec_c8a3ae7470e6b38ae2c71ec74b6cc1a48f1c8905921fada9476b1fc36629559a';
 
 // Log files: $logDir = parent of $casesDir → /var/www/deposim_com/demo/webhook.log and webhook_errors.log
 // If these stay empty: (1) request may not hit this script — check nginx/apache error_log for the 500.
