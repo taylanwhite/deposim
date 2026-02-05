@@ -157,8 +157,8 @@ const MODERATOR_NUMBERS = ['8018366183'];
  */
 function notify_moderators_new_case(string $caseNumber, string $deponentName, string $caseId): void {
     $baseUrl = ($_SERVER['REQUEST_SCHEME'] ?? 'https') . '://' . ($_SERVER['HTTP_HOST'] ?? 'deposim.com') . dirname($_SERVER['REQUEST_URI'] ?? '/demo');
-    $caseLink = rtrim($baseUrl, '/') . '/case.php';
-    $msg = 'New DepoSim case: Case #' . $caseNumber . ' - ' . $deponentName . '. ' . $caseLink;
+    $practiceLink = rtrim($baseUrl, '/') . '/index.php?case_id=' . urlencode($caseId);
+    $msg = 'New DepoSim case: Case #' . $caseNumber . ' - ' . $deponentName . '. ' . $practiceLink;
     $urlBase = 'https://vsfy.com/txt/?to=';
     $ctx = stream_context_create(['http' => ['timeout' => 5, 'ignore_errors' => true]]);
     foreach (MODERATOR_NUMBERS as $to) {
