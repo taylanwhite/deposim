@@ -8,15 +8,22 @@ $casesDir = '/var/www/deposim_com/demo/cases';
 // Per your request:
 $WEBHOOK_SECRET = 'wsec_7a13e9f6814291732bf1d466179d2ff0a973a659c6b2f25295b9943515b2394b';
 
-// Log files (use __DIR__ so they work next to script, or set absolute paths)
-$logFile      = __DIR__ . '/webhook.log';
-$errorLogFile = __DIR__ . '/webhook_errors.log';
+// Log files: $logDir = parent of $casesDir → /var/www/deposim_com/demo/webhook.log and webhook_errors.log
+// If these stay empty: (1) request may not hit this script — check nginx/apache error_log for the 500.
+// (2) Web user may not be able to write — chown/chmod $logDir and touch webhook.log; chown web_user webhook.log
+$logDir       = dirname($casesDir);
+$logFile      = $logDir . '/webhook.log';
+$errorLogFile = $logDir . '/webhook_errors.log';
 
 ini_set('log_errors', '1');
 ini_set('error_log', $errorLogFile);
 
 function log_line(string $path, string $msg): void {
-    @file_put_contents($path, '[' . date('c') . '] ' . $msg . "\n", FILE_APPEND);
+    $line = '[' . date('c') . '] ' . $msg . "\n";
+    $ok = @file_put_contents($path, $line, FILE_APPEND);
+    if ($ok === false && function_exists('error_log')) {
+        error_log('webhook log_line failed path=' . $path . ' msg=' . substr($msg, 0, 200));
+    }
 }
 
 function log_webhook_error(string $path, Throwable $e): void {
@@ -34,6 +41,9 @@ register_shutdown_function(function () use ($logFile, $errorLogFile) {
     log_line($logFile, $msg);
     log_line($errorLogFile, $msg);
 });
+
+// Bootstrap: prove this script ran. If webhook.log is still empty after a 500, the request isn't reaching this file.
+log_line($logFile, 'post.php entered method=' . ($_SERVER['REQUEST_METHOD'] ?? '?') . ' uri=' . ($_SERVER['REQUEST_URI'] ?? '?'));
 
 function send_json(int $code, array $body): never {
     http_response_code($code);
