@@ -79,8 +79,10 @@ function latest_prompt_text(string $dir): string {
 // -------------------- load case --------------------
 
 $caseId = trim((string)($_GET['case_id'] ?? ''));
-if ($caseId === '') page_error('Missing case_id', 'Open this page as /deposim/?case_id=<uuid>.', 400);
-if (!is_uuid($caseId)) page_error('Invalid case_id', 'case_id must be a UUID.', 400);
+if ($caseId === '' || !is_uuid($caseId)) {
+    header('Location: /demo/');
+    exit;
+}
 
 $caseFile = $casesDir . '/case_' . $caseId . '.json';
 if (!is_file($caseFile)) {
