@@ -433,6 +433,13 @@ $csrf = csrf_token();
       padding:12px 14px;
       border-bottom:1px solid var(--border);
     }
+    thead th.sortable{
+      cursor:pointer;
+      user-select:none;
+    }
+    thead th.sortable:hover{ color:var(--muted); }
+    thead th.sortable[aria-sort="ascending"]::after{ content:" \2191"; opacity:.8; }
+    thead th.sortable[aria-sort="descending"]::after{ content:" \2193"; opacity:.8; }
     tbody td{
       padding:14px;
       border-bottom:1px solid rgba(255,255,255,.07);
@@ -454,6 +461,8 @@ $csrf = csrf_token();
       margin-bottom:4px;
     }
     .muted{color:var(--muted2); font-size:12px; line-height:1.3}
+    .uuid-cell{ }
+    .mobile-deponent{ display:none; }
     .desc{
       color:var(--muted);
       font-size:13px;
@@ -733,6 +742,42 @@ $csrf = csrf_token();
       text-align:center;
     }
 
+    /* Mobile: case table as cards, hide UUID, first col = Case # + Deponent */
+    @media (max-width: 768px){
+      .page{ padding:16px 12px 32px; }
+      #caseTable .uuid-cell{ display:none; }
+      .mobile-deponent{ display:block; margin-top:2px; }
+      #caseTable thead th:nth-child(2),
+      #caseTable tbody td.deponent-col{ display:none; }
+      #caseTable thead{ display:none; }
+      #caseTable, #caseTable tbody, #caseTable tr, #caseTable td{ display:block; }
+      #caseTable tr{
+        padding:14px 12px;
+        border-bottom:1px solid rgba(255,255,255,.1);
+        margin-bottom:0;
+        min-height:44px;
+      }
+      #caseTable td{
+        padding:6px 0;
+        border:none;
+      }
+      #caseTable td[data-label="Case"]{ padding-top:0; padding-bottom:8px; }
+      #caseTable td[data-label="Case"]::before{ display:none; }
+      #caseTable td[data-label="Phone"]::before,
+      #caseTable td[data-label="Updated"]::before,
+      #caseTable td[data-label="Sims"]::before,
+      #caseTable td[data-label="Win ready"]::before{
+        content: attr(data-label) " ";
+        font-size:11px;
+        text-transform:uppercase;
+        letter-spacing:.05em;
+        color:var(--muted2);
+        margin-right:6px;
+      }
+      .toolbar{ padding:12px; }
+      .search{ min-width:0; }
+    }
+
     a.link{
       color:var(--ok);
       text-decoration:none;
@@ -786,52 +831,59 @@ $csrf = csrf_token();
         <table id="caseTable">
           <thead>
             <tr>
-              <th>Case</th>
-              <th>Deponent</th>
-              <th>Phone</th>
-              <th>Updated</th>
-              <th>Calls</th>
-              <th>Win ready</th>
+              <th class="sortable" data-sort="case_number" tabindex="0" role="button" aria-sort="none">Case</th>
+              <th class="sortable" data-sort="deponent" tabindex="0" role="button" aria-sort="none">Deponent</th>
+              <th class="sortable" data-sort="phone" tabindex="0" role="button" aria-sort="none">Phone</th>
+              <th class="sortable" data-sort="updated" tabindex="0" role="button" aria-sort="none">Updated</th>
+              <th class="sortable" data-sort="sims" tabindex="0" role="button" aria-sort="none">Sims</th>
+              <th class="sortable" data-sort="win_ready" tabindex="0" role="button" aria-sort="none">Win ready</th>
             </tr>
           </thead>
           <tbody id="tbody">
             <?php foreach ($cases as $c):
               $callCount = (int) ($c['call_count'] ?? 0);
               $updated = $c['updated_at'] ?: $c['created_at'];
+              $updatedTs = $updated ? (string) strtotime($updated) : '0';
               $fullName = trim($c['first_name'] . ' ' . $c['last_name']);
               $desc = $c['description'] ?: '';
+              $wr = $c['latest_win_ready'] ?? null;
             ?>
               <tr
                 data-case-id="<?php echo h($c['case_id']); ?>"
                 data-search="<?php echo h(strtolower(
                   ($c['case_number'] . ' ' . $fullName . ' ' . $c['phone'] . ' ' . ($c['email'] ?? '') . ' ' . $desc . ' ' . $c['case_id'])
                 )); ?>"
+                data-case-number="<?php echo h($c['case_number'] ?? ''); ?>"
+                data-deponent="<?php echo h(strtolower($fullName)); ?>"
+                data-phone="<?php echo h($c['phone'] ?? ''); ?>"
+                data-updated="<?php echo h($updatedTs); ?>"
+                data-sims="<?php echo (int)$callCount; ?>"
+                data-win-ready="<?php echo $wr !== null ? (int)$wr : '-1'; ?>"
               >
-                <td>
+                <td data-label="Case">
                   <div class="name">Case #<?php echo h($c['case_number'] ?: '(none)'); ?></div>
-                  <div class="muted"><?php echo h($c['case_id']); ?></div>
+                  <div class="muted uuid-cell"><?php echo h($c['case_id']); ?></div>
+                  <div class="mobile-deponent muted"><?php echo h($fullName ?: '(none)'); ?></div>
                 </td>
 
-                <td>
+                <td data-label="Deponent" class="deponent-col">
                   <div class="name"><?php echo h($fullName ?: '(none)'); ?></div>
-                  <div class="desc"><?php echo h($desc); ?></div>
                 </td>
 
-                <td>
+                <td data-label="Phone">
                   <span class="chip"><?php echo h($c['phone'] ?: '(none)'); ?></span>
                 </td>
 
-                <td>
+                <td data-label="Updated">
                   <div class="muted"><?php echo h(fmt_date($updated)); ?></div>
                 </td>
 
-                <td>
-                  <span class="chip"><?php echo (int)$callCount; ?> call<?php echo $callCount === 1 ? '' : 's'; ?></span>
+                <td data-label="Sims">
+                  <span class="chip"><?php echo (int)$callCount; ?> sim<?php echo $callCount === 1 ? '' : 's'; ?></span>
                 </td>
 
-                <td>
+                <td data-label="Win ready">
                   <?php
-                  $wr = $c['latest_win_ready'] ?? null;
                   if ($wr !== null):
                     $hue = (int) round(120 * $wr / 100);
                     $bg = "hsl({$hue}, 65%, 38%)";
@@ -988,6 +1040,34 @@ $csrf = csrf_token();
   }
 
   search?.addEventListener('input', applyFilter);
+
+  // Sortable column headers
+  let sortDir = 1;
+  let sortCol = '';
+  document.querySelectorAll('#caseTable thead th.sortable').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.getAttribute('data-sort');
+      if (!key) return;
+      if (sortCol === key) sortDir = -sortDir; else sortDir = 1;
+      sortCol = key;
+      document.querySelectorAll('#caseTable thead th.sortable').forEach(h => h.setAttribute('aria-sort', 'none'));
+      th.setAttribute('aria-sort', sortDir === 1 ? 'ascending' : 'descending');
+      const rows = [...tbody.querySelectorAll('tr')];
+      rows.sort((a, b) => {
+        const attr = 'data-' + key.replace(/_/g, '-');
+        const va = a.getAttribute(attr) ?? '';
+        const vb = b.getAttribute(attr) ?? '';
+        const numA = key === 'updated' || key === 'sims' || key === 'win_ready' ? Number(va) : 0;
+        const numB = key === 'updated' || key === 'sims' || key === 'win_ready' ? Number(vb) : 0;
+        if (key === 'updated' || key === 'sims' || key === 'win_ready') {
+          return sortDir * (numA - numB);
+        }
+        return sortDir * String(va).localeCompare(String(vb), undefined, { sensitivity: 'base' });
+      });
+      rows.forEach(r => tbody.appendChild(r));
+    });
+    th.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); th.click(); } });
+  });
 
   // Row click -> Details
   function safe(v){
