@@ -77,6 +77,46 @@ function latest_win_ready_from_sims(string $simsDir, string $caseId): ?int {
     return max(0, min(100, (int) $data['win_ready']));
 }
 
+/**
+ * Load all sims for a case and return call-shaped entries for the UI.
+ * Each entry has call info (from sim.call) plus win_ready, win_ready_reason, win_ready_analysis.
+ */
+function get_calls_from_sims(string $simsDir, string $caseId): array {
+    $pattern = $simsDir . '/' . $caseId . '_*.json';
+    $files = glob($pattern);
+    if ($files === false || $files === []) {
+        return [];
+    }
+    usort($files, function (string $a, string $b) {
+        $ta = (int) preg_replace('/^.*_(\d+)\.json$/', '$1', $a);
+        $tb = (int) preg_replace('/^.*_(\d+)\.json$/', '$1', $b);
+        return $tb <=> $ta;
+    });
+    $calls = [];
+    foreach ($files as $file) {
+        $raw = @file_get_contents($file);
+        if ($raw === false) continue;
+        $data = json_decode($raw, true);
+        if (!is_array($data)) continue;
+        $call = is_array($data['call'] ?? null) ? $data['call'] : [];
+        $calls[] = [
+            'received_at_unix' => $data['created_at_unix'] ?? $call['received_at_unix'] ?? null,
+            'event_timestamp' => $call['event_timestamp'] ?? null,
+            'conversation_id' => $data['conversation_id'] ?? null,
+            'status' => $call['status'] ?? null,
+            'call_duration_secs' => $call['call_duration_secs'] ?? null,
+            'termination_reason' => $call['termination_reason'] ?? null,
+            'transcript_summary' => $call['transcript_summary'] ?? null,
+            'call_summary_title' => $call['call_summary_title'] ?? null,
+            'transcript' => $call['transcript'] ?? null,
+            'win_ready' => isset($data['win_ready']) ? max(0, min(100, (int) $data['win_ready'])) : null,
+            'win_ready_reason' => isset($data['win_ready_reason']) ? (string) $data['win_ready_reason'] : null,
+            'win_ready_analysis' => isset($data['win_ready_analysis']) ? (string) $data['win_ready_analysis'] : null,
+        ];
+    }
+    return $calls;
+}
+
 function safe_str(mixed $v): string {
     return is_string($v) ? $v : '';
 }
@@ -185,6 +225,8 @@ foreach ($caseFiles as $file) {
     $updated_at = safe_str($meta['updated_at'] ?? '');
 
     $latestWinReady = latest_win_ready_from_sims($simsDir, $cid);
+    $simFiles = glob($simsDir . '/' . $cid . '_*.json');
+    $callCount = $simFiles !== false ? count($simFiles) : 0;
 
     $cases[] = [
         'case_id' => $cid,
@@ -197,6 +239,7 @@ foreach ($caseFiles as $file) {
         'updated_at' => $updated_at,
         'elevenlabs' => safe_arr($c['elevenlabs'] ?? []),
         'latest_win_ready' => $latestWinReady,
+        'call_count' => $callCount,
     ];
 }
 
@@ -207,31 +250,10 @@ usort($cases, function($a, $b) use ($casesDir) {
     return $tb <=> $ta;
 });
 
-// Build compact payload for JS (case details)
+// Build compact payload for JS (case details) — calls come from /sims/, not case JSON
 $casesForJs = [];
 foreach ($cases as $c) {
-    // Keep only what we need to display
-    $postCalls = safe_arr($c['elevenlabs']['post_call'] ?? []);
-    // normalize minimal view + keep transcript if present
-    $calls = [];
-    foreach ($postCalls as $pc) {
-        if (!is_array($pc)) continue;
-        $meta = safe_arr($pc['metadata'] ?? []);
-        $analysis = safe_arr($pc['analysis'] ?? []);
-        $calls[] = [
-            'received_at_unix' => $pc['received_at_unix'] ?? null,
-            'event_timestamp' => $pc['event_timestamp'] ?? null,
-            'conversation_id' => $pc['conversation_id'] ?? null,
-            'status' => $pc['status'] ?? null,
-            'call_duration_secs' => $meta['call_duration_secs'] ?? null,
-            'termination_reason' => $meta['termination_reason'] ?? null,
-            'transcript_summary' => $analysis['transcript_summary'] ?? null,
-            'call_summary_title' => $analysis['call_summary_title'] ?? null,
-            'transcript' => $pc['transcript'] ?? null,
-            'analysis' => $analysis ?: null,
-            'metadata' => $meta ?: null,
-        ];
-    }
+    $calls = get_calls_from_sims($simsDir, $c['case_id']);
 
     $casesForJs[] = [
         'case_id' => $c['case_id'],
@@ -719,8 +741,7 @@ $csrf = csrf_token();
           </thead>
           <tbody id="tbody">
             <?php foreach ($cases as $c):
-              $calls = safe_arr($c['elevenlabs']['post_call'] ?? []);
-              $callCount = count($calls);
+              $callCount = (int) ($c['call_count'] ?? 0);
               $updated = $c['updated_at'] ?: $c['created_at'];
               $fullName = trim($c['first_name'] . ' ' . $c['last_name']);
               $desc = $c['description'] ?: '';
@@ -955,7 +976,7 @@ $csrf = csrf_token();
     const calls = Array.isArray(c.calls) ? c.calls : [];
 
     if (calls.length === 0) {
-      container.innerHTML = `<div class="muted">No ElevenLabs calls yet for this case.</div>`;
+      container.innerHTML = `<div class="muted">No rated calls (sims) yet for this case.</div>`;
     } else {
       // newest first by event_timestamp/received
       calls.sort((a,b) => (Number(b.event_timestamp||0) - Number(a.event_timestamp||0)));
@@ -982,6 +1003,12 @@ $csrf = csrf_token();
         }).join('');
 
         const hasTranscript = transcript.length > 0;
+        const wr = call.win_ready != null ? Number(call.win_ready) : null;
+        const wrHue = wr != null ? Math.round(120 * wr / 100) : 0;
+        const wrBg = wr != null ? `hsl(${wrHue}, 65%, 38%)` : 'transparent';
+        const wrTag = wr != null ? `<span class="win-ready-pill" style="background:${wrBg};color:rgba(255,255,255,.95);" title="Win ready: ${wr}">${wr}</span>` : '';
+        const wrReason = (call.win_ready_reason || '').trim();
+        const wrAnalysis = (call.win_ready_analysis || '').trim();
 
         return `
           <div class="call">
@@ -994,15 +1021,25 @@ $csrf = csrf_token();
                   ${convo ? `<div>Conversation: <span class="muted">${escapeHtml(convo)}</span></div>` : ''}
                 </div>
               </div>
-              <div class="tag">${escapeHtml(hasTranscript ? 'Transcript' : 'No transcript')}</div>
+              <div style="display:flex;align-items:center;gap:8px;">
+                ${wrTag}
+                <div class="tag">${escapeHtml(hasTranscript ? 'Transcript' : 'No transcript')}</div>
+              </div>
             </div>
 
             ${summary ? `<div class="muted" style="margin-top:8px;">${escapeHtml(summary)}</div>` : ''}
+            ${wrReason ? `<div class="muted" style="margin-top:6px;font-size:12px;">${escapeHtml(wrReason)}</div>` : ''}
 
             ${hasTranscript ? `
               <details>
                 <summary>View transcript</summary>
                 <div class="transcript">${transcriptHtml}</div>
+              </details>
+            ` : ''}
+            ${wrAnalysis ? `
+              <details style="margin-top:8px;">
+                <summary>Win ready analysis</summary>
+                <div class="muted" style="white-space:pre-wrap;font-size:12px;margin-top:6px;">${escapeHtml(wrAnalysis)}</div>
               </details>
             ` : ''}
           </div>
