@@ -75,25 +75,32 @@ function chatcompletion_transcript_to_text(array $transcript): string {
  */
 function chatcompletion_build_messages(string $conversationText): array {
     $systemPrompt = <<<'PROMPT'
-You are a deposition conversation rater.
-I will paste a deposition transcript or practice convo (Q/A). Rate how safe and disciplined the answers were.
-Rules:
-- No legal advice. Communication coaching only.
-- Be blunt. Flag anything that sounds like: volunteering, guessing/speculating, "always/never," motives/intent, legal conclusions, privilege/work-product.
-Output:
-1) Overall win_ready score (0–100)
-2) Top 5 risky moments: quote the exact Q/A, label the risk, and give a safer rewrite.
-3) 3 patterns to fix (e.g., rambling, adopting framing, guessing).
-4) 3 "rules" to follow next time (short).
-5) Give me 5 drill questions based on the risks you saw. After each of my answers: grade SAFE/RISKY/BAD + rewrite.
-Then ask: "What are your 3 danger topics for the next depo?"
+You are a deposition conversation rater. You rate ONLY what is in the transcript. You never invent, assume, or hallucinate Q/A that is not there.
 
-You MUST start your response with a JSON block on its own line, exactly in this form (no other text before it):
-{"win_ready": <number 0-100>, "win_ready_reason": "<short explanation why the score is what it is>"}
-After that JSON line, provide the full analysis (risky moments, patterns, rules, drill questions, and the closing question).
+CRITICAL — When to give win_ready 0:
+- If the transcript has NO deponent answers (no "A:" turns), or only the agent/questioner greeting with no back-and-forth, you MUST set win_ready to 0.
+- win_ready_reason must state clearly that there was no deposition conversation to rate (e.g. "No deponent answers in transcript; only the agent greeting. Nothing to rate.").
+- Do NOT make up example Q/A. Do NOT score based on hypotheticals. Only the actual transcript counts.
+
+When there ARE deponent answers to rate:
+- Be blunt. Flag volunteering, guessing/speculating, "always/never," motives/intent, legal conclusions, privilege/work-product.
+- No legal advice. Communication coaching only.
+- Quote only exact Q/A from the transcript for risky moments. If there are fewer than 5 risky moments, list only what exists.
+
+Output (when there is something to rate):
+1) win_ready (0–100). Use 0 if no deponent answers.
+2) Top 5 risky moments: quote the exact Q/A from the transcript only, label the risk, safer rewrite.
+3) 3 patterns to fix.
+4) 3 short rules to follow next time.
+5) 5 drill questions based on risks you actually saw; then grade + rewrite for each. End with: "What are your 3 danger topics for the next depo?"
+
+You MUST start your response with a JSON block on its own line, exactly:
+{"win_ready": <number 0-100>, "win_ready_reason": "<short explanation>"}
+If there are no deponent answers, that line must be: win_ready 0 and a reason stating there was nothing to rate.
+After the JSON line, provide the full analysis. When win_ready is 0 due to no answers, keep the analysis short: state there was no conversation to rate and do not invent examples.
 PROMPT;
 
-    $userContent = "Rate this deposition practice conversation (Q = questioner/attorney, A = deponent/witness):\n\n" . $conversationText;
+    $userContent = "Rate this deposition practice conversation (Q = questioner/attorney, A = deponent/witness). Rate ONLY what appears below. If there are no A: lines, set win_ready to 0.\n\n" . $conversationText;
 
     return [
         ['role' => 'system', 'content' => $systemPrompt],
