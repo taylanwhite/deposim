@@ -22,6 +22,8 @@ $baseDir  = __DIR__;
 $casesDir = $baseDir . '/cases';
 $simsDir  = $baseDir . '/sims';
 
+$defaultCaseDescription = 'My client Mr. Steve Smith was injured when he was traveling North on State Road 441 in Boca Raton.  While stopped at a light at the intersection of Clintmore road and 441, Mr. Smith was rear ended by Defendant Jane Doe.  Mr. Smith was transported by ems to West Boca Regional Medial Center for neck and back pain.  The property damage to his car was over $5,000.  Since the accident Mr. Smith has treated with a chiropractor, had a mri which had positive findings and has a surgical recommendation.  The policy limits of the defendant are $100k.';
+
 if (!is_dir($casesDir)) {
     @mkdir($casesDir, 0775, true);
 }
@@ -972,7 +974,7 @@ $csrf = csrf_token();
 
           <div style="margin-top:12px;">
             <label>Case Description</label>
-            <textarea name="description" required></textarea>
+            <textarea name="description" required><?php echo h($defaultCaseDescription); ?></textarea>
           </div>
 
           <div class="formactions">
