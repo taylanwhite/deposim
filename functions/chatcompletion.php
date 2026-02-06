@@ -124,9 +124,7 @@ function chatcompletion_call_openai(array $messages, string $apiKey): array {
     $url = 'https://api.openai.com/v1/chat/completions';
     $body = [
         'model' => 'gpt-4o',
-        'messages' => $messages,
-        'temperature' => 0.3,
-        'max_tokens' => 4096,
+        'messages' => $messages
     ];
 
     $ctx = stream_context_create([

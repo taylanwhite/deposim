@@ -225,8 +225,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
                 @unlink($tmp);
                 $create_error = 'Unable to write case file. Check permissions on ./cases.';
             } else {
-                $deponentName = trim($first_name . ' ' . $last_name) ?: 'Unknown';
-                notify_moderators_new_case($case_number, $deponentName, $case_id);
+                notify_moderators_new_case($case_number, $first_name, $last_name, $case_id);
                 header('Location: /demo/?created=' . urlencode($case_id));
                 exit;
             }
