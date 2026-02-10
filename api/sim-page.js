@@ -74,7 +74,11 @@ async function handleSimPage(req, res, prisma) {
 
     // First message (English) - for dynamic variable "first_message"
     const fmPrompt = await prisma.prompt.findFirst({
-      where: { type: 'first_message', isActive: true, language: { in: ['en', null] } },
+      where: {
+        type: 'first_message',
+        isActive: true,
+        OR: [{ language: 'en' }, { language: null }],
+      },
       orderBy: { updatedAt: 'desc' },
     });
     firstMessage = fmPrompt?.content || 'Hello, I will be conducting your deposition practice today.';
