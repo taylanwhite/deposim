@@ -11,16 +11,150 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  companies  Company[]
+  clients    Client[]
+  cases      Case[]
+  brandings  Branding[] @relation("BrandingOrganization")
+
+  @@map("organizations")
+}
+
+model Company {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  name           String
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  clients     Client[]
+  cases       Case[]
+  brandings   Branding[]   @relation("BrandingCompany")
+
+  @@map("companies")
+}
+
+model Client {
+  id               String   @id @default(cuid())
+  organizationId   String   @map("organization_id")
+  companyId        String?  @map("company_id")
+  name             String
+  email            String?
+  phone            String?
+  consentCamera    Boolean  @default(false) @map("consent_camera")
+  consentMicrophone Boolean @default(false) @map("consent_microphone")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  company     Company?     @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  cases       Case[]
+  brandings   Branding[]   @relation("BrandingClient")
+
+  @@map("clients")
+}
+
 model Case {
-  id          String   @id @default(cuid())
-  caseNumber  String   @map("case_number")
-  firstName   String   @map("first_name")
-  lastName    String   @map("last_name")
-  phone       String
-  email       String?
-  description String
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  id             String   @id @default(cuid())
+  organizationId String?  @map("organization_id")
+  companyId      String?  @map("company_id")
+  clientId       String?  @map("client_id")
+  caseNumber     String   @map("case_number")
+  firstName      String   @map("first_name")
+  lastName       String   @map("last_name")
+  phone          String
+  email          String?
+  description    String
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  company      Company?     @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  client       Client?     @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  simulations  Simulation[]
 
   @@map("cases")
+}
+
+model Branding {
+  id             String  @id @default(cuid())
+  organizationId  String? @map("organization_id")
+  companyId       String? @map("company_id")
+  clientId       String? @map("client_id")
+  accentColor     String  @default("#64d2ff") @map("accent_color")
+  brandColor      String  @default("#0b0c10") @map("brand_color")
+  logoUrl         String? @map("logo_url")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  organization Organization? @relation("BrandingOrganization", fields: [organizationId], references: [id], onDelete: Cascade)
+  company      Company?     @relation("BrandingCompany", fields: [companyId], references: [id], onDelete: Cascade)
+  client       Client?      @relation("BrandingClient", fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@map("brandings")
+}
+
+model AppSettings {
+  id        String   @id @default(cuid())
+  theme     String   @default("dark") // 'dark' | 'light'
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("app_settings")
+}
+
+enum PromptType {
+  system
+  first_message
+  media_analysis
+}
+
+model Prompt {
+  id        String     @id @default(cuid())
+  type      PromptType
+  name      String
+  content   String
+  isActive  Boolean    @default(true) @map("is_active")
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
+
+  @@map("prompts")
+}
+
+model Simulation {
+  id                String   @id @default(cuid())
+  caseId            String   @map("case_id")
+  conversationId    String?  @map("conversation_id")
+  eventType         String?  @map("event_type")
+  agentId           String?  @map("agent_id")
+  status            String?
+  winReady          Int?     @map("win_ready")
+  winReadyReason    String?  @map("win_ready_reason")
+  winReadyAnalysis  String?  @map("win_ready_analysis")
+  transcript        Json?
+  callDurationSecs  Int?     @map("call_duration_secs")
+  transcriptSummary String?  @map("transcript_summary")
+  callSummaryTitle  String?  @map("call_summary_title")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@map("simulations")
+}
+
+model VideoAnalysis {
+  id            String   @id @default(cuid())
+  youtubeUrl    String   @map("youtube_url")
+  promptId      String?  @map("prompt_id")
+  model         String   @default("gemini-2.5-flash")
+  analysisText  String   @map("analysis_text")
+  durationMs    Int?     @map("duration_ms")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@map("video_analyses")
 }

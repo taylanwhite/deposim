@@ -1,7 +1,3 @@
-# runtime/data
-cases/
-webhook.log
-
 # editor / OS junk
 *.swp
 *.swo
@@ -24,3 +20,10 @@ client/dist/
 *.log
 npm-debug.log*
 .prisma/
+
+# legacy PHP data (now in Neon DB)
+cases/
+sims/
+webhook.log
+webhook_errors.log
+prompt_learning/

@@ -1,24 +1,57 @@
-:root {
-  --bg: #0b0c10;
-  --card: rgba(255, 255, 255, 0.06);
+:root,
+[data-theme="dark"] {
+  --bg: #0d0d0f;
+  --bg2: #111111;
+  --card: #161618;
   --border: rgba(255, 255, 255, 0.1);
-  --text: rgba(255, 255, 255, 0.92);
-  --muted: rgba(255, 255, 255, 0.72);
-  --accent: #64d2ff;
+  --text: #ffffff;
+  --muted: rgba(255, 255, 255, 0.55);
+  --accent: #7c4dff;
+  --accent-end: #be29ec;
+  --gradient: linear-gradient(135deg, #6236ff 0%, #be29ec 100%);
+  --tab-bg: #0d0d0f;
+  --tab-border: rgba(255, 255, 255, 0.08);
 }
 
-* {
-  box-sizing: border-box;
+[data-theme="light"] {
+  --bg: #fff;
+  --bg2: #fafafa;
+  --card: #fff;
+  --border: rgba(0, 0, 0, 0.08);
+  --text: #111;
+  --muted: rgba(0, 0, 0, 0.45);
+  --accent: #6236ff;
+  --accent-end: #be29ec;
+  --gradient: linear-gradient(135deg, #6236ff 0%, #be29ec 100%);
+  --tab-bg: #fff;
+  --tab-border: rgba(0, 0, 0, 0.08);
 }
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-  margin: 0;
-  min-height: 100vh;
   background: var(--bg);
   color: var(--text);
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+[data-theme="dark"] body {
+  background: radial-gradient(ellipse 120% 80% at 70% -20%, rgba(98, 54, 255, 0.08) 0%, transparent 50%),
+    radial-gradient(ellipse 80% 60% at 10% 40%, rgba(190, 41, 236, 0.06) 0%, transparent 50%),
+    var(--bg);
 }
 
 #root {
   min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
 }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-end); }
+button { font-family: inherit; }
+input, textarea, select { font-family: inherit; }

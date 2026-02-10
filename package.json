@@ -14,9 +14,11 @@
     "postinstall": "npm run prisma:generate"
   },
   "dependencies": {
+    "@google/genai": "^1.0.0",
     "@prisma/client": "^5.22.0",
     "cors": "^2.8.5",
-    "express": "^4.21.0"
+    "express": "^4.21.0",
+    "multer": "^1.4.5-lts.1"
   },
   "devDependencies": {
     "concurrently": "^9.0.1",
