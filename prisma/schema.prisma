@@ -118,6 +118,7 @@ model Prompt {
   id        String     @id @default(cuid())
   type      PromptType
   name      String
+  language  String?    // e.g. 'en', 'es' for first_message; null = language-agnostic
   content   String
   isActive  Boolean    @default(true) @map("is_active")
   createdAt DateTime   @default(now()) @map("created_at")

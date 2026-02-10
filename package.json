@@ -11,7 +11,8 @@
     "start": "cd client && npm run preview",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
-    "postinstall": "npm run prisma:generate"
+    "postinstall": "npm run prisma:generate",
+    "prisma:seed": "node prisma/seed.js"
   },
   "dependencies": {
     "@google/genai": "^1.0.0",
@@ -26,5 +27,8 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
   }
 }

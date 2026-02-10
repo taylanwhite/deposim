@@ -493,10 +493,12 @@ app.get('/api/prompts', async (req, res) => {
   try {
     const type = req.query.type;
     const active = req.query.active;
+    const language = req.query.language;
     const where = {};
     if (type && VALID_PROMPT_TYPES.includes(type)) where.type = type;
     if (active === 'true') where.isActive = true;
     if (active === 'false') where.isActive = false;
+    if (language !== undefined && language !== '') where.language = language || null;
     const list = await prisma.prompt.findMany({ where, orderBy: { createdAt: 'desc' } });
     res.json(list);
   } catch (err) {
@@ -518,7 +520,7 @@ app.get('/api/prompts/:id', async (req, res) => {
 
 app.post('/api/prompts', async (req, res) => {
   try {
-    const { type, name, content, isActive } = req.body;
+    const { type, name, language, content, isActive } = req.body;
     if (!type || !VALID_PROMPT_TYPES.includes(type))
       return res.status(400).json({ error: 'type must be one of: ' + VALID_PROMPT_TYPES.join(', ') });
     if (!name || !String(name).trim())
@@ -529,6 +531,7 @@ app.post('/api/prompts', async (req, res) => {
       data: {
         type,
         name: String(name).trim(),
+        language: language != null && language !== '' ? String(language) : null,
         content: String(content).trim(),
         isActive: isActive !== undefined ? Boolean(isActive) : true,
       },
@@ -542,7 +545,7 @@ app.post('/api/prompts', async (req, res) => {
 
 app.patch('/api/prompts/:id', async (req, res) => {
   try {
-    const { type, name, content, isActive } = req.body;
+    const { type, name, language, content, isActive } = req.body;
     const data = {};
     if (type !== undefined) {
       if (!VALID_PROMPT_TYPES.includes(type))
@@ -550,6 +553,7 @@ app.patch('/api/prompts/:id', async (req, res) => {
       data.type = type;
     }
     if (name != null) data.name = String(name).trim();
+    if (language !== undefined) data.language = language != null && language !== '' ? String(language) : null;
     if (content != null) data.content = String(content).trim();
     if (isActive !== undefined) data.isActive = Boolean(isActive);
     const p = await prisma.prompt.update({ where: { id: req.params.id }, data });

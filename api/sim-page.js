@@ -72,16 +72,16 @@ async function handleSimPage(req, res, prisma) {
     });
     depoPrompt = sysPrompt?.content || 'No system prompt configured. Add one in Settings → Prompts.';
 
-    // First message (English)
+    // First message (English) - for dynamic variable "first_message"
     const fmPrompt = await prisma.prompt.findFirst({
-      where: { type: 'first_message', isActive: true, name: { not: { contains: 'spanish' } } },
+      where: { type: 'first_message', isActive: true, language: { in: ['en', null] } },
       orderBy: { updatedAt: 'desc' },
     });
     firstMessage = fmPrompt?.content || 'Hello, I will be conducting your deposition practice today.';
 
-    // First message (Spanish)
+    // First message (Spanish) - for dynamic variable "primer_mensaje" (ElevenLabs override)
     const fmSpanish = await prisma.prompt.findFirst({
-      where: { type: 'first_message', isActive: true, name: { contains: 'spanish' } },
+      where: { type: 'first_message', isActive: true, language: 'es' },
       orderBy: { updatedAt: 'desc' },
     });
     primerMensaje = fmSpanish?.content || '';
