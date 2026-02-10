@@ -1,0 +1,26 @@
+// Prisma schema for Neon (serverless Postgres)
+// Set DATABASE_URL in .env (e.g. from Neon dashboard)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Case {
+  id          String   @id @default(cuid())
+  caseNumber  String   @map("case_number")
+  firstName   String   @map("first_name")
+  lastName    String   @map("last_name")
+  phone       String
+  email       String?
+  description String
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("cases")
+}

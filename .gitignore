@@ -14,3 +14,13 @@ webhook.log
 *.tar.gz
 
 .env
+.env.local
+.env.*.local
+
+# Node / app
+node_modules/
+client/node_modules/
+client/dist/
+*.log
+npm-debug.log*
+.prisma/
