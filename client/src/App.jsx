@@ -162,6 +162,70 @@ function PromptCoachInline({ prompt, onPromptUpdated, showToast }) {
   );
 }
 
+/* ===== Simulation Coach Chat (on simulation detail page) ===== */
+function SimulationCoachChat({ simulationId, introMessage }) {
+  const [messages, setMessages] = useState([
+    { role: 'assistant', content: introMessage || 'Ask me anything about this simulation — why the score was what it was, what to improve, or deposition strategy.' },
+  ]);
+  const [input, setInput] = useState('');
+  const [sending, setSending] = useState(false);
+  const chatEndRef = useRef(null);
+
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+
+  const handleSend = async (e) => {
+    e.preventDefault();
+    const text = input.trim();
+    if (!text || sending) return;
+    const userMsg = { role: 'user', content: text };
+    const updated = [...messages, userMsg];
+    setMessages(updated);
+    setInput('');
+    setSending(true);
+    try {
+      const r = await fetch(API + '/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: updated, simulationId: simulationId || null }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Failed');
+      setMessages(prev => [...prev, { role: 'assistant', content: data.content }]);
+    } catch (err) {
+      setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, something went wrong: ' + err.message }]);
+    } finally { setSending(false); }
+  };
+
+  const quickQuestions = ['Why was the score low?', 'What should I improve?', 'Give me 3 tips', 'What did I do well?'];
+
+  return (
+    <div className="coach-chat coach-embedded">
+      <div className="coach-messages">
+        {messages.map((m, i) => (
+          <div key={i} className={`coach-msg ${m.role}`}>
+            <div className="coach-msg-bubble">{m.content}</div>
+          </div>
+        ))}
+        {sending && <div className="coach-msg assistant"><div className="coach-msg-bubble coach-typing">Thinking…</div></div>}
+        <div ref={chatEndRef} />
+      </div>
+      {messages.length <= 1 && simulationId && (
+        <div className="coach-quick">
+          {quickQuestions.map((q, i) => (
+            <button key={i} className="coach-quick-btn" onClick={() => setInput(q)} disabled={sending}>{q}</button>
+          ))}
+        </div>
+      )}
+      <form className="coach-input-bar" onSubmit={handleSend}>
+        <input className="coach-input" value={input} onChange={e => setInput(e.target.value)} placeholder="Ask about this simulation…" disabled={sending} />
+        <button className="coach-send-btn" type="submit" disabled={sending || !input.trim()}>
+          <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+        </button>
+      </form>
+    </div>
+  );
+}
+
 /* ===== Simulation Feed (Sims tab) ===== */
 function SimsFeed({ goDetail }) {
   const [sims, setSims] = useState([]);
@@ -941,6 +1005,15 @@ function MainApp() {
                     {d.bodyAnalysisModel ? 'Processing…' : 'No body language recording was captured for this simulation.'}
                   </p>
                 )}
+              </CollapsibleSection>
+
+              <CollapsibleSection title="AI Coach" defaultOpen={false}>
+                <SimulationCoachChat
+                  simulationId={d.id}
+                  introMessage={d.callSummaryTitle
+                    ? `I've loaded **${d.callSummaryTitle}** (Score: ${d.score != null ? d.score + '%' : 'N/A'}). Ask me why the score was what it was, what to improve, or how to prepare better for your next deposition.`
+                    : 'Ask me anything about this simulation — performance, improvements, or deposition strategy.'}
+                />
               </CollapsibleSection>
             </div>
           </div>

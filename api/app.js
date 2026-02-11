@@ -991,7 +991,7 @@ app.get('/api/sim/:caseId', (req, res) => {
   res.redirect(302, `/sim/${req.params.caseId}`);
 });
 
-// ---------- AI Coach Chat (simulation analysis & prompt improvement) ----------
+// ---------- AI Coach Chat (simulation analysis & deposition coaching) ----------
 app.post('/api/chat', async (req, res) => {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
@@ -1033,29 +1033,16 @@ ${transcriptText ? '\n--- TRANSCRIPT ---\n' + transcriptText : ''}
       }
     }
 
-    // Also load current active system prompt for prompt-improvement questions
-    let activeSystemPrompt = '';
-    try {
-      const sp = await prisma.prompt.findFirst({
-        where: { type: 'system', isActive: true },
-        orderBy: { updatedAt: 'desc' },
-      });
-      if (sp) activeSystemPrompt = sp.content;
-    } catch (_) {}
-
     const systemMessage = {
       role: 'system',
       content: `You are an expert deposition preparation coach and AI simulation analyst for DepoSim, a legal technology platform. You help attorneys and legal professionals:
 
 1. **Analyze simulation results**: Explain why scores are high or low, identify weak points in the deponent's performance, and suggest specific improvements.
-2. **Improve prompts**: When asked about the deposition simulation prompt, analyze whether it effectively tests the deponent and suggest improvements.
-3. **Strategic coaching**: Provide actionable advice on deposition preparation strategy, common pitfalls, and how to better prepare clients.
+2. **Strategic coaching**: Provide actionable advice on deposition preparation strategy, common pitfalls, and how to better prepare clients for their next deposition.
 
-Be concise but thorough. Use bullet points for clarity. When discussing scores, reference specific parts of the transcript or analysis. When suggesting prompt improvements, explain the reasoning.
+Be concise but thorough. Use bullet points for clarity. When discussing scores, reference specific parts of the transcript or analysis.
 
-${simContext}
-
-${activeSystemPrompt ? '--- CURRENT SYSTEM PROMPT (for the AI opposing counsel) ---\n' + activeSystemPrompt.slice(0, 3000) + (activeSystemPrompt.length > 3000 ? '\n[truncated]' : '') + '\n--- END PROMPT ---' : ''}`,
+${simContext}`,
     };
 
     // Only take last 20 messages to stay within context limits
