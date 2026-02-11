@@ -1016,6 +1016,7 @@ Status: ${sim.status || 'N/A'}
 Summary: ${sim.callSummaryTitle || 'N/A'}
 Transcript Summary: ${sim.transcriptSummary || 'N/A'}
 Full Analysis: ${sim.fullAnalysis || 'N/A'}
+Body Language Analysis: ${sim.bodyAnalysis || 'N/A'}
 ${transcriptText ? '\n--- TRANSCRIPT ---\n' + transcriptText : ''}
 --- END CONTEXT ---`;
       }
