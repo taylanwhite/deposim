@@ -54,10 +54,19 @@ You MUST start your response with a JSON block on its own line, exactly:
 {"score": <number 0-100>, "score_reason": "<short explanation>"}
 After the JSON line, provide the full analysis (do NOT repeat the score or score_reason). When score is 0 (only when no substantive A: lines), keep the analysis short.`;
 
+/** Required output format appended to custom score prompts from DB */
+const SCORE_OUTPUT_FORMAT = `
+
+You MUST start your response with a JSON block on its own line, exactly:
+{"score": <number 0-100>, "score_reason": "<short explanation>"}
+After the JSON line, provide the full analysis (do NOT repeat the score or score_reason).`;
+
 /**
  * Build the messages array for OpenAI chat completion.
+ * @param {string} conversationText - Q/A transcript
+ * @param {string|null} scorePrompt - Optional system prompt from DB; when provided, replaces the default
  */
-function buildMessages(conversationText) {
+function buildMessages(conversationText, scorePrompt = null) {
   const userContent =
     'Rate this deposition practice conversation (Q = questioner/attorney, A = deponent/witness). ' +
     'Count the A: lines. If any A: line answers a question about the case, role, or facts, you MUST give score 1–100 and rate those answers. ' +
@@ -66,8 +75,11 @@ function buildMessages(conversationText) {
     'do not give 75 for performance that included RISKY and BAD answers.\n\n' +
     conversationText;
 
+  const custom = scorePrompt && String(scorePrompt).trim();
+  const systemContent = custom ? custom + SCORE_OUTPUT_FORMAT : SYSTEM_PROMPT;
+
   return [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: systemContent },
     { role: 'user', content: userContent },
   ];
 }
@@ -76,16 +88,17 @@ function buildMessages(conversationText) {
  * Call OpenAI GPT-4o and parse score + analysis.
  *
  * @param {Array} transcript - ElevenLabs transcript array
+ * @param {string|null} [scorePrompt] - Optional system prompt from DB. When provided, replaces the default prompt (allows dynamic scoring strictness).
  * @returns {{ success: boolean, score?: number, scoreReason?: string, fullAnalysis?: string, error?: string }}
  */
-async function analyzeDeposition(transcript) {
+async function analyzeDeposition(transcript, scorePrompt = null) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return { success: false, error: 'OPENAI_API_KEY not set' };
 
   const conversationText = transcriptToText(transcript);
   if (!conversationText) return { success: false, error: 'Transcript is empty or has no readable Q/A turns.' };
 
-  const messages = buildMessages(conversationText);
+  const messages = buildMessages(conversationText, scorePrompt);
 
   let raw;
   try {
@@ -147,4 +160,9 @@ async function analyzeDeposition(transcript) {
   };
 }
 
-module.exports = { transcriptToText, analyzeDeposition };
+/** Default score analysis prompt (for creating first score prompt from UI) */
+function getDefaultScorePrompt() {
+  return SYSTEM_PROMPT;
+}
+
+module.exports = { transcriptToText, analyzeDeposition, getDefaultScorePrompt };

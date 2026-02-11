@@ -40,16 +40,25 @@ function AudioVisualizer({ getInputData, getOutputData, isSpeaking }) {
       const radius = Math.min(width, height) / 2 - 8;
       const barCount = 64;
       const smoothing = 0.7;
+      const t = Date.now() / 1000;
 
       let prevInput = (canvas._prevInput = canvas._prevInput || new Uint8Array(barCount));
       let prevOutput = (canvas._prevOutput = canvas._prevOutput || new Uint8Array(barCount));
 
       for (let i = 0; i < barCount; i++) {
-        const inputIdx = hasInput ? Math.floor((i / barCount) * inputData.length) : 0;
-        const outputIdx = hasOutput ? Math.floor((i / barCount) * outputData.length) : 0;
-        const inputVal = hasInput ? inputData[inputIdx] / 255 : 0;
-        const outputVal = hasOutput ? outputData[outputIdx] / 255 : 0;
-        const combined = Math.max(inputVal * 0.6, outputVal) * (isSpeaking ? 1.2 : 0.8);
+        let combined = 0;
+        if (hasInput || hasOutput) {
+          const inputIdx = hasInput ? Math.floor((i / barCount) * inputData.length) : 0;
+          const outputIdx = hasOutput ? Math.floor((i / barCount) * outputData.length) : 0;
+          const inputVal = hasInput ? inputData[inputIdx] / 255 : 0;
+          const outputVal = hasOutput ? outputData[outputIdx] / 255 : 0;
+          combined = Math.max(inputVal * 0.6, outputVal) * (isSpeaking ? 1.2 : 0.8);
+        } else {
+          // Idle animation — stronger pulse when agent is speaking
+          const base = 0.15 + 0.08 * Math.sin(t * 2 + i * 0.2);
+          const speakingBoost = isSpeaking ? 0.4 + 0.25 * Math.sin(t * 3) : 0;
+          combined = (base + speakingBoost);
+        }
         prevInput[i] = prevInput[i] * smoothing + combined * (1 - smoothing);
         prevOutput[i] = prevOutput[i] * smoothing + combined * (1 - smoothing);
       }
@@ -200,6 +209,16 @@ function SimPage() {
 
   const handleMessage = useCallback((event) => {
     if (!event) return;
+    // Normalized format from React SDK: { source: 'ai'|'user', role, message }
+    if (event.source === 'ai' && event.role === 'agent' && event.message) {
+      setMessages((prev) => [...prev.filter((m) => m.role !== 'agent_streaming'), { role: 'agent', text: event.message }]);
+      return;
+    }
+    if (event.source === 'user' && event.message) {
+      setMessages((prev) => [...prev.filter((m) => m.role !== 'user_tentative'), { role: 'user', text: event.message }]);
+      return;
+    }
+    // Raw WebSocket event format
     if (event.type === 'user_transcript' && event.user_transcription_event?.user_transcript) {
       setMessages((prev) => [...prev.filter((m) => m.role !== 'user_tentative'), { role: 'user', text: event.user_transcription_event.user_transcript }]);
     }
@@ -223,20 +242,42 @@ function SimPage() {
     }
   }, []);
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  const handleAgentChatPart = useCallback((part) => {
+    if (!part) return;
+    if (part.type === 'stop') {
+      setMessages((prev) => {
+        const rest = prev.filter((m) => m.role !== 'agent_streaming');
+        const last = prev.find((m) => m.role === 'agent_streaming');
+        if (last?.text) return [...rest, { role: 'agent', text: last.text }];
+        return prev;
+      });
+      return;
+    }
+    if (part.text) {
+      setMessages((prev) => {
+        const rest = prev.filter((m) => m.role !== 'agent_streaming');
+        const last = prev[prev.length - 1];
+        const append = part.type === 'start' ? part.text : (last?.role === 'agent_streaming' ? last.text + part.text : part.text);
+        return [...rest, { role: 'agent_streaming', text: append }];
+      });
+    }
+  }, []);
 
   const conversation = useConversation({
     onConnect: handleConnect,
     onDisconnect: handleDisconnect,
     onMessage: handleMessage,
+    onAgentChatResponsePart: handleAgentChatPart,
     onError: (err) => {
       console.error('[DepoSim] Conversation error:', err);
       setPhase('postcall');
       setPostCallMessage(`error: ${err?.message || 'Unknown error'}`);
     },
   });
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   const requestCamera = async () => {
     setCameraError(null);
@@ -266,6 +307,15 @@ function SimPage() {
             prompt: { prompt: config.dynamicVariables.depo_prompt },
             firstMessage: config.dynamicVariables.first_message,
             language: 'en',
+          },
+          conversation: {
+            // Explicitly enable transcript/response events (not all enabled by default)
+            client_events: [
+              'user_transcript',
+              'tentative_user_transcript',
+              'agent_response',
+              'agent_chat_response_part',
+            ],
           },
         },
         dynamicVariables: config.dynamicVariables,

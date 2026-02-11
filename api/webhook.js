@@ -139,7 +139,13 @@ async function handleElevenLabsWebhook(req, res, prisma) {
   let fullAnalysis = null;
 
   if (Array.isArray(transcript) && transcript.length > 0) {
-    const result = await analyzeDeposition(transcript);
+    const scorePrompt = await prisma.prompt
+      .findFirst({
+        where: { type: 'score', isActive: true },
+        orderBy: { updatedAt: 'desc' },
+      })
+      .then((p) => p?.content || null);
+    const result = await analyzeDeposition(transcript, scorePrompt);
     if (result.success) {
       score = result.score;
       scoreReason = result.scoreReason;

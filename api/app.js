@@ -6,6 +6,7 @@ const multer = require('multer');
 const { PrismaClient } = require('@prisma/client');
 const { analyzeVideoUrl, analyzeVideoFile } = require('./gemini');
 const { handleElevenLabsWebhook } = require('./webhook');
+const { getDefaultScorePrompt } = require('./openai');
 const { handleSimPage } = require('./sim-page');
 
 const app = express();
@@ -491,7 +492,17 @@ app.patch('/api/settings', async (req, res) => {
 });
 
 // ---------- Prompts ----------
-const VALID_PROMPT_TYPES = ['system', 'first_message', 'media_analysis'];
+const VALID_PROMPT_TYPES = ['system', 'first_message', 'media_analysis', 'score'];
+
+app.get('/api/prompts/default-score', async (_req, res) => {
+  try {
+    const content = getDefaultScorePrompt();
+    res.json({ content });
+  } catch (err) {
+    console.error('GET /api/prompts/default-score', err);
+    res.status(500).json({ error: 'Failed to get default' });
+  }
+});
 
 app.get('/api/prompts', async (req, res) => {
   try {
@@ -1078,6 +1089,68 @@ ${activeSystemPrompt ? '--- CURRENT SYSTEM PROMPT (for the AI opposing counsel) 
     res.json({ role: 'assistant', content: reply });
   } catch (err) {
     console.error('POST /api/chat', err);
+    res.status(500).json({ error: err.message || 'Chat failed' });
+  }
+});
+
+// ---------- AI Coach for Prompt Adjustment (works on any prompt type) ----------
+app.post('/api/chat/prompt-coach', async (req, res) => {
+  try {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'OPENAI_API_KEY not set' });
+
+    const { messages, promptId, promptType, promptContent, promptName } = req.body;
+    if (!Array.isArray(messages) || messages.length === 0)
+      return res.status(400).json({ error: 'messages array is required' });
+
+    let content = promptContent;
+    let type = promptType;
+    let name = promptName;
+    if (promptId && !content) {
+      const p = await prisma.prompt.findUnique({ where: { id: promptId } });
+      if (p) {
+        content = p.content;
+        type = p.type;
+        name = p.name;
+      }
+    }
+
+    const typeLabels = { system: 'System Prompt', first_message: 'First Message', media_analysis: 'Media Analysis', score: 'Score Analysis' };
+    const typeLabel = typeLabels[type] || type || 'this prompt';
+
+    const systemContent = `You are an AI Coach for DepoSim that helps users refine prompts. The user is working on the **${name || typeLabel}** prompt (type: ${type || 'unknown'}).
+
+--- CURRENT PROMPT ---
+${content || '(Empty or not provided)'}
+--- END CURRENT PROMPT ---
+
+Help the user adjust the prompt based on what they want to do. When you propose a revised prompt, wrap the complete new prompt in this exact format:
+---SUGGESTED_PROMPT---
+(here put the full revised prompt text)
+---END_SUGGESTED_PROMPT---
+
+Be concise. When suggesting changes, provide the full revised prompt so the user can apply it with one click. For "score" type prompts, the output format (JSON with score/score_reason) is appended automatically — don't duplicate it.`;
+
+    const chatMessages = [
+      { role: 'system', content: systemContent },
+      ...messages.slice(-20).map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content || '') })),
+    ];
+
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ model: 'o3-mini', messages: chatMessages }),
+      signal: AbortSignal.timeout(120_000),
+    });
+    const data = await resp.json();
+    if (data.error) return res.status(502).json({ error: 'OpenAI error: ' + (data.error.message || JSON.stringify(data.error)) });
+
+    const reply = data.choices?.[0]?.message?.content || '';
+    const match = reply.match(/---SUGGESTED_PROMPT---\s*([\s\S]*?)---END_SUGGESTED_PROMPT---/);
+    const suggestedPrompt = match ? match[1].trim() : null;
+    res.json({ role: 'assistant', content: reply, suggestedPrompt });
+  } catch (err) {
+    console.error('POST /api/chat/prompt-coach', err);
     res.status(500).json({ error: err.message || 'Chat failed' });
   }
 });

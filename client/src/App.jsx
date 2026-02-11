@@ -68,90 +68,96 @@ const Icons = {
   ),
 };
 
-/* ===== Simulation Coach Chat ===== */
-/* ===== Embedded AI Coach Chat (reusable in sim detail or standalone) ===== */
-function CoachChat({ simulationId, introMessage, embedded }) {
+/* ===== Inline AI Coach for any prompt ===== */
+function PromptCoachInline({ prompt, onPromptUpdated, showToast }) {
+  const { id, type, name, content } = prompt || {};
+  const typeLabel = TYPE_LABELS[type] || type;
   const [messages, setMessages] = useState([
-    { role: 'assistant', content: introMessage || 'Ask me anything about deposition strategy, prompt improvement, or preparation tips.' },
+    { role: 'assistant', content: `I help you refine the **${name || typeLabel}** prompt. Describe what you want to change — e.g. "make it shorter", "add more detail", "be more strict" — and I'll suggest a revised version you can apply.` },
   ]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [lastSuggested, setLastSuggested] = useState(null);
+  const [coachOpen, setCoachOpen] = useState(false);
   const chatEndRef = useRef(null);
 
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  useEffect(() => { setLastSuggested(null); }, [id]);
 
   const handleSend = async (e) => {
     e.preventDefault();
     const text = input.trim();
-    if (!text || sending) return;
-
+    if (!text || sending || !id) return;
     const userMsg = { role: 'user', content: text };
     const updated = [...messages, userMsg];
     setMessages(updated);
     setInput('');
     setSending(true);
-
+    setLastSuggested(null);
     try {
-      const r = await fetch(API + '/chat', {
+      const r = await fetch(API + '/chat/prompt-coach', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: updated, simulationId: simulationId || null }),
+        body: JSON.stringify({ messages: updated, promptId: id, promptType: type, promptContent: content, promptName: name }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || 'Failed');
       setMessages(prev => [...prev, { role: 'assistant', content: data.content }]);
+      if (data.suggestedPrompt) setLastSuggested(data.suggestedPrompt);
     } catch (err) {
       setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, something went wrong: ' + err.message }]);
-    } finally {
-      setSending(false);
+    } finally { setSending(false); }
+  };
+
+  const handleApply = async () => {
+    if (!lastSuggested || !id) return;
+    try {
+      const r = await fetch(API + '/prompts/' + id, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: lastSuggested }),
+      });
+      if (!r.ok) throw new Error('Failed');
+      setLastSuggested(null);
+      showToast?.('Prompt updated');
+      onPromptUpdated?.();
+      window.dispatchEvent(new CustomEvent('deposim-prompts-updated'));
+    } catch (e) {
+      console.error('Apply failed:', e);
     }
   };
 
-  const quickQuestions = [
-    'Why was the score low?',
-    'What should I improve?',
-    'Is my prompt effective?',
-    'Give me 3 tips',
-  ];
-
+  if (!prompt) return null;
   return (
-    <div className={`coach-chat ${embedded ? 'coach-embedded' : ''}`}>
-      <div className="coach-messages">
-        {messages.map((m, i) => (
-          <div key={i} className={`coach-msg ${m.role}`}>
-            <div className="coach-msg-bubble">{m.content}</div>
+    <div className="prompt-coach-inline">
+      <button type="button" className="prompt-coach-toggle" onClick={() => setCoachOpen(o => !o)}>
+        <span>AI Coach</span>
+        <span className={`prompt-chevron${coachOpen ? ' open' : ''}`}>›</span>
+      </button>
+      {coachOpen && (
+        <div className="coach-chat coach-embedded">
+          <div className="coach-messages">
+            {messages.map((m, i) => (
+              <div key={i} className={`coach-msg ${m.role}`}>
+                <div className="coach-msg-bubble">{m.content}</div>
+              </div>
+            ))}
+            {sending && <div className="coach-msg assistant"><div className="coach-msg-bubble coach-typing">Thinking…</div></div>}
+            <div ref={chatEndRef} />
           </div>
-        ))}
-        {sending && (
-          <div className="coach-msg assistant">
-            <div className="coach-msg-bubble coach-typing">Thinking…</div>
-          </div>
-        )}
-        <div ref={chatEndRef} />
-      </div>
-
-      {messages.length <= 1 && simulationId && (
-        <div className="coach-quick">
-          {quickQuestions.map((q, i) => (
-            <button key={i} className="coach-quick-btn" onClick={() => setInput(q)} disabled={sending}>{q}</button>
-          ))}
+          {lastSuggested && (
+            <div className="coach-apply-bar">
+              <button className="btn primary btn-sm" onClick={handleApply}>Apply to {name || typeLabel}</button>
+            </div>
+          )}
+          <form className="coach-input-bar" onSubmit={handleSend}>
+            <input className="coach-input" value={input} onChange={e => setInput(e.target.value)} placeholder={`Describe how you want to adjust this prompt…`} disabled={sending} />
+            <button className="coach-send-btn" type="submit" disabled={sending || !input.trim()}>
+              <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+            </button>
+          </form>
         </div>
       )}
-
-      <form className="coach-input-bar" onSubmit={handleSend}>
-        <input
-          className="coach-input"
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          placeholder="Ask about this simulation…"
-          disabled={sending}
-        />
-        <button className="coach-send-btn" type="submit" disabled={sending || !input.trim()}>
-          <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-        </button>
-      </form>
     </div>
   );
 }
@@ -220,7 +226,55 @@ const LANG_NAMES = {
   id: 'Indonesian', th: 'Thai', vi: 'Vietnamese', bg: 'Bulgarian', hr: 'Croatian',
   fil: 'Filipino', ms: 'Malay', sk: 'Slovak', ta: 'Tamil', uk: 'Ukrainian',
 };
-const TYPE_LABELS = { system: 'System Prompt', first_message: 'First Message', media_analysis: 'Media Analysis' };
+const TYPE_LABELS = { system: 'System Prompt', first_message: 'First Message', media_analysis: 'Media Analysis', score: 'Score Analysis' };
+
+/* ===== Add Score Prompt (when none exists) ===== */
+function AddScorePrompt({ onCreated }) {
+  const [name, setName] = useState('Score Analysis');
+  const [content, setContent] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    fetch(API + '/prompts/default-score')
+      .then(r => r.ok ? r.json() : { content: '' })
+      .then(d => setContent(d.content || ''))
+      .catch(() => setContent(''))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleCreate = async () => {
+    if (!name.trim() || !content.trim()) return;
+    setSaving(true);
+    try {
+      const r = await fetch(API + '/prompts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'score', name: name.trim(), content: content.trim(), language: null }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      onCreated();
+    } catch (e) {
+      console.error('Create score prompt failed:', e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <p className="prompt-loading">Loading default…</p>;
+  return (
+    <div className="prompt-lang-group">
+      <p className="prompt-add-hint">No score prompt yet. Create one to control how strict the scoring is (e.g. more/less aggressive).</p>
+      <div className="prompt-edit">
+        <input className="input prompt-edit-name" value={name} onChange={e => setName(e.target.value)} placeholder="Prompt name" />
+        <textarea className="input textarea prompt-edit-content" value={content} onChange={e => setContent(e.target.value)} rows={12} placeholder="Scoring instructions for the AI…" />
+        <div className="prompt-edit-actions">
+          <button className="btn primary btn-sm" onClick={handleCreate} disabled={saving}>{saving ? 'Creating…' : 'Create Score Prompt'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /* ===== Prompt Manager (Settings) ===== */
 function PromptManager({ showToast }) {
@@ -241,6 +295,11 @@ function PromptManager({ showToast }) {
     fetch(API + '/prompts').then(r => r.ok ? r.json() : []).then(setPrompts).catch(() => {}).finally(() => setLoading(false));
   };
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    const handler = () => load();
+    window.addEventListener('deposim-prompts-updated', handler);
+    return () => window.removeEventListener('deposim-prompts-updated', handler);
+  }, []);
 
   // Group by type, then by language
   const grouped = {};
@@ -317,15 +376,37 @@ function PromptManager({ showToast }) {
 
   if (loading) return <p className="prompt-loading">Loading prompts…</p>;
 
-  const typeOrder = ['system', 'first_message', 'media_analysis'];
+  const typeOrder = ['system', 'first_message', 'media_analysis', 'score'];
 
   return (
     <div className="prompt-manager">
-      {typeOrder.filter(t => grouped[t]).map(type => {
+      {typeOrder.map(type => {
+        const group = grouped[type] || {};
+        const hasAny = Object.keys(group).length > 0;
+        if (!hasAny) {
+          // Empty: show Add for score, placeholder for others
+          const isOpen = expandedType === type;
+          return (
+            <div key={type} className="prompt-type-group">
+              <button className="prompt-type-header" onClick={() => setExpandedType(isOpen ? null : type)}>
+                <div>
+                  <span className="prompt-type-label">{TYPE_LABELS[type] || type}</span>
+                  <span className="prompt-type-count">0</span>
+                </div>
+                <span className={`prompt-chevron${isOpen ? ' open' : ''}`}>›</span>
+              </button>
+              {isOpen && (
+                <div className="prompt-type-body">
+                  {type === 'score' ? <AddScorePrompt onCreated={load} /> : <p className="prompt-loading">No {TYPE_LABELS[type] || type} configured yet.</p>}
+                </div>
+              )}
+            </div>
+          );
+        }
         const isOpen = expandedType === type;
-        const langs = Object.keys(grouped[type]).sort((a, b) => a === '_global' ? -1 : a.localeCompare(b));
-        const activeCount = Object.values(grouped[type]).reduce((sum, arr) => sum + arr.filter(p => p.isActive).length, 0);
-        const totalCount = Object.values(grouped[type]).reduce((sum, arr) => sum + arr.length, 0);
+        const langs = Object.keys(group).sort((a, b) => a === '_global' ? -1 : a.localeCompare(b));
+        const activeCount = Object.values(group).reduce((sum, arr) => sum + arr.filter(p => p.isActive).length, 0);
+        const totalCount = Object.values(group).reduce((sum, arr) => sum + arr.length, 0);
 
         return (
           <div key={type} className="prompt-type-group">
@@ -366,7 +447,7 @@ function PromptManager({ showToast }) {
                   const label = (LANG_NAMES[lang] || lang).toLowerCase();
                   return label.includes(q) || lang.toLowerCase().includes(q);
                 }).map(lang => {
-                  const items = grouped[type][lang];
+                  const items = group[lang];
                   const active = items.find(p => p.isActive);
                   const inactive = items.filter(p => !p.isActive);
                   const langLabel = lang === '_global' ? 'Global' : (LANG_NAMES[lang] || lang);
@@ -413,6 +494,7 @@ function PromptManager({ showToast }) {
                                   {historyFor === active.id ? 'Hide History' : 'History'}
                                 </button>
                               </div>
+                              <PromptCoachInline prompt={active} onPromptUpdated={load} showToast={showToast} />
                             </>
                           )}
 
@@ -816,9 +898,6 @@ function MainApp() {
     }
     if (detail.type === 'simulation') {
       const scoreColor = d.score >= 75 ? '#58c322' : d.score >= 50 ? '#ffab00' : '#ed4956';
-      const coachIntro = d.callSummaryTitle
-        ? `I've loaded **${d.callSummaryTitle}** (Score: ${d.score != null ? d.score + '%' : 'N/A'}). Ask me anything — why the score was low, how to improve, or whether your prompt is effective.`
-        : 'Ask me anything about this simulation — performance, improvements, or deposition strategy.';
       return (
         <div className="app-shell">
           <div className="detail-screen">
@@ -862,10 +941,6 @@ function MainApp() {
                     {d.bodyAnalysisModel ? 'Processing…' : 'No body language recording was captured for this simulation.'}
                   </p>
                 )}
-              </CollapsibleSection>
-
-              <CollapsibleSection title="AI Coach" defaultOpen={false}>
-                <CoachChat simulationId={d.id} introMessage={coachIntro} embedded />
               </CollapsibleSection>
             </div>
           </div>

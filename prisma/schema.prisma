@@ -116,6 +116,7 @@ enum PromptType {
   system
   first_message
   media_analysis
+  score
 }
 
 model Prompt {
