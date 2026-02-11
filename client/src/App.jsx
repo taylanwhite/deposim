@@ -1,5 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import WebcamRecorder from './WebcamRecorder';
+import { useState, useEffect, useRef } from 'react';
 import './App.css';
 
 const API = '/api';
@@ -65,6 +64,451 @@ const Icons = {
     </svg>
   ),
 };
+
+/* ===== Simulation Coach Chat ===== */
+/* ===== Embedded AI Coach Chat (reusable in sim detail or standalone) ===== */
+function CoachChat({ simulationId, introMessage, embedded }) {
+  const [messages, setMessages] = useState([
+    { role: 'assistant', content: introMessage || 'Ask me anything about deposition strategy, prompt improvement, or preparation tips.' },
+  ]);
+  const [input, setInput] = useState('');
+  const [sending, setSending] = useState(false);
+  const chatEndRef = useRef(null);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  const handleSend = async (e) => {
+    e.preventDefault();
+    const text = input.trim();
+    if (!text || sending) return;
+
+    const userMsg = { role: 'user', content: text };
+    const updated = [...messages, userMsg];
+    setMessages(updated);
+    setInput('');
+    setSending(true);
+
+    try {
+      const r = await fetch(API + '/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: updated, simulationId: simulationId || null }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Failed');
+      setMessages(prev => [...prev, { role: 'assistant', content: data.content }]);
+    } catch (err) {
+      setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, something went wrong: ' + err.message }]);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const quickQuestions = [
+    'Why was the score low?',
+    'What should I improve?',
+    'Is my prompt effective?',
+    'Give me 3 tips',
+  ];
+
+  return (
+    <div className={`coach-chat ${embedded ? 'coach-embedded' : ''}`}>
+      <div className="coach-messages">
+        {messages.map((m, i) => (
+          <div key={i} className={`coach-msg ${m.role}`}>
+            <div className="coach-msg-bubble">{m.content}</div>
+          </div>
+        ))}
+        {sending && (
+          <div className="coach-msg assistant">
+            <div className="coach-msg-bubble coach-typing">Thinking…</div>
+          </div>
+        )}
+        <div ref={chatEndRef} />
+      </div>
+
+      {messages.length <= 1 && simulationId && (
+        <div className="coach-quick">
+          {quickQuestions.map((q, i) => (
+            <button key={i} className="coach-quick-btn" onClick={() => setInput(q)} disabled={sending}>{q}</button>
+          ))}
+        </div>
+      )}
+
+      <form className="coach-input-bar" onSubmit={handleSend}>
+        <input
+          className="coach-input"
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          placeholder="Ask about this simulation…"
+          disabled={sending}
+        />
+        <button className="coach-send-btn" type="submit" disabled={sending || !input.trim()}>
+          <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+        </button>
+      </form>
+    </div>
+  );
+}
+
+/* ===== Simulation Feed (Sims tab) ===== */
+function SimsFeed({ goDetail }) {
+  const [sims, setSims] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch(API + '/simulations')
+      .then(r => r.ok ? r.json() : [])
+      .then(setSims)
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  return (
+    <>
+      <div className="feed-header">
+        <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="header-logo" />
+        <h1 className="header-title">Simulations</h1>
+      </div>
+      {loading && <p style={{ textAlign: 'center', padding: 40, color: 'var(--muted)', fontSize: 13 }}>Loading…</p>}
+      {!loading && sims.length === 0 && (
+        <div className="coach-intro" style={{ margin: '40px 16px' }}>
+          <div className="coach-intro-icon">&#127916;</div>
+          <h3>No Simulations Yet</h3>
+          <p>Run a DepoSim from any case to see your simulation history and analysis here.</p>
+        </div>
+      )}
+      <div className="sims-feed">
+        {sims.map(s => {
+          const scoreColor = s.winReady >= 75 ? '#58c322' : s.winReady >= 50 ? '#ffab00' : '#ed4956';
+          const caseName = s.case ? `${s.case.firstName || ''} ${s.case.lastName || ''}`.trim() : '';
+          return (
+            <button key={s.id} className="sim-feed-item" onClick={() => goDetail('simulation', s)}>
+              <div className="sim-feed-score" style={{ borderColor: scoreColor, color: scoreColor }}>
+                {s.winReady != null ? s.winReady + '%' : '—'}
+              </div>
+              <div className="sim-feed-info">
+                <div className="sim-feed-title">{s.callSummaryTitle || 'Simulation'}</div>
+                {caseName && <div className="sim-feed-case">{caseName}{s.case?.caseNumber ? ` · #${s.case.caseNumber}` : ''}</div>}
+                <div className="sim-feed-meta">
+                  {new Date(s.createdAt).toLocaleDateString()}
+                  {s.callDurationSecs ? ` · ${Math.floor(s.callDurationSecs / 60)}m ${s.callDurationSecs % 60}s` : ''}
+                  {s.bodyAnalysis ? ' · Body analysis' : ''}
+                </div>
+              </div>
+              <span className="sim-feed-arrow">›</span>
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+/* ===== Language labels ===== */
+const LANG_NAMES = {
+  en: 'English', es: 'Spanish', fr: 'French', de: 'German', it: 'Italian',
+  pt: 'Portuguese', 'pt-br': 'Portuguese (BR)', pl: 'Polish', nl: 'Dutch',
+  ru: 'Russian', ja: 'Japanese', ko: 'Korean', zh: 'Chinese', hi: 'Hindi',
+  ar: 'Arabic', tr: 'Turkish', sv: 'Swedish', da: 'Danish', no: 'Norwegian',
+  fi: 'Finnish', el: 'Greek', cs: 'Czech', ro: 'Romanian', hu: 'Hungarian',
+  id: 'Indonesian', th: 'Thai', vi: 'Vietnamese', bg: 'Bulgarian', hr: 'Croatian',
+  fil: 'Filipino', ms: 'Malay', sk: 'Slovak', ta: 'Tamil', uk: 'Ukrainian',
+};
+const TYPE_LABELS = { system: 'System Prompt', first_message: 'First Message', media_analysis: 'Media Analysis' };
+
+/* ===== Prompt Manager (Settings) ===== */
+function PromptManager({ showToast }) {
+  const [prompts, setPrompts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [expandedType, setExpandedType] = useState(null);
+  const [editing, setEditing] = useState(null); // { id, content, name }
+  const [saving, setSaving] = useState(false);
+  const [historyFor, setHistoryFor] = useState(null); // prompt id
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [langSearch, setLangSearch] = useState('');
+  const [showTranslateAll, setShowTranslateAll] = useState(false);
+  const [translating, setTranslating] = useState(false);
+  const [expandedHistoryItem, setExpandedHistoryItem] = useState(null);
+
+  const load = () => {
+    fetch(API + '/prompts').then(r => r.ok ? r.json() : []).then(setPrompts).catch(() => {}).finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); }, []);
+
+  // Group by type, then by language
+  const grouped = {};
+  for (const p of prompts) {
+    if (!grouped[p.type]) grouped[p.type] = {};
+    const lang = p.language || '_global';
+    if (!grouped[p.type][lang]) grouped[p.type][lang] = [];
+    grouped[p.type][lang].push(p);
+  }
+  // For each type+lang group, sort so active ones first, newest first
+  for (const type of Object.keys(grouped)) {
+    for (const lang of Object.keys(grouped[type])) {
+      grouped[type][lang].sort((a, b) => {
+        if (a.isActive !== b.isActive) return a.isActive ? -1 : 1;
+        return new Date(b.createdAt) - new Date(a.createdAt);
+      });
+    }
+  }
+
+  const handleSave = async () => {
+    if (!editing) return;
+    setSaving(true);
+    try {
+      const r = await fetch(`${API}/prompts/${editing.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: editing.content, name: editing.name }),
+      });
+      if (!r.ok) throw new Error('Failed');
+      showToast('New version saved');
+
+      // Check if this was an English first_message — offer to translate all
+      const editedPrompt = prompts.find(p => p.id === editing.id);
+      if (editedPrompt && editedPrompt.type === 'first_message' && (editedPrompt.language === 'en' || editedPrompt.language === null)) {
+        setShowTranslateAll(editing.content);
+      }
+
+      setEditing(null);
+      load();
+    } catch { showToast('Error saving'); }
+    finally { setSaving(false); }
+  };
+
+  const handleTranslateAll = async () => {
+    if (!showTranslateAll) return;
+    setTranslating(true);
+    try {
+      const r = await fetch(`${API}/prompts/translate-all`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ englishContent: showTranslateAll }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Failed');
+      showToast(`Translated to ${data.languageCount} languages (${data.updated} updated, ${data.created} created)`);
+      setShowTranslateAll(false);
+      load();
+    } catch (err) { showToast('Translation failed: ' + err.message); }
+    finally { setTranslating(false); }
+  };
+
+  const loadHistory = async (promptId) => {
+    if (historyFor === promptId) { setHistoryFor(null); return; }
+    setHistoryFor(promptId);
+    setHistoryLoading(true);
+    setExpandedHistoryItem(null);
+    try {
+      const r = await fetch(`${API}/prompts/${promptId}/history`);
+      const data = r.ok ? await r.json() : [];
+      setHistory(data);
+    } catch { setHistory([]); }
+    finally { setHistoryLoading(false); }
+  };
+
+  if (loading) return <p className="prompt-loading">Loading prompts…</p>;
+
+  const typeOrder = ['system', 'first_message', 'media_analysis'];
+
+  return (
+    <div className="prompt-manager">
+      {typeOrder.filter(t => grouped[t]).map(type => {
+        const isOpen = expandedType === type;
+        const langs = Object.keys(grouped[type]).sort((a, b) => a === '_global' ? -1 : a.localeCompare(b));
+        const activeCount = Object.values(grouped[type]).reduce((sum, arr) => sum + arr.filter(p => p.isActive).length, 0);
+        const totalCount = Object.values(grouped[type]).reduce((sum, arr) => sum + arr.length, 0);
+
+        return (
+          <div key={type} className="prompt-type-group">
+            <button className="prompt-type-header" onClick={() => setExpandedType(isOpen ? null : type)}>
+              <div>
+                <span className="prompt-type-label">{TYPE_LABELS[type] || type}</span>
+                <span className="prompt-type-count">{activeCount}</span>
+              </div>
+              <span className={`prompt-chevron${isOpen ? ' open' : ''}`}>›</span>
+            </button>
+
+            {isOpen && (
+              <div className="prompt-type-body">
+                {type === 'first_message' && showTranslateAll && (
+                  <div className="translate-banner">
+                    <div className="translate-banner-text">
+                      English first message updated. Translate all other languages to match?
+                    </div>
+                    <div className="translate-banner-actions">
+                      <button className="btn primary btn-sm" onClick={handleTranslateAll} disabled={translating}>
+                        {translating ? 'Translating…' : 'Translate All Languages'}
+                      </button>
+                      <button className="btn secondary btn-sm" onClick={() => setShowTranslateAll(false)} disabled={translating}>Dismiss</button>
+                    </div>
+                  </div>
+                )}
+                {type === 'first_message' && langs.length > 5 && (
+                  <input
+                    className="input prompt-search"
+                    placeholder="Search languages…"
+                    value={langSearch}
+                    onChange={e => setLangSearch(e.target.value)}
+                  />
+                )}
+                {langs.filter(lang => {
+                  if (type !== 'first_message' || !langSearch.trim()) return true;
+                  const q = langSearch.toLowerCase();
+                  const label = (LANG_NAMES[lang] || lang).toLowerCase();
+                  return label.includes(q) || lang.toLowerCase().includes(q);
+                }).map(lang => {
+                  const items = grouped[type][lang];
+                  const active = items.find(p => p.isActive);
+                  const inactive = items.filter(p => !p.isActive);
+                  const langLabel = lang === '_global' ? 'Global' : (LANG_NAMES[lang] || lang);
+
+                  return (
+                    <div key={lang} className="prompt-lang-group">
+                      {type === 'first_message' && <div className="prompt-lang-label">{langLabel}</div>}
+
+                      {/* Active prompt */}
+                      {active && (
+                        <div className="prompt-item active">
+                          {editing && editing.id === active.id ? (
+                            <div className="prompt-edit">
+                              <input
+                                className="input prompt-edit-name"
+                                value={editing.name}
+                                onChange={e => setEditing({ ...editing, name: e.target.value })}
+                                placeholder="Prompt name"
+                              />
+                              <textarea
+                                className="input textarea prompt-edit-content"
+                                value={editing.content}
+                                onChange={e => setEditing({ ...editing, content: e.target.value })}
+                                rows={6}
+                              />
+                              <div className="prompt-edit-actions">
+                                <button className="btn secondary btn-sm" onClick={() => setEditing(null)} disabled={saving}>Cancel</button>
+                                <button className="btn primary btn-sm" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save New Version'}</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <div className="prompt-item-header">
+                                <span className="prompt-item-name">{active.name}</span>
+                                <span className="prompt-item-badge active">Active</span>
+                              </div>
+                              <div className="prompt-item-preview">{active.content.slice(0, 200)}{active.content.length > 200 ? '…' : ''}</div>
+                              <div className="prompt-item-meta">
+                                {new Date(active.createdAt).toLocaleDateString()} · {active.content.length} chars
+                              </div>
+                              <div className="prompt-item-actions">
+                                <button className="btn-link" onClick={() => setEditing({ id: active.id, content: active.content, name: active.name })}>Edit</button>
+                                <button className="btn-link" onClick={() => loadHistory(active.id)}>
+                                  {historyFor === active.id ? 'Hide History' : 'History'}
+                                </button>
+                              </div>
+                            </>
+                          )}
+
+                          {/* History drawer */}
+                          {historyFor === active.id && (
+                            <div className="prompt-history">
+                              {historyLoading && <p className="prompt-loading">Loading…</p>}
+                              {!historyLoading && history.length === 0 && <p className="prompt-loading">No history</p>}
+                              {!historyLoading && history.filter(h => h.id !== active.id).map(h => {
+                                const isExpanded = expandedHistoryItem === h.id;
+                                return (
+                                  <div key={h.id} className="prompt-history-item" onClick={() => setExpandedHistoryItem(isExpanded ? null : h.id)}>
+                                    <div className="prompt-history-meta">
+                                      <span>{new Date(h.createdAt).toLocaleString()}</span>
+                                      <span className={`prompt-item-badge${h.isActive ? ' active' : ''}`}>{h.isActive ? 'Active' : 'Archived'}</span>
+                                    </div>
+                                    <div className={`prompt-history-content${isExpanded ? ' expanded' : ''}`}>{isExpanded ? h.content : h.content.slice(0, 100) + (h.content.length > 100 ? '…' : '')}</div>
+                                    {h.content.length > 100 && <span className="prompt-history-toggle">{isExpanded ? 'Show less' : 'Show full'}</span>}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Inactive versions (collapsed count) */}
+                      {inactive.length > 0 && !active && (
+                        <div className="prompt-item inactive">
+                          <div className="prompt-item-header">
+                            <span className="prompt-item-name">{inactive[0].name}</span>
+                            <span className="prompt-item-badge">Archived</span>
+                          </div>
+                          <div className="prompt-item-preview">{inactive[0].content.slice(0, 150)}…</div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ===== Human-readable Analysis renderer ===== */
+function AnalysisDisplay({ data }) {
+  // Try to parse as JSON
+  let parsed = null;
+  if (typeof data === 'string') {
+    try { parsed = JSON.parse(data); } catch { parsed = null; }
+  } else if (typeof data === 'object' && data !== null) {
+    parsed = data;
+  }
+
+  // If it's not JSON, just render as text
+  if (!parsed || typeof parsed !== 'object') {
+    return <div className="analysis-prose">{String(data)}</div>;
+  }
+
+  // Render object keys as sections
+  const renderValue = (val, depth = 0) => {
+    if (val == null) return <span className="analysis-empty">N/A</span>;
+    if (typeof val === 'boolean') return <span>{val ? 'Yes' : 'No'}</span>;
+    if (typeof val === 'number') return <span>{val}</span>;
+    if (typeof val === 'string') return <span>{val}</span>;
+    if (Array.isArray(val)) {
+      if (val.length === 0) return <span className="analysis-empty">None</span>;
+      return (
+        <ul className="analysis-list">
+          {val.map((item, i) => (
+            <li key={i}>{typeof item === 'object' ? renderValue(item, depth + 1) : String(item)}</li>
+          ))}
+        </ul>
+      );
+    }
+    if (typeof val === 'object') {
+      return (
+        <div className={depth > 0 ? 'analysis-nested' : ''}>
+          {Object.entries(val).map(([k, v]) => (
+            <div key={k} className="analysis-field">
+              <div className="analysis-key">{formatKey(k)}</div>
+              <div className="analysis-value">{renderValue(v, depth + 1)}</div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+    return <span>{String(val)}</span>;
+  };
+
+  const formatKey = (key) =>
+    key.replace(/([A-Z])/g, ' $1').replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase()).trim();
+
+  return <div className="analysis-readable">{renderValue(parsed)}</div>;
+}
 
 /* ===== Bottom Tab Bar ===== */
 function BottomBar({ tab, onTab }) {
@@ -177,7 +621,7 @@ function CreateCaseForm({ goBack, onSuccess, showToast, tab, switchTab }) {
 }
 
 /* ===== Case Detail (with simulations) ===== */
-function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast }) {
+function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, currentDetail }) {
   const [sims, setSims] = useState([]);
   const [loadingSims, setLoadingSims] = useState(true);
 
@@ -219,7 +663,7 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast }) {
             {loadingSims && <p style={{ color: 'var(--muted)', fontSize: 13 }}>Loading…</p>}
             {!loadingSims && sims.length === 0 && <p style={{ color: 'var(--muted)', fontSize: 13 }}>No simulations yet. Start a DepoSim to see results here.</p>}
             {sims.map(s => (
-              <div key={s.id} className="sim-card" onClick={() => goDetail('simulation', s)}>
+              <div key={s.id} className="sim-card" onClick={() => goDetail('simulation', s, currentDetail)}>
                 <div className="sim-card-top">
                   <span className="sim-score" style={{ color: s.winReady >= 75 ? '#58c322' : s.winReady >= 50 ? '#ffab00' : '#ed4956' }}>
                     {s.winReady != null ? `${s.winReady}%` : '—'}
@@ -252,19 +696,8 @@ export default function App() {
 
   // Filters
   const [caseSort, setCaseSort] = useState('newest');
-  const [filterOpen, setFilterOpen] = useState(false);
 
-  // Video analysis
-  const [inputMode, setInputMode] = useState('record');
-  const [youtubeUrl, setYoutubeUrl] = useState('');
-  const [videoFile, setVideoFile] = useState(null);
-  const [recordedBlob, setRecordedBlob] = useState(null);
-  const fileInputRef = useRef(null);
-  const [analyzing, setAnalyzing] = useState(false);
-  const [analyzeStatus, setAnalyzeStatus] = useState('');
-  const [analysisResult, setAnalysisResult] = useState(null);
-  const [analysisError, setAnalysisError] = useState(null);
-  const [pastAnalyses, setPastAnalyses] = useState([]);
+
 
   // Load theme
   useEffect(() => {
@@ -297,12 +730,6 @@ export default function App() {
     }).catch(() => {}).finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => {
-    if (tab === 'sims') {
-      fetch(API + '/video-analyses').then(r => r.ok ? r.json() : []).then(setPastAnalyses).catch(() => {});
-    }
-  }, [tab]);
-
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
 
   const handleThemeChange = (t) => {
@@ -311,8 +738,8 @@ export default function App() {
     fetch(API + '/settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ theme: t }) }).catch(() => {});
   };
 
-  const goDetail = (type, data) => setDetail({ type, data });
-  const goBack = () => setDetail(null);
+  const goDetail = (type, data, parentDetail) => setDetail({ type, data, parent: parentDetail || null });
+  const goBack = () => { setDetail(detail?.parent || null); };
   const switchTab = (t) => { setDetail(null); setTab(t); };
 
   // Sort cases
@@ -322,36 +749,6 @@ export default function App() {
     if (caseSort === 'lastName') return (a.lastName || '').localeCompare(b.lastName || '');
     return 0;
   });
-
-  /* ===== Video analysis handlers ===== */
-  const uploadAndAnalyze = async (blob, filename) => {
-    setAnalyzing(true); setAnalysisResult(null); setAnalysisError(null); setAnalyzeStatus('Uploading…');
-    try {
-      const fd = new FormData(); fd.append('video', blob, filename);
-      const r = await fetch(API + '/analyze-video/upload', { method: 'POST', body: fd });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || 'Failed');
-      setAnalysisResult(d); setPastAnalyses(p => [d, ...p]);
-    } catch (e) { setAnalysisError(e.message); }
-    finally { setAnalyzing(false); setAnalyzeStatus(''); }
-  };
-  const handleRecordingComplete = useCallback((b) => setRecordedBlob(b), []);
-  const handleAnalyzeRecording = () => { if (recordedBlob) uploadAndAnalyze(recordedBlob, 'recording.webm'); };
-  const handleAnalyzeUrl = async (e) => {
-    e.preventDefault(); if (!youtubeUrl.trim()) return;
-    setAnalyzing(true); setAnalysisResult(null); setAnalysisError(null); setAnalyzeStatus('Analyzing…');
-    try {
-      const r = await fetch(API + '/analyze-video', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ youtubeUrl: youtubeUrl.trim() }) });
-      const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Failed');
-      setAnalysisResult(d); setPastAnalyses(p => [d, ...p]);
-    } catch (e) { setAnalysisError(e.message); }
-    finally { setAnalyzing(false); setAnalyzeStatus(''); }
-  };
-  const handleAnalyzeUpload = async (e) => {
-    e.preventDefault(); if (!videoFile) return;
-    await uploadAndAnalyze(videoFile, videoFile.name);
-    setVideoFile(null); if (fileInputRef.current) fileInputRef.current.value = '';
-  };
 
   if (loading) return <div className="app-shell" style={{ display: 'grid', placeItems: 'center' }}><p style={{ color: 'var(--muted)' }}>Loading…</p></div>;
 
@@ -370,7 +767,7 @@ export default function App() {
       );
     }
     if (detail.type === 'case') {
-      return <CaseDetail caseData={d} tab={tab} switchTab={switchTab} goBack={goBack} goDetail={goDetail} toast={toast} />;
+      return <CaseDetail caseData={d} tab={tab} switchTab={switchTab} goBack={goBack} goDetail={goDetail} toast={toast} currentDetail={detail} />;
     }
     if (detail.type === 'client') {
       return (
@@ -401,6 +798,10 @@ export default function App() {
       );
     }
     if (detail.type === 'simulation') {
+      const scoreColor = d.winReady >= 75 ? '#58c322' : d.winReady >= 50 ? '#ffab00' : '#ed4956';
+      const coachIntro = d.callSummaryTitle
+        ? `I've loaded **${d.callSummaryTitle}** (Score: ${d.winReady != null ? d.winReady + '%' : 'N/A'}). Ask me anything — why the score was low, how to improve, or whether your prompt is effective.`
+        : 'Ask me anything about this simulation — performance, improvements, or deposition strategy.';
       return (
         <div className="app-shell">
           <div className="detail-screen">
@@ -409,26 +810,62 @@ export default function App() {
               <h2>Simulation</h2>
             </div>
             <div className="detail-body">
-              <div style={{ textAlign: 'center', margin: '20px 0' }}>
-                <div style={{ fontSize: 48, fontWeight: 800, color: d.winReady >= 75 ? '#58c322' : d.winReady >= 50 ? '#ffab00' : '#ed4956' }}>
-                  {d.winReady != null ? `${d.winReady}%` : '—'}
+              {/* Score hero */}
+              <div className="sim-detail-score">
+                <div className="sim-detail-ring" style={{ '--score-color': scoreColor }}>
+                  <span className="sim-detail-pct">{d.winReady != null ? `${d.winReady}%` : '—'}</span>
                 </div>
-                <div style={{ fontSize: 14, color: 'var(--muted)', marginTop: 2 }}>Win Ready Score</div>
+                <div className="sim-detail-label">Score</div>
               </div>
-              <div className="kv">
-                {d.callSummaryTitle && <><span className="k">Summary</span><span className="v">{d.callSummaryTitle}</span></>}
-                {d.winReadyReason && <><span className="k">Reason</span><span className="v">{d.winReadyReason}</span></>}
-                {d.transcriptSummary && <><span className="k">Transcript Summary</span><span className="v">{d.transcriptSummary}</span></>}
-                {d.callDurationSecs != null && <><span className="k">Duration</span><span className="v">{Math.floor(d.callDurationSecs / 60)}m {d.callDurationSecs % 60}s</span></>}
-                {d.status && <><span className="k">Status</span><span className="v">{d.status}</span></>}
-                <span className="k">Date</span><span className="v">{new Date(d.createdAt).toLocaleString()}</span>
-              </div>
-              {d.winReadyAnalysis && (
-                <div style={{ marginTop: 16 }}>
-                  <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 8 }}>Full Analysis</h3>
-                  <pre className="analysis-text">{d.winReadyAnalysis}</pre>
+
+              {/* Summary card */}
+              {(d.callSummaryTitle || d.winReadyReason) && (
+                <div className="sim-detail-section">
+                  {d.callSummaryTitle && <div className="sim-detail-title">{d.callSummaryTitle}</div>}
+                  {d.winReadyReason && <div className="sim-detail-reason">{d.winReadyReason}</div>}
                 </div>
               )}
+
+              {/* Meta */}
+              <div className="sim-detail-meta">
+                {d.callDurationSecs != null && <span>{Math.floor(d.callDurationSecs / 60)}m {d.callDurationSecs % 60}s</span>}
+                {d.status && <span>{d.status}</span>}
+                <span>{new Date(d.createdAt).toLocaleString()}</span>
+              </div>
+
+              {/* Transcript summary */}
+              {d.transcriptSummary && (
+                <div className="sim-detail-section">
+                  <h3 className="sim-detail-heading">Transcript Summary</h3>
+                  <p className="sim-detail-text">{d.transcriptSummary}</p>
+                </div>
+              )}
+
+              {/* Full analysis */}
+              {d.winReadyAnalysis && (
+                <div className="sim-detail-section">
+                  <h3 className="sim-detail-heading">Full Analysis</h3>
+                  <AnalysisDisplay data={d.winReadyAnalysis} />
+                </div>
+              )}
+
+              {/* Body Language Analysis (Gemini) */}
+              <div className="sim-detail-section">
+                <h3 className="sim-detail-heading">Body Language Analysis</h3>
+                {d.bodyAnalysis ? (
+                  <AnalysisDisplay data={d.bodyAnalysis} />
+                ) : (
+                  <p className="sim-detail-text" style={{ color: 'var(--muted)', fontStyle: 'italic' }}>
+                    {d.bodyAnalysisModel ? 'Processing…' : 'No body language recording was captured for this simulation.'}
+                  </p>
+                )}
+              </div>
+
+              {/* AI Coach Chat */}
+              <div className="sim-detail-section">
+                <h3 className="sim-detail-heading">AI Coach</h3>
+                <CoachChat simulationId={d.id} introMessage={coachIntro} embedded />
+              </div>
             </div>
           </div>
           <BottomBar tab={tab} onTab={switchTab} />
@@ -470,44 +907,28 @@ export default function App() {
                 <span>New Case</span>
               </button>
             </div>
-            <div className="profile-row">
-              <div className="profile-avatar">D</div>
-              <div className="profile-info">
-                <div className="name">Cases</div>
-                <div className="sub">{cases.length} case{cases.length !== 1 ? 's' : ''}</div>
+            <div className="cases-subheader">
+              <span className="cases-count">{cases.length} case{cases.length !== 1 ? 's' : ''}</span>
+              <div className="sort-pills">
+                {[['newest','Recent'],['oldest','Oldest'],['lastName','Name']].map(([k,l]) => (
+                  <button key={k} className={`sort-pill${caseSort === k ? ' active' : ''}`} onClick={() => setCaseSort(k)}>{l}</button>
+                ))}
               </div>
             </div>
-            {/* Filter */}
-            <div className="filter-bar">
-              {['Newest','Oldest','Last Name'].map((label, i) => {
-                const keys = ['newest','oldest','lastName'];
-                return (
-                  <button key={keys[i]} className={`filter-chip${caseSort === keys[i] ? ' active' : ''}`} onClick={() => setCaseSort(keys[i])}>
-                    {label}
-                  </button>
-                );
-              })}
-              <button className="filter-chip" onClick={() => setFilterOpen(true)}>
-                {Icons.filter} Filter
-              </button>
-            </div>
-            {/* Tile grid */}
             <div className="tile-grid">
               {sortedCases.map((c) => {
                 const accent = tileAccent(c.id);
                 const isAuto = (c.description || '').toLowerCase().includes('car') || (c.description || '').toLowerCase().includes('vehicle') || (c.description || '').toLowerCase().includes('rear end');
                 return (
                   <div key={c.id} className="tile" style={{ '--tile-accent': accent }} onClick={() => goDetail('case', c)}>
-                    <div className="tile-icon">
-                      {isAuto ? Icons.car : Icons.walking}
-                    </div>
+                    <div className="tile-icon">{isAuto ? Icons.car : Icons.walking}</div>
                     <div className="tile-label">#{c.caseNumber}</div>
                     <div className="tile-sublabel">{c.lastName}, {c.firstName}</div>
                   </div>
                 );
               })}
             </div>
-            {cases.length === 0 && <p style={{ textAlign: 'center', padding: 40, color: 'var(--muted)', fontSize: 14 }}>No cases yet</p>}
+            {cases.length === 0 && <p style={{ textAlign: 'center', padding: 40, color: 'var(--muted)', fontSize: 14 }}>No cases yet. Tap + New Case to get started.</p>}
           </>
         )}
 
@@ -541,75 +962,9 @@ export default function App() {
           </>
         )}
 
-        {/* ===== SIMS (Video Analysis) ===== */}
+        {/* ===== SIMS (Simulation Feed) ===== */}
         {tab === 'sims' && (
-          <>
-            <div className="feed-header">
-              <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="header-logo" />
-              <h1 className="header-title">Simulations</h1>
-            </div>
-            <div className="card">
-              <h3>Analyze Video (Gemini AI)</h3>
-              <div className="input-mode-toggle" style={{ marginBottom: 10 }}>
-                {[['record','Record'],['upload','Upload'],['url','YouTube']].map(([k,l]) => (
-                  <button key={k} className={`mode-btn${inputMode === k ? ' active' : ''}`} onClick={() => { setInputMode(k); setRecordedBlob(null); }} disabled={analyzing}>{l}</button>
-                ))}
-              </div>
-
-              {inputMode === 'record' && (
-                <div>
-                  <WebcamRecorder onRecordingComplete={handleRecordingComplete} disabled={analyzing} />
-                  {recordedBlob && !analyzing && (
-                    <button className="btn primary" style={{ marginTop: 8, width: '100%' }} onClick={handleAnalyzeRecording}>Analyze Recording</button>
-                  )}
-                </div>
-              )}
-              {inputMode === 'url' && (
-                <form className="analyze-form" onSubmit={handleAnalyzeUrl}>
-                  <input className="input" type="url" placeholder="https://youtube.com/watch?v=..." value={youtubeUrl} onChange={e => setYoutubeUrl(e.target.value)} required disabled={analyzing} />
-                  <button className="btn primary" disabled={analyzing}>{analyzing ? '…' : 'Go'}</button>
-                </form>
-              )}
-              {inputMode === 'upload' && (
-                <form className="analyze-form upload-form" onSubmit={handleAnalyzeUpload}>
-                  <label className="file-label">
-                    <input ref={fileInputRef} type="file" accept="video/*" className="file-input" onChange={e => setVideoFile(e.target.files[0] || null)} disabled={analyzing} />
-                    <span className="file-name">{videoFile ? videoFile.name : 'Choose a video…'}</span>
-                  </label>
-                  <button className="btn primary" disabled={analyzing || !videoFile}>{analyzing ? '…' : 'Analyze'}</button>
-                </form>
-              )}
-              {analyzing && analyzeStatus && <p className="muted" style={{ marginTop: 8, fontSize: 13 }}>{analyzeStatus}</p>}
-              {analysisError && <p className="error-text" style={{ marginTop: 8 }}>{analysisError}</p>}
-            </div>
-
-            {analysisResult && (
-              <div className="card">
-                <h3>Result</h3>
-                <div className="analysis-meta">{analysisResult.model} · {analysisResult.durationMs}ms</div>
-                <pre className="analysis-text">{analysisResult.analysisText}</pre>
-              </div>
-            )}
-
-            {pastAnalyses.length > 0 && (
-              <>
-                <div style={{ padding: '12px 16px 4px', fontSize: 15, fontWeight: 600 }}>History</div>
-                <div className="tile-grid">
-                  {pastAnalyses.map((a) => {
-                    const accent = tileAccent(a.id);
-                    const label = a.youtubeUrl.startsWith('upload://') ? a.youtubeUrl.replace('upload://', '') : 'YouTube';
-                    return (
-                      <div key={a.id} className="tile" style={{ '--tile-accent': accent }} onClick={() => goDetail('analysis', a)}>
-                        <div className="tile-icon">{Icons.sims}</div>
-                        <div className="tile-label" style={{ fontSize: 12 }}>{label}</div>
-                        <div className="tile-sublabel">{new Date(a.createdAt).toLocaleDateString()}</div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </>
-            )}
-          </>
+          <SimsFeed goDetail={goDetail} />
         )}
 
         {/* ===== SETTINGS ===== */}
@@ -626,6 +981,10 @@ export default function App() {
                 <button className={`theme-btn${theme === 'light' ? ' active' : ''}`} onClick={() => handleThemeChange('light')}>Light</button>
               </div>
             </div>
+            <div className="card">
+              <h3>Prompts</h3>
+              <PromptManager showToast={showToast} />
+            </div>
           </>
         )}
       </div>
@@ -634,18 +993,6 @@ export default function App() {
 
       {toast && <div className="toast">{toast}</div>}
 
-      {/* Filter popup */}
-      {filterOpen && (
-        <div className="filter-popup-overlay" onClick={() => setFilterOpen(false)}>
-          <div className="filter-popup" onClick={e => e.stopPropagation()}>
-            <h3>Sort & Filter</h3>
-            {[['newest','Most Recent Case'],['oldest','Oldest Case'],['lastName','Last Name']].map(([k,l]) => (
-              <button key={k} className={`filter-option${caseSort === k ? ' active' : ''}`} onClick={() => { setCaseSort(k); setFilterOpen(false); }}>{l}</button>
-            ))}
-            <button className="filter-option" onClick={() => setFilterOpen(false)} style={{ color: 'var(--muted)' }}>Cancel</button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

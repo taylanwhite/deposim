@@ -21,6 +21,7 @@ model Organization {
   clients    Client[]
   cases      Case[]
   brandings  Branding[] @relation("BrandingOrganization")
+  prompts    Prompt[]
 
   @@map("organizations")
 }
@@ -36,6 +37,7 @@ model Company {
   clients     Client[]
   cases       Case[]
   brandings   Branding[]   @relation("BrandingCompany")
+  prompts     Prompt[]
 
   @@map("companies")
 }
@@ -56,6 +58,7 @@ model Client {
   company     Company?     @relation(fields: [companyId], references: [id], onDelete: SetNull)
   cases       Case[]
   brandings   Branding[]   @relation("BrandingClient")
+  prompts     Prompt[]
 
   @@map("clients")
 }
@@ -78,6 +81,7 @@ model Case {
   company      Company?     @relation(fields: [companyId], references: [id], onDelete: SetNull)
   client       Client?     @relation(fields: [clientId], references: [id], onDelete: SetNull)
   simulations  Simulation[]
+  prompts      Prompt[]
 
   @@map("cases")
 }
@@ -115,12 +119,29 @@ enum PromptType {
 }
 
 model Prompt {
-  id        String     @id @default(cuid())
-  type      PromptType
-  name      String
-  language  String?    // e.g. 'en', 'es' for first_message; null = language-agnostic
-  content   String
-  isActive  Boolean    @default(true) @map("is_active")
+  id             String     @id @default(cuid())
+  type           PromptType
+  name           String
+  language       String?    // e.g. 'en', 'es' for first_message; null = language-agnostic
+  content        String
+  isActive       Boolean    @default(true) @map("is_active")
+
+  // Version history: parentId points to the prompt this was derived from
+  parentId       String?    @map("parent_id")
+  parent         Prompt?    @relation("PromptVersions", fields: [parentId], references: [id], onDelete: SetNull)
+  versions       Prompt[]   @relation("PromptVersions")
+
+  // Ownership: a prompt can belong to an org, company, client, or case
+  organizationId String?    @map("organization_id")
+  companyId      String?    @map("company_id")
+  clientId       String?    @map("client_id")
+  caseId         String?    @map("case_id")
+
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  company        Company?      @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  client         Client?       @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  case           Case?         @relation(fields: [caseId], references: [id], onDelete: SetNull)
+
   createdAt DateTime   @default(now()) @map("created_at")
   updatedAt DateTime   @updatedAt @map("updated_at")
 
@@ -141,6 +162,8 @@ model Simulation {
   callDurationSecs  Int?     @map("call_duration_secs")
   transcriptSummary String?  @map("transcript_summary")
   callSummaryTitle  String?  @map("call_summary_title")
+  bodyAnalysis      String?  @map("body_analysis")
+  bodyAnalysisModel String?  @map("body_analysis_model")
   createdAt         DateTime @default(now()) @map("created_at")
 
   case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)

@@ -16,7 +16,10 @@ const upload = multer({
   dest: os.tmpdir(),
   limits: { fileSize: 500 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    if (file.mimetype.startsWith('video/')) return cb(null, true);
+    if (file.mimetype && file.mimetype.startsWith('video/')) return cb(null, true);
+    if (file.mimetype === 'application/octet-stream') return cb(null, true);
+    const name = (file.originalname || '').toLowerCase();
+    if (/\.(webm|mp4|mov|avi|mkv)$/.test(name)) return cb(null, true);
     cb(new Error('Only video files are allowed'));
   },
 });
@@ -507,6 +510,65 @@ app.get('/api/prompts', async (req, res) => {
   }
 });
 
+// Get the current (active) prompts grouped by type → language for the UI
+app.get('/api/prompts/current', async (req, res) => {
+  try {
+    const prompts = await prisma.prompt.findMany({
+      where: { isActive: true },
+      orderBy: { updatedAt: 'desc' },
+    });
+    // Group: { system: [...], first_message: { en: {...}, es: {...}, ... }, media_analysis: [...] }
+    const grouped = {};
+    for (const p of prompts) {
+      if (!grouped[p.type]) grouped[p.type] = [];
+      grouped[p.type].push(p);
+    }
+    res.json(grouped);
+  } catch (err) {
+    console.error('GET /api/prompts/current', err);
+    res.status(500).json({ error: 'Failed' });
+  }
+});
+
+// Get version history for a specific prompt (all ancestors + descendants in chain)
+app.get('/api/prompts/:id/history', async (req, res) => {
+  try {
+    const prompt = await prisma.prompt.findUnique({ where: { id: req.params.id } });
+    if (!prompt) return res.status(404).json({ error: 'Prompt not found' });
+
+    // Walk up to find root
+    let rootId = prompt.id;
+    let current = prompt;
+    while (current.parentId) {
+      current = await prisma.prompt.findUnique({ where: { id: current.parentId } });
+      if (!current) break;
+      rootId = current.id;
+    }
+
+    // Get all prompts that share same root (walk entire tree)
+    const allVersions = [];
+    const queue = [rootId];
+    const visited = new Set();
+    while (queue.length > 0) {
+      const id = queue.shift();
+      if (visited.has(id)) continue;
+      visited.add(id);
+      const p = await prisma.prompt.findUnique({ where: { id } });
+      if (p) {
+        allVersions.push(p);
+        const children = await prisma.prompt.findMany({ where: { parentId: id } });
+        children.forEach(c => queue.push(c.id));
+      }
+    }
+
+    allVersions.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    res.json(allVersions);
+  } catch (err) {
+    console.error('GET /api/prompts/:id/history', err);
+    res.status(500).json({ error: 'Failed to get history' });
+  }
+});
+
 app.get('/api/prompts/:id', async (req, res) => {
   try {
     const p = await prisma.prompt.findUnique({ where: { id: req.params.id } });
@@ -520,7 +582,7 @@ app.get('/api/prompts/:id', async (req, res) => {
 
 app.post('/api/prompts', async (req, res) => {
   try {
-    const { type, name, language, content, isActive } = req.body;
+    const { type, name, language, content, isActive, organizationId, companyId, clientId, caseId } = req.body;
     if (!type || !VALID_PROMPT_TYPES.includes(type))
       return res.status(400).json({ error: 'type must be one of: ' + VALID_PROMPT_TYPES.join(', ') });
     if (!name || !String(name).trim())
@@ -534,6 +596,10 @@ app.post('/api/prompts', async (req, res) => {
         language: language != null && language !== '' ? String(language) : null,
         content: String(content).trim(),
         isActive: isActive !== undefined ? Boolean(isActive) : true,
+        organizationId: organizationId || null,
+        companyId: companyId || null,
+        clientId: clientId || null,
+        caseId: caseId || null,
       },
     });
     res.status(201).json(p);
@@ -543,21 +609,46 @@ app.post('/api/prompts', async (req, res) => {
   }
 });
 
+// PATCH = create a NEW version (old becomes inactive, new one inherits)
 app.patch('/api/prompts/:id', async (req, res) => {
   try {
-    const { type, name, language, content, isActive } = req.body;
-    const data = {};
-    if (type !== undefined) {
-      if (!VALID_PROMPT_TYPES.includes(type))
-        return res.status(400).json({ error: 'type must be one of: ' + VALID_PROMPT_TYPES.join(', ') });
-      data.type = type;
+    const existing = await prisma.prompt.findUnique({ where: { id: req.params.id } });
+    if (!existing) return res.status(404).json({ error: 'Prompt not found' });
+
+    const { name, language, content, isActive } = req.body;
+
+    // If only toggling isActive, update in place (no version needed)
+    if (isActive !== undefined && content === undefined && name === undefined) {
+      const p = await prisma.prompt.update({
+        where: { id: req.params.id },
+        data: { isActive: Boolean(isActive) },
+      });
+      return res.json(p);
     }
-    if (name != null) data.name = String(name).trim();
-    if (language !== undefined) data.language = language != null && language !== '' ? String(language) : null;
-    if (content != null) data.content = String(content).trim();
-    if (isActive !== undefined) data.isActive = Boolean(isActive);
-    const p = await prisma.prompt.update({ where: { id: req.params.id }, data });
-    res.json(p);
+
+    // Create new version, deactivate old one
+    const [newPrompt] = await prisma.$transaction([
+      prisma.prompt.create({
+        data: {
+          type: existing.type,
+          name: name != null ? String(name).trim() : existing.name,
+          language: language !== undefined ? (language != null && language !== '' ? String(language) : null) : existing.language,
+          content: content != null ? String(content).trim() : existing.content,
+          isActive: true,
+          parentId: existing.id,
+          organizationId: existing.organizationId,
+          companyId: existing.companyId,
+          clientId: existing.clientId,
+          caseId: existing.caseId,
+        },
+      }),
+      prisma.prompt.update({
+        where: { id: req.params.id },
+        data: { isActive: false },
+      }),
+    ]);
+
+    res.json(newPrompt);
   } catch (err) {
     if (err.code === 'P2025') return res.status(404).json({ error: 'Prompt not found' });
     console.error('PATCH /api/prompts/:id', err);
@@ -567,7 +658,7 @@ app.patch('/api/prompts/:id', async (req, res) => {
 
 app.delete('/api/prompts/:id', async (req, res) => {
   try {
-    await prisma.prompt.delete({ where: { id: req.params.id } });
+    await prisma.prompt.update({ where: { id: req.params.id }, data: { isActive: false } });
     res.status(204).send();
   } catch (err) {
     if (err.code === 'P2025') return res.status(404).json({ error: 'Prompt not found' });
@@ -655,20 +746,23 @@ app.post('/api/analyze-video/upload', upload.single('video'), async (req, res) =
 
     // Persist
     const originalName = req.file.originalname || 'recording.webm';
+    const analysisText = typeof result.text === 'string' ? result.text : JSON.stringify(result.text || '');
+    const durationMs = typeof result.durationMs === 'number' ? Math.round(result.durationMs) : null;
     const record = await prisma.videoAnalysis.create({
       data: {
-        youtubeUrl: 'upload://' + originalName,
+        youtubeUrl: 'upload://' + String(originalName).slice(0, 500),
         promptId: promptId || null,
-        model: result.model,
-        analysisText: result.text,
-        durationMs: result.durationMs,
+        model: String(result.model || 'gemini-2.5-flash'),
+        analysisText,
+        durationMs,
       },
     });
 
     res.status(201).json(record);
   } catch (err) {
     console.error('POST /api/analyze-video/upload', err);
-    res.status(500).json({ error: err.message || 'Video upload analysis failed' });
+    const msg = err.code ? `${err.message} (code: ${err.code})` : err.message;
+    res.status(500).json({ error: msg || 'Video upload analysis failed' });
   } finally {
     cleanupFiles(req.file?.path);
   }
@@ -706,6 +800,7 @@ app.get('/api/simulations', async (req, res) => {
       where,
       orderBy: { createdAt: 'desc' },
       take: 100,
+      include: { case: { select: { id: true, firstName: true, lastName: true, caseNumber: true } } },
     });
     res.json(list);
   } catch (err) {
@@ -725,6 +820,79 @@ app.get('/api/simulations/:id', async (req, res) => {
   }
 });
 
+// ---------- Upload body-language video for a simulation ----------
+// Accepts :id (simulation id), ?conversationId=xxx, or ?caseId=xxx (finds most recent sim for case)
+app.post('/api/simulations/:id/video', upload.single('video'), async (req, res) => {
+  try {
+    const simId = req.params.id;
+    const conversationId = req.query.conversationId || req.body?.conversationId;
+    const caseId = req.query.caseId || req.body?.caseId;
+
+    // Find the simulation - try by ID first, then by conversationId, then by caseId (most recent)
+    let sim = null;
+    if (simId && simId !== 'by-conversation' && simId !== 'by-case') {
+      sim = await prisma.simulation.findUnique({ where: { id: simId } });
+    }
+    if (!sim && conversationId) {
+      for (let attempt = 0; attempt < 6 && !sim; attempt++) {
+        sim = await prisma.simulation.findFirst({ where: { conversationId: String(conversationId) } });
+        if (!sim && attempt < 5) await new Promise(r => setTimeout(r, 3000));
+      }
+    }
+    if (!sim && caseId) {
+      // Find most recent simulation for this case (created in last 3 min)
+      const cutoff = new Date(Date.now() - 3 * 60 * 1000);
+      for (let attempt = 0; attempt < 6 && !sim; attempt++) {
+        sim = await prisma.simulation.findFirst({
+          where: { caseId: String(caseId), createdAt: { gte: cutoff } },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (!sim && attempt < 5) await new Promise(r => setTimeout(r, 3000));
+      }
+    }
+    if (!sim) return res.status(404).json({ error: 'Simulation not found' });
+
+    if (!req.file) return res.status(400).json({ error: 'No video file uploaded' });
+
+    // Normalize mimetype (browser may send application/octet-stream for webm)
+    let mimeType = req.file.mimetype || '';
+    if (!mimeType.startsWith('video/')) {
+      const ext = (req.file.originalname || '').toLowerCase().match(/\.(webm|mp4|mov|avi|mkv)$/);
+      mimeType = ext ? (ext[1] === 'webm' ? 'video/webm' : ext[1] === 'mp4' ? 'video/mp4' : 'video/' + ext[1]) : 'video/webm';
+    }
+
+    // Fetch the active media_analysis prompt
+    const mediaPrompt = await prisma.prompt.findFirst({
+      where: { type: 'media_analysis', isActive: true },
+      orderBy: { updatedAt: 'desc' },
+    });
+    const promptText = mediaPrompt
+      ? mediaPrompt.content
+      : 'Analyze this video for body language, stress indicators, and credibility assessment.';
+
+    // Run Gemini analysis
+    const result = await analyzeVideoFile(req.file.path, mimeType, promptText);
+
+    // Save analysis to the simulation
+    const updated = await prisma.simulation.update({
+      where: { id: sim.id },
+      data: {
+        bodyAnalysis: String(result.text || ''),
+        bodyAnalysisModel: String(result.model || 'gemini-2.5-flash'),
+      },
+    });
+
+    // Clean up temp file
+    fs.unlink(req.file.path, () => {});
+
+    res.json({ ok: true, bodyAnalysis: updated.bodyAnalysis, bodyAnalysisModel: updated.bodyAnalysisModel });
+  } catch (err) {
+    console.error('POST /api/simulations/:id/video', err);
+    if (req.file) fs.unlink(req.file.path, () => {});
+    res.status(500).json({ error: err.message || 'Video analysis failed' });
+  }
+});
+
 // ---------- Sim page (server-rendered ElevenLabs widget) ----------
 app.get('/api/sim/:caseId', async (req, res) => {
   try {
@@ -732,6 +900,228 @@ app.get('/api/sim/:caseId', async (req, res) => {
   } catch (err) {
     console.error('GET /api/sim/:caseId', err);
     if (!res.headersSent) res.status(500).send('Internal server error');
+  }
+});
+
+// ---------- AI Coach Chat (simulation analysis & prompt improvement) ----------
+app.post('/api/chat', async (req, res) => {
+  try {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'OPENAI_API_KEY not set' });
+
+    const { messages, simulationId } = req.body;
+    if (!Array.isArray(messages) || messages.length === 0)
+      return res.status(400).json({ error: 'messages array is required' });
+
+    // Build context from simulation if provided
+    let simContext = '';
+    if (simulationId) {
+      const sim = await prisma.simulation.findUnique({
+        where: { id: simulationId },
+        include: { case: true },
+      });
+      if (sim) {
+        const caseName = sim.case ? `${sim.case.firstName} ${sim.case.lastName}` : 'Unknown';
+        const caseNum = sim.case?.caseNumber || '';
+        const caseDesc = sim.case?.description || '';
+        const transcriptText = Array.isArray(sim.transcript)
+          ? sim.transcript.map(t => `${t.role === 'agent' ? 'Q' : 'A'}: ${t.message || t.original_message || ''}`).join('\n')
+          : '';
+
+        simContext = `
+--- SIMULATION CONTEXT ---
+Case: #${caseNum} — ${caseName}
+Case Description: ${caseDesc}
+Score: ${sim.winReady != null ? sim.winReady + '%' : 'N/A'}
+Score Reason: ${sim.winReadyReason || 'N/A'}
+Duration: ${sim.callDurationSecs ? Math.floor(sim.callDurationSecs / 60) + 'm ' + (sim.callDurationSecs % 60) + 's' : 'N/A'}
+Status: ${sim.status || 'N/A'}
+Summary: ${sim.callSummaryTitle || 'N/A'}
+Transcript Summary: ${sim.transcriptSummary || 'N/A'}
+Full Analysis: ${sim.winReadyAnalysis || 'N/A'}
+${transcriptText ? '\n--- TRANSCRIPT ---\n' + transcriptText : ''}
+--- END CONTEXT ---`;
+      }
+    }
+
+    // Also load current active system prompt for prompt-improvement questions
+    let activeSystemPrompt = '';
+    try {
+      const sp = await prisma.prompt.findFirst({
+        where: { type: 'system', isActive: true },
+        orderBy: { updatedAt: 'desc' },
+      });
+      if (sp) activeSystemPrompt = sp.content;
+    } catch (_) {}
+
+    const systemMessage = {
+      role: 'system',
+      content: `You are an expert deposition preparation coach and AI simulation analyst for DepoSim, a legal technology platform. You help attorneys and legal professionals:
+
+1. **Analyze simulation results**: Explain why scores are high or low, identify weak points in the deponent's performance, and suggest specific improvements.
+2. **Improve prompts**: When asked about the deposition simulation prompt, analyze whether it effectively tests the deponent and suggest improvements.
+3. **Strategic coaching**: Provide actionable advice on deposition preparation strategy, common pitfalls, and how to better prepare clients.
+
+Be concise but thorough. Use bullet points for clarity. When discussing scores, reference specific parts of the transcript or analysis. When suggesting prompt improvements, explain the reasoning.
+
+${simContext}
+
+${activeSystemPrompt ? '--- CURRENT SYSTEM PROMPT (for the AI opposing counsel) ---\n' + activeSystemPrompt.slice(0, 3000) + (activeSystemPrompt.length > 3000 ? '\n[truncated]' : '') + '\n--- END PROMPT ---' : ''}`,
+    };
+
+    // Only take last 20 messages to stay within context limits
+    const chatMessages = [
+      systemMessage,
+      ...messages.slice(-20).map(m => ({
+        role: m.role === 'assistant' ? 'assistant' : 'user',
+        content: String(m.content || ''),
+      })),
+    ];
+
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'o3-mini',
+        messages: chatMessages,
+      }),
+      signal: AbortSignal.timeout(120_000),
+    });
+
+    const data = await resp.json();
+    if (data.error) {
+      return res.status(502).json({ error: 'OpenAI error: ' + (data.error.message || JSON.stringify(data.error)) });
+    }
+
+    const reply = data.choices?.[0]?.message?.content || '';
+    res.json({ role: 'assistant', content: reply });
+  } catch (err) {
+    console.error('POST /api/chat', err);
+    res.status(500).json({ error: err.message || 'Chat failed' });
+  }
+});
+
+// ---------- Translate first_message to all languages ----------
+app.post('/api/prompts/translate-all', async (req, res) => {
+  try {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'OPENAI_API_KEY not set' });
+
+    const { englishContent } = req.body;
+    if (!englishContent || !String(englishContent).trim())
+      return res.status(400).json({ error: 'englishContent is required' });
+
+    const content = String(englishContent).trim();
+
+    // All supported language codes (minus English)
+    const targetLangs = {
+      es: 'Spanish', fr: 'French', de: 'German', it: 'Italian',
+      pt: 'Portuguese', 'pt-br': 'Brazilian Portuguese', pl: 'Polish', nl: 'Dutch',
+      ru: 'Russian', ja: 'Japanese', ko: 'Korean', zh: 'Chinese (Simplified)',
+      hi: 'Hindi', ar: 'Arabic', tr: 'Turkish', sv: 'Swedish', da: 'Danish',
+      no: 'Norwegian', fi: 'Finnish', el: 'Greek', cs: 'Czech', ro: 'Romanian',
+      hu: 'Hungarian', id: 'Indonesian', th: 'Thai', vi: 'Vietnamese',
+      bg: 'Bulgarian', hr: 'Croatian', fil: 'Filipino', ms: 'Malay',
+      sk: 'Slovak', ta: 'Tamil', uk: 'Ukrainian',
+    };
+
+    const langList = Object.entries(targetLangs).map(([code, name]) => `"${code}": "${name}"`).join(', ');
+
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `You are a professional translator. Translate the given English text into ALL of the following languages. Maintain the same tone, meaning, and formatting. Return ONLY a JSON object where each key is the language code and the value is the translated text. No markdown, no explanation, just the JSON object.\n\nLanguages: {${langList}}`,
+          },
+          { role: 'user', content },
+        ],
+        temperature: 0.3,
+      }),
+      signal: AbortSignal.timeout(120_000),
+    });
+
+    const data = await resp.json();
+    if (data.error) return res.status(502).json({ error: 'OpenAI: ' + (data.error.message || JSON.stringify(data.error)) });
+
+    let reply = data.choices?.[0]?.message?.content || '';
+    // Strip markdown code fences if present
+    reply = reply.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+
+    let translations;
+    try { translations = JSON.parse(reply); } catch {
+      return res.status(502).json({ error: 'Failed to parse translations from AI response' });
+    }
+
+    // Now update/create prompts for each language
+    const results = { updated: 0, created: 0, errors: [] };
+
+    for (const [lang, translated] of Object.entries(translations)) {
+      if (!translated || typeof translated !== 'string') continue;
+      try {
+        // Find current active first_message for this language
+        const existing = await prisma.prompt.findFirst({
+          where: { type: 'first_message', isActive: true, language: lang },
+          orderBy: { updatedAt: 'desc' },
+        });
+
+        if (existing) {
+          // Create new version (deactivate old)
+          await prisma.$transaction([
+            prisma.prompt.create({
+              data: {
+                type: 'first_message',
+                name: existing.name,
+                language: lang,
+                content: String(translated).trim(),
+                isActive: true,
+                parentId: existing.id,
+                organizationId: existing.organizationId,
+                companyId: existing.companyId,
+                clientId: existing.clientId,
+                caseId: existing.caseId,
+              },
+            }),
+            prisma.prompt.update({ where: { id: existing.id }, data: { isActive: false } }),
+          ]);
+          results.updated++;
+        } else {
+          // Create new
+          const langNames = {
+            es: 'Spanish', fr: 'French', de: 'German', it: 'Italian', pt: 'Portuguese',
+            'pt-br': 'Portuguese (BR)', pl: 'Polish', nl: 'Dutch', ru: 'Russian',
+            ja: 'Japanese', ko: 'Korean', zh: 'Chinese', hi: 'Hindi', ar: 'Arabic',
+            tr: 'Turkish', sv: 'Swedish', da: 'Danish', no: 'Norwegian', fi: 'Finnish',
+            el: 'Greek', cs: 'Czech', ro: 'Romanian', hu: 'Hungarian', id: 'Indonesian',
+            th: 'Thai', vi: 'Vietnamese', bg: 'Bulgarian', hr: 'Croatian', fil: 'Filipino',
+            ms: 'Malay', sk: 'Slovak', ta: 'Tamil', uk: 'Ukrainian',
+          };
+          await prisma.prompt.create({
+            data: {
+              type: 'first_message',
+              name: `Berman Law Group - ${langNames[lang] || lang}`,
+              language: lang,
+              content: String(translated).trim(),
+              isActive: true,
+            },
+          });
+          results.created++;
+        }
+      } catch (err) {
+        results.errors.push(`${lang}: ${err.message}`);
+      }
+    }
+
+    res.json({ ok: true, ...results, languageCount: Object.keys(translations).length });
+  } catch (err) {
+    console.error('POST /api/prompts/translate-all', err);
+    res.status(500).json({ error: err.message || 'Translation failed' });
   }
 });
 
