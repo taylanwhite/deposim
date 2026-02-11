@@ -31,7 +31,8 @@ app.post('/api/webhook/elevenlabs', express.raw({ type: '*/*', limit: '10mb' }),
   try {
     await handleElevenLabsWebhook(req, res, prisma);
   } catch (err) {
-    console.error('POST /api/webhook/elevenlabs', err);
+    console.error('POST /api/webhook/elevenlabs error:', err.message);
+    console.error(err.stack);
     if (!res.headersSent) res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -850,6 +851,20 @@ app.post('/api/simulations/:id/video', upload.single('video'), async (req, res) 
         if (!sim && attempt < 5) await new Promise(r => setTimeout(r, 3000));
       }
     }
+    if (!sim && caseId) {
+      // Race: webhook may not have created the simulation yet. Create a stub so the video has a home.
+      // The webhook will update this record when it runs.
+      const caseExists = await prisma.case.findUnique({ where: { id: String(caseId) } });
+      if (caseExists) {
+        sim = await prisma.simulation.create({
+          data: {
+            caseId: String(caseId),
+            conversationId: conversationId ? String(conversationId) : null,
+            status: 'completed',
+          },
+        });
+      }
+    }
     if (!sim) return res.status(404).json({ error: 'Simulation not found' });
 
     if (!req.file) return res.status(400).json({ error: 'No video file uploaded' });
@@ -893,14 +908,76 @@ app.post('/api/simulations/:id/video', upload.single('video'), async (req, res) 
   }
 });
 
-// ---------- Sim page (server-rendered ElevenLabs widget) ----------
-app.get('/api/sim/:caseId', async (req, res) => {
+// ---------- Sim: signed URL for React SDK (agent + dynamic vars) ----------
+app.post('/api/sim/signed-url', async (req, res) => {
   try {
-    await handleSimPage(req, res, prisma);
+    const { caseId } = req.body || {};
+    if (!caseId || typeof caseId !== 'string') return res.status(400).json({ error: 'caseId required' });
+
+    const caseRecord = await prisma.case.findUnique({ where: { id: caseId } });
+    if (!caseRecord) return res.status(404).json({ error: 'Case not found' });
+
+    const firstName = caseRecord.firstName || '';
+    const lastName = caseRecord.lastName || '';
+    const name = `${firstName} ${lastName}`.trim() || 'Deponent';
+    const caseNumber = caseRecord.caseNumber || '';
+    const desc = caseRecord.description || '';
+    const phone = caseRecord.phone || '';
+    const caseInfo = `Case Number: ${caseNumber}\nDeponent: ${name}\nPhone: ${phone}\nDescription: ${desc}`;
+
+    let depoPrompt = '';
+    let firstMessage = '';
+    let primerMensaje = '';
+    try {
+      const [sysPrompt, fmEn, fmEs] = await Promise.all([
+        prisma.prompt.findFirst({ where: { type: 'system', isActive: true }, orderBy: { updatedAt: 'desc' } }),
+        prisma.prompt.findFirst({ where: { type: 'first_message', isActive: true, OR: [{ language: 'en' }, { language: null }] }, orderBy: { updatedAt: 'desc' } }),
+        prisma.prompt.findFirst({ where: { type: 'first_message', isActive: true, language: 'es' }, orderBy: { updatedAt: 'desc' } }),
+      ]);
+      depoPrompt = sysPrompt?.content || 'No system prompt configured.';
+      firstMessage = fmEn?.content || 'Hello, I will be conducting your deposition practice today.';
+      primerMensaje = fmEs?.content || '';
+    } catch (e) {
+      console.error('[sim] Error loading prompts:', e.message);
+    }
+
+    const agentId = process.env.ELEVENLABS_AGENT_ID || 'agent_4901kgr2443mem1t7s9gnrbmhaq1';
+    const apiKey = process.env.ELEVENLABS_API_KEY || process.env.ELEVENLABS_XI_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'ELEVENLABS_API_KEY not set' });
+
+    const url = new URL('https://api.elevenlabs.io/v1/convai/conversation/get-signed-url');
+    url.searchParams.set('agent_id', agentId);
+    url.searchParams.set('include_conversation_id', 'true');
+
+    const elevenRes = await fetch(url.toString(), {
+      headers: { 'xi-api-key': apiKey },
+    });
+    if (!elevenRes.ok) {
+      const errText = await elevenRes.text();
+      console.error('[sim] ElevenLabs signed-url error:', elevenRes.status, errText);
+      return res.status(502).json({ error: 'Failed to get signed URL', detail: errText });
+    }
+    const { signed_url: signedUrl } = await elevenRes.json();
+    if (!signedUrl) return res.status(502).json({ error: 'No signed_url in response' });
+
+    const dynamicVariables = {
+      depo_prompt: depoPrompt,
+      first_message: firstMessage,
+      primer_mensaje: primerMensaje,
+      case_id: caseId,
+      case_info: caseInfo,
+    };
+
+    res.json({ signedUrl, dynamicVariables, case: { name, caseNumber } });
   } catch (err) {
-    console.error('GET /api/sim/:caseId', err);
-    if (!res.headersSent) res.status(500).send('Internal server error');
+    console.error('POST /api/sim/signed-url', err);
+    res.status(500).json({ error: err.message || 'Server error' });
   }
+});
+
+// ---------- Sim page (legacy HTML - redirect to React) ----------
+app.get('/api/sim/:caseId', (req, res) => {
+  res.redirect(302, `/sim/${req.params.caseId}`);
 });
 
 // ---------- AI Coach Chat (simulation analysis & prompt improvement) ----------
@@ -932,13 +1009,13 @@ app.post('/api/chat', async (req, res) => {
 --- SIMULATION CONTEXT ---
 Case: #${caseNum} — ${caseName}
 Case Description: ${caseDesc}
-Score: ${sim.winReady != null ? sim.winReady + '%' : 'N/A'}
-Score Reason: ${sim.winReadyReason || 'N/A'}
+Score: ${sim.score != null ? sim.score + '%' : 'N/A'}
+Score Reason: ${sim.scoreReason || 'N/A'}
 Duration: ${sim.callDurationSecs ? Math.floor(sim.callDurationSecs / 60) + 'm ' + (sim.callDurationSecs % 60) + 's' : 'N/A'}
 Status: ${sim.status || 'N/A'}
 Summary: ${sim.callSummaryTitle || 'N/A'}
 Transcript Summary: ${sim.transcriptSummary || 'N/A'}
-Full Analysis: ${sim.winReadyAnalysis || 'N/A'}
+Full Analysis: ${sim.fullAnalysis || 'N/A'}
 ${transcriptText ? '\n--- TRANSCRIPT ---\n' + transcriptText : ''}
 --- END CONTEXT ---`;
       }

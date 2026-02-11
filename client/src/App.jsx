@@ -1,7 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
+import { Routes, Route } from 'react-router-dom';
 import './App.css';
+import SimPage from './SimPage';
 
 const API = '/api';
+
 
 const DEFAULT_CASE_DESCRIPTION = `My client Mr. Steve Smith was injured when he was traveling North on State Road 441 in Boca Raton. While stopped at a light at the intersection of Clintmore road and 441, Mr. Smith was rear ended by Defendant Jane Doe. Mr. Smith was transported by ems to West Boca Regional Medial Center for neck and back pain. The property damage to his car was over $5,000. Since the accident Mr. Smith has treated with a chiropractor, had a mri which had positive findings and has a surgical recommendation. The policy limits of the defendant are $100k.`;
 
@@ -182,12 +185,12 @@ function SimsFeed({ goDetail }) {
       )}
       <div className="sims-feed">
         {sims.map(s => {
-          const scoreColor = s.winReady >= 75 ? '#58c322' : s.winReady >= 50 ? '#ffab00' : '#ed4956';
+          const scoreColor = s.score >= 75 ? '#58c322' : s.score >= 50 ? '#ffab00' : '#ed4956';
           const caseName = s.case ? `${s.case.firstName || ''} ${s.case.lastName || ''}`.trim() : '';
           return (
             <button key={s.id} className="sim-feed-item" onClick={() => goDetail('simulation', s)}>
               <div className="sim-feed-score" style={{ borderColor: scoreColor, color: scoreColor }}>
-                {s.winReady != null ? s.winReady + '%' : '—'}
+                {s.score != null ? s.score + '%' : '—'}
               </div>
               <div className="sim-feed-info">
                 <div className="sim-feed-title">{s.callSummaryTitle || 'Simulation'}</div>
@@ -458,6 +461,20 @@ function PromptManager({ showToast }) {
   );
 }
 
+/* ===== Collapsible Section (for Simulation detail) ===== */
+function CollapsibleSection({ title, defaultOpen = true, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className={`sim-detail-section sim-detail-collapsible${open ? ' open' : ''}`}>
+      <button type="button" className="sim-detail-section-header" onClick={() => setOpen((o) => !o)}>
+        <span className="sim-detail-section-title">{title}</span>
+        <span className="sim-detail-chevron">›</span>
+      </button>
+      {open && <div className="sim-detail-section-body">{children}</div>}
+    </div>
+  );
+}
+
 /* ===== Human-readable Analysis renderer ===== */
 function AnalysisDisplay({ data }) {
   // Try to parse as JSON
@@ -652,7 +669,7 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
             <span className="k">Created</span><span className="v">{new Date(d.createdAt).toLocaleDateString()}</span>
           </div>
           <div className="case-detail-actions">
-            <a className="btn btn-sm primary" href={`/api/sim/${d.id}`} target="_blank" rel="noopener">
+            <a className="btn btn-sm primary" href={`/sim/${d.id}`} target="_blank" rel="noopener">
               Start DepoSim
             </a>
           </div>
@@ -665,13 +682,13 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
             {sims.map(s => (
               <div key={s.id} className="sim-card" onClick={() => goDetail('simulation', s, currentDetail)}>
                 <div className="sim-card-top">
-                  <span className="sim-score" style={{ color: s.winReady >= 75 ? '#58c322' : s.winReady >= 50 ? '#ffab00' : '#ed4956' }}>
-                    {s.winReady != null ? `${s.winReady}%` : '—'}
+                  <span className="sim-score" style={{ color: s.score >= 75 ? '#58c322' : s.score >= 50 ? '#ffab00' : '#ed4956' }}>
+                    {s.score != null ? `${s.score}%` : '—'}
                   </span>
                   <span className="sim-title">{s.callSummaryTitle || s.eventType || 'Simulation'}</span>
                   <span className="sim-date">{new Date(s.createdAt).toLocaleDateString()}</span>
                 </div>
-                {s.winReadyReason && <div className="sim-reason">{s.winReadyReason}</div>}
+                {s.scoreReason && <div className="sim-reason">{s.scoreReason}</div>}
                 {s.callDurationSecs != null && <div className="sim-duration">{Math.floor(s.callDurationSecs / 60)}m {s.callDurationSecs % 60}s</div>}
               </div>
             ))}
@@ -685,7 +702,7 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
 }
 
 /* ===== Main App ===== */
-export default function App() {
+function MainApp() {
   const [tab, setTab] = useState('cases');
   const [detail, setDetail] = useState(null); // { type, data }
   const [cases, setCases] = useState([]);
@@ -798,9 +815,9 @@ export default function App() {
       );
     }
     if (detail.type === 'simulation') {
-      const scoreColor = d.winReady >= 75 ? '#58c322' : d.winReady >= 50 ? '#ffab00' : '#ed4956';
+      const scoreColor = d.score >= 75 ? '#58c322' : d.score >= 50 ? '#ffab00' : '#ed4956';
       const coachIntro = d.callSummaryTitle
-        ? `I've loaded **${d.callSummaryTitle}** (Score: ${d.winReady != null ? d.winReady + '%' : 'N/A'}). Ask me anything — why the score was low, how to improve, or whether your prompt is effective.`
+        ? `I've loaded **${d.callSummaryTitle}** (Score: ${d.score != null ? d.score + '%' : 'N/A'}). Ask me anything — why the score was low, how to improve, or whether your prompt is effective.`
         : 'Ask me anything about this simulation — performance, improvements, or deposition strategy.';
       return (
         <div className="app-shell">
@@ -810,48 +827,34 @@ export default function App() {
               <h2>Simulation</h2>
             </div>
             <div className="detail-body">
-              {/* Score hero */}
-              <div className="sim-detail-score">
-                <div className="sim-detail-ring" style={{ '--score-color': scoreColor }}>
-                  <span className="sim-detail-pct">{d.winReady != null ? `${d.winReady}%` : '—'}</span>
+              <CollapsibleSection title="Summary" defaultOpen={true}>
+                {d.callSummaryTitle && <div className="sim-detail-title">{d.callSummaryTitle}</div>}
+                <div className="sim-detail-score-inner">
+                  <div className="sim-detail-ring" style={{ '--score-color': scoreColor }}>
+                    <span className="sim-detail-pct">{d.score != null ? `${d.score}%` : '—'}</span>
+                  </div>
+                  <div className="sim-detail-label">Score</div>
+                  {d.scoreReason && <div className="sim-detail-reason">{d.scoreReason}</div>}
                 </div>
-                <div className="sim-detail-label">Score</div>
-              </div>
+                <div className="sim-detail-meta">
+                  {d.callDurationSecs != null && <span className="sim-detail-meta-item"><span className="sim-detail-meta-label">Duration</span> {Math.floor(d.callDurationSecs / 60)}m {d.callDurationSecs % 60}s</span>}
+                  <span className="sim-detail-meta-item"><span className="sim-detail-meta-label">Completed</span> {new Date(d.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {new Date(d.createdAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</span>
+                </div>
+                {d.transcriptSummary && (
+                  <div className="sim-detail-transcript-wrap">
+                    <div className="sim-detail-heading">Transcript Summary</div>
+                    <p className="sim-detail-text">{d.transcriptSummary}</p>
+                  </div>
+                )}
+              </CollapsibleSection>
 
-              {/* Summary card */}
-              {(d.callSummaryTitle || d.winReadyReason) && (
-                <div className="sim-detail-section">
-                  {d.callSummaryTitle && <div className="sim-detail-title">{d.callSummaryTitle}</div>}
-                  {d.winReadyReason && <div className="sim-detail-reason">{d.winReadyReason}</div>}
-                </div>
+              {d.fullAnalysis && (
+                <CollapsibleSection title="Full Analysis" defaultOpen={true}>
+                  <AnalysisDisplay data={d.fullAnalysis} />
+                </CollapsibleSection>
               )}
 
-              {/* Meta */}
-              <div className="sim-detail-meta">
-                {d.callDurationSecs != null && <span>{Math.floor(d.callDurationSecs / 60)}m {d.callDurationSecs % 60}s</span>}
-                {d.status && <span>{d.status}</span>}
-                <span>{new Date(d.createdAt).toLocaleString()}</span>
-              </div>
-
-              {/* Transcript summary */}
-              {d.transcriptSummary && (
-                <div className="sim-detail-section">
-                  <h3 className="sim-detail-heading">Transcript Summary</h3>
-                  <p className="sim-detail-text">{d.transcriptSummary}</p>
-                </div>
-              )}
-
-              {/* Full analysis */}
-              {d.winReadyAnalysis && (
-                <div className="sim-detail-section">
-                  <h3 className="sim-detail-heading">Full Analysis</h3>
-                  <AnalysisDisplay data={d.winReadyAnalysis} />
-                </div>
-              )}
-
-              {/* Body Language Analysis (Gemini) */}
-              <div className="sim-detail-section">
-                <h3 className="sim-detail-heading">Body Language Analysis</h3>
+              <CollapsibleSection title="Body Language Analysis" defaultOpen={false}>
                 {d.bodyAnalysis ? (
                   <AnalysisDisplay data={d.bodyAnalysis} />
                 ) : (
@@ -859,13 +862,11 @@ export default function App() {
                     {d.bodyAnalysisModel ? 'Processing…' : 'No body language recording was captured for this simulation.'}
                   </p>
                 )}
-              </div>
+              </CollapsibleSection>
 
-              {/* AI Coach Chat */}
-              <div className="sim-detail-section">
-                <h3 className="sim-detail-heading">AI Coach</h3>
+              <CollapsibleSection title="AI Coach" defaultOpen={false}>
                 <CoachChat simulationId={d.id} introMessage={coachIntro} embedded />
-              </div>
+              </CollapsibleSection>
             </div>
           </div>
           <BottomBar tab={tab} onTab={switchTab} />
@@ -994,5 +995,14 @@ export default function App() {
       {toast && <div className="toast">{toast}</div>}
 
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/sim/:caseId" element={<SimPage />} />
+      <Route path="*" element={<MainApp />} />
+    </Routes>
   );
 }

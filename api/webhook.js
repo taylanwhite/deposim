@@ -109,61 +109,80 @@ async function handleElevenLabsWebhook(req, res, prisma) {
 
   const conversationId = data.conversation_id ? String(data.conversation_id) : null;
 
-  // ---------- Idempotency: skip if conversation_id already stored ----------
+  // ---------- Idempotency: update existing if conversation_id already stored (e.g. stub from video upload) ----------
+  let existing = null;
   if (conversationId) {
-    const existing = await prisma.simulation.findFirst({
+    existing = await prisma.simulation.findFirst({
       where: { conversationId },
     });
-    if (existing) {
-      return res.json({ ok: true, duplicate: true, case_id: caseId, conversation_id: conversationId });
-    }
+  }
+  if (!existing && conversationId) {
+    // Stub may have been created by video upload before conversationId was known - find recent case stub
+    const cutoff = new Date(Date.now() - 5 * 60 * 1000);
+    existing = await prisma.simulation.findFirst({
+      where: {
+        caseId,
+        createdAt: { gte: cutoff },
+        fullAnalysis: null,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
   }
 
-  // ---------- Run deposition win_ready analysis ----------
+  // ---------- Run deposition score analysis ----------
   const transcript = data.transcript || null;
   const meta = (typeof data.metadata === 'object' && data.metadata) || {};
   const analysis = (typeof data.analysis === 'object' && data.analysis) || {};
 
-  let winReady = 0;
-  let winReadyReason = '';
-  let winReadyAnalysis = null;
+  let score = 0;
+  let scoreReason = '';
+  let fullAnalysis = null;
 
   if (Array.isArray(transcript) && transcript.length > 0) {
     const result = await analyzeDeposition(transcript);
     if (result.success) {
-      winReady = result.winReady;
-      winReadyReason = result.winReadyReason;
-      winReadyAnalysis = result.fullAnalysis;
+      score = result.score;
+      scoreReason = result.scoreReason;
+      fullAnalysis = result.fullAnalysis;
     } else {
       console.error('[webhook] OpenAI analysis failed:', result.error);
     }
   }
 
-  // ---------- Save Simulation ----------
-  const simulation = await prisma.simulation.create({
-    data: {
-      caseId,
-      conversationId,
-      eventType: type || null,
-      agentId: data.agent_id ? String(data.agent_id) : null,
-      status: data.status ? String(data.status) : null,
-      winReady,
-      winReadyReason,
-      winReadyAnalysis,
-      transcript: transcript || undefined,
-      callDurationSecs: meta.call_duration_secs != null ? parseInt(meta.call_duration_secs, 10) || null : null,
-      transcriptSummary: analysis.transcript_summary ? String(analysis.transcript_summary) : null,
-      callSummaryTitle: analysis.call_summary_title ? String(analysis.call_summary_title) : null,
-    },
-  });
+  const simData = {
+    caseId,
+    conversationId,
+    eventType: type || null,
+    agentId: data.agent_id ? String(data.agent_id) : null,
+    status: data.status ? String(data.status) : null,
+    score,
+    scoreReason,
+    fullAnalysis,
+    transcript: transcript || undefined,
+    callDurationSecs: meta.call_duration_secs != null ? parseInt(meta.call_duration_secs, 10) || null : null,
+    transcriptSummary: analysis.transcript_summary ? String(analysis.transcript_summary) : null,
+    callSummaryTitle: analysis.call_summary_title ? String(analysis.call_summary_title) : null,
+  };
+
+  let simulation;
+  if (existing) {
+    simulation = await prisma.simulation.update({
+      where: { id: existing.id },
+      data: simData,
+    });
+    console.log(`[webhook] Simulation updated (stub): ${simulation.id} case=${caseId} score=${score}`);
+  } else {
+    simulation = await prisma.simulation.create({
+      data: simData,
+    });
+    console.log(`[webhook] Simulation saved: ${simulation.id} case=${caseId} score=${score}`);
+  }
 
   // Touch case updatedAt
   await prisma.case.update({
     where: { id: caseId },
     data: { updatedAt: new Date() },
   });
-
-  console.log(`[webhook] Simulation saved: ${simulation.id} case=${caseId} winReady=${winReady}`);
 
   return res.json({
     ok: true,

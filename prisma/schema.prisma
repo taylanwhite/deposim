@@ -155,9 +155,9 @@ model Simulation {
   eventType         String?  @map("event_type")
   agentId           String?  @map("agent_id")
   status            String?
-  winReady          Int?     @map("win_ready")
-  winReadyReason    String?  @map("win_ready_reason")
-  winReadyAnalysis  String?  @map("win_ready_analysis")
+  score             Int?     @map("score")
+  scoreReason       String?  @map("score_reason")
+  fullAnalysis      String?  @map("full_analysis")
   transcript        Json?
   callDurationSecs  Int?     @map("call_duration_secs")
   transcriptSummary String?  @map("transcript_summary")
