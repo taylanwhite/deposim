@@ -50,16 +50,26 @@ Output (when there is something to rate):
 4) 3 short rules to follow next time.
 5) 5 drill questions based on risks you actually saw; then grade + rewrite for each. End with: "What are your 3 danger topics for the next depo?"
 
-You MUST start your response with a JSON block on its own line, exactly:
-{"score": <number 0-100>, "score_reason": "<short explanation>"}
+You MUST start your response with a JSON block on its own line. The JSON MUST include:
+- "score": number 0-100
+- "score_reason": string
+- "turn_scores": array of objects for EACH user (A:) response. Pair each A: with the immediately preceding Q:.
+  Each turn_scores item: { "question": "exact Q text", "response": "exact A text", "score": 0-100, "score_reason": "why this rating", "improvement": "what to do better" }
+  Order matches transcript order. If no A: responses, turn_scores is [].
+
+Example: {"score": 72, "score_reason": "Several risky moments", "turn_scores": [{"question": "What type of case?", "response": "Personal injury", "score": 85, "score_reason": "Brief, accurate", "improvement": "None needed"}]}
+
 After the JSON line, provide the full analysis (do NOT repeat the score or score_reason). When score is 0 (only when no substantive A: lines), keep the analysis short.`;
 
 /** Required output format appended to custom score prompts from DB */
 const SCORE_OUTPUT_FORMAT = `
 
-You MUST start your response with a JSON block on its own line, exactly:
-{"score": <number 0-100>, "score_reason": "<short explanation>"}
-After the JSON line, provide the full analysis (do NOT repeat the score or score_reason).`;
+You MUST start your response with a JSON block on its own line. The JSON MUST include:
+- "score": number 0-100
+- "score_reason": string
+- "turn_scores": array for each user (A:) response, paired with the preceding Q:. Each item: { "question", "response", "score", "score_reason", "improvement" }
+
+After the JSON line, provide the full analysis.`;
 
 /**
  * Build the messages array for OpenAI chat completion.
@@ -127,6 +137,7 @@ async function analyzeDeposition(transcript, scorePrompt = null) {
   let score = null;
   let scoreReason = '';
   let fullAnalysisText = content;
+  let turnScores = null;
   let foundJson = false;
 
   for (const line of content.split(/\r?\n/)) {
@@ -137,6 +148,7 @@ async function analyzeDeposition(transcript, scorePrompt = null) {
       if (typeof parsed.score === 'number') {
         score = Math.max(0, Math.min(100, Math.round(parsed.score)));
         scoreReason = String(parsed.score_reason || '');
+        if (Array.isArray(parsed.turn_scores)) turnScores = parsed.turn_scores;
         const jsonLineEnd = content.indexOf(trimmed) + trimmed.length;
         fullAnalysisText = content.slice(jsonLineEnd).trim();
         foundJson = true;
@@ -157,6 +169,7 @@ async function analyzeDeposition(transcript, scorePrompt = null) {
     score: score ?? 0,
     scoreReason,
     fullAnalysis: fullAnalysisText,
+    turnScores: turnScores || [],
   };
 }
 

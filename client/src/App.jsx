@@ -66,6 +66,14 @@ const Icons = {
       <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
     </svg>
   ),
+  transcript: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+    </svg>
+  ),
+  body: (
+    <span style={{ fontSize: 22 }}>😊</span>
+  ),
 };
 
 /* ===== Inline AI Coach for any prompt ===== */
@@ -242,39 +250,23 @@ function SimsFeed({ goDetail }) {
   return (
     <>
       <div className="feed-header">
-        <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="header-logo" />
-        <h1 className="header-title">Simulations</h1>
-      </div>
-      {loading && <p style={{ textAlign: 'center', padding: 40, color: 'var(--muted)', fontSize: 13 }}>Loading…</p>}
-      {!loading && sims.length === 0 && (
-        <div className="coach-intro" style={{ margin: '40px 16px' }}>
-          <div className="coach-intro-icon">&#127916;</div>
-          <h3>No Simulations Yet</h3>
-          <p>Run a DepoSim from any case to see your simulation history and analysis here.</p>
+        <div className="feed-header-left">
+          <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="header-logo" />
         </div>
-      )}
-      <div className="sims-feed">
-        {sims.map(s => {
-          const scoreColor = s.score >= 75 ? '#58c322' : s.score >= 50 ? '#ffab00' : '#ed4956';
-          const caseName = s.case ? `${s.case.firstName || ''} ${s.case.lastName || ''}`.trim() : '';
-          return (
-            <button key={s.id} className="sim-feed-item" onClick={() => goDetail('simulation', s)}>
-              <div className="sim-feed-score" style={{ borderColor: scoreColor, color: scoreColor }}>
-                {s.score != null ? s.score + '%' : '—'}
-              </div>
-              <div className="sim-feed-info">
-                <div className="sim-feed-title">{s.callSummaryTitle || 'Simulation'}</div>
-                {caseName && <div className="sim-feed-case">{caseName}{s.case?.caseNumber ? ` · #${s.case.caseNumber}` : ''}</div>}
-                <div className="sim-feed-meta">
-                  {new Date(s.createdAt).toLocaleDateString()}
-                  {s.callDurationSecs ? ` · ${Math.floor(s.callDurationSecs / 60)}m ${s.callDurationSecs % 60}s` : ''}
-                  {s.bodyAnalysis ? ' · Body analysis' : ''}
-                </div>
-              </div>
-              <span className="sim-feed-arrow">›</span>
-            </button>
-          );
-        })}
+        <h1 className="feed-header-title">Simulations</h1>
+        <div className="feed-header-right" />
+      </div>
+      <div className="call-history-section">
+        <h3 className="call-history-title">Simulation History</h3>
+        {loading && <p className="call-history-empty">Loading…</p>}
+        {!loading && sims.length === 0 && (
+          <p className="call-history-empty">No simulations yet. Run a DepoSim from any case to see results here.</p>
+        )}
+        <div className="sim-grid">
+          {sims.map(s => (
+            <SimCard key={s.id} sim={s} caseData={s.case} onClick={() => goDetail('simulation', s)} />
+          ))}
+        </div>
       </div>
     </>
   );
@@ -290,7 +282,7 @@ const LANG_NAMES = {
   id: 'Indonesian', th: 'Thai', vi: 'Vietnamese', bg: 'Bulgarian', hr: 'Croatian',
   fil: 'Filipino', ms: 'Malay', sk: 'Slovak', ta: 'Tamil', uk: 'Ukrainian',
 };
-const TYPE_LABELS = { system: 'System Prompt', first_message: 'First Message', media_analysis: 'Media Analysis', score: 'Score Analysis' };
+const TYPE_LABELS = { system: 'System Prompt', first_message: 'First Message', score: 'Score Analysis' };
 
 /* ===== Add Score Prompt (when none exists) ===== */
 function AddScorePrompt({ onCreated }) {
@@ -440,7 +432,7 @@ function PromptManager({ showToast }) {
 
   if (loading) return <p className="prompt-loading">Loading prompts…</p>;
 
-  const typeOrder = ['system', 'first_message', 'media_analysis', 'score'];
+  const typeOrder = ['system', 'first_message', 'score'];
 
   return (
     <div className="prompt-manager">
@@ -603,6 +595,216 @@ function PromptManager({ showToast }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/* ===== Simulation Detail: Transcript bubbles + Body tab ===== */
+function SimulationDetail({ d, tab, switchTab, goBack }) {
+  const [simTab, setSimTab] = useState('transcript');
+  const [popupCategory, setPopupCategory] = useState(null);
+  const [popupMoment, setPopupMoment] = useState(null);
+
+  const scoreColor = d.score >= 75 ? '#58c322' : d.score >= 50 ? '#ffab00' : '#ed4956';
+  const transcript = Array.isArray(d.transcript) ? d.transcript : [];
+  const turnScores = Array.isArray(d.turnScores) ? d.turnScores : [];
+
+  // Parse body analysis JSON (strip markdown code blocks if present)
+  let bodyData = null;
+  if (d.bodyAnalysis) {
+    try {
+      let raw = typeof d.bodyAnalysis === 'string' ? d.bodyAnalysis : JSON.stringify(d.bodyAnalysis);
+      raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+      bodyData = JSON.parse(raw);
+    } catch { bodyData = null; }
+  }
+
+  const BODY_CATEGORIES = [
+    { key: 'overall_demeanor', label: 'Overall Demeanor' },
+    { key: 'key_body_signals', label: 'Key Body Signals' },
+    { key: 'stress_signals', label: 'Stress Signals' },
+    { key: 'credible_assessment', label: 'Credible Assessment' },
+  ];
+
+  return (
+    <div className="app-shell">
+      <div className="detail-screen">
+        <div className="detail-header">
+          <button className="back-btn" onClick={goBack}>{Icons.back}</button>
+          <h2>Simulation</h2>
+        </div>
+        <div className="detail-body sim-detail-body">
+          {/* Summary strip */}
+          <div className="sim-detail-summary">
+            <div className="sim-detail-ring" style={{ '--score-color': scoreColor }}>
+              <span className="sim-detail-pct">{d.score != null ? `${d.score}%` : '—'}</span>
+            </div>
+            <div className="sim-detail-summary-meta">
+              {(d.case
+                ? `${d.case.lastName || ''}, ${d.case.firstName || ''}`.trim()
+                : d.callSummaryTitle) && (
+                <div className="sim-detail-title">
+                  {d.case ? `${d.case.lastName || ''}, ${d.case.firstName || ''}`.trim() : d.callSummaryTitle}
+                </div>
+              )}
+              <div className="sim-detail-meta">
+                {d.callDurationSecs != null && <span>{Math.floor(d.callDurationSecs / 60)}m {d.callDurationSecs % 60}s</span>}
+                <span> · {new Date(d.createdAt).toLocaleDateString()}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Instagram-style tabs */}
+          <div className="sim-detail-tabs">
+            <button className={`sim-detail-tab${simTab === 'transcript' ? ' active' : ''}`} onClick={() => setSimTab('transcript')}>
+              {Icons.transcript}
+              <span>Transcript</span>
+            </button>
+            <button className={`sim-detail-tab${simTab === 'body' ? ' active' : ''}`} onClick={() => setSimTab('body')}>
+              {Icons.body}
+              <span>Body</span>
+            </button>
+          </div>
+
+          {simTab === 'transcript' && (
+            <div className="sim-transcript-view">
+              {transcript.length === 0 ? (
+                <div className="sim-transcript-empty">
+                  {d.transcriptSummary ? <p className="sim-detail-text">{d.transcriptSummary}</p> : <p>No transcript available.</p>}
+                </div>
+              ) : (
+                <div className="sim-transcript-bubbles">
+                  {transcript.map((t, i) => {
+                    const role = (t.role || '').toLowerCase();
+                    const msg = t.message || t.original_message || '';
+                    const isUser = role === 'user';
+                    const turnIdx = transcript.slice(0, i + 1).filter(x => (x.role || '').toLowerCase() === 'user').length - 1;
+                    const turnScore = turnIdx >= 0 && turnScores[turnIdx] ? turnScores[turnIdx] : null;
+
+                    return (
+                      <div key={i}>
+                        <div className={`sim-bubble sim-bubble-${isUser ? 'user' : 'agent'}`}>
+                          <div className="sim-bubble-text">{msg}</div>
+                        </div>
+                        {isUser && turnScore && (
+                          <div className="sim-turn-rating">
+                            <div className="sim-turn-rating-pct" style={{ color: (turnScore.score >= 75 ? '#58c322' : turnScore.score >= 50 ? '#ffab00' : '#ed4956') }}>
+                              {turnScore.score}%
+                            </div>
+                            <div className="sim-turn-rating-label">Response rating</div>
+                            {turnScore.question && <div className="sim-turn-rating-q"><strong>Q:</strong> {turnScore.question}</div>}
+                            {turnScore.score_reason && <div className="sim-turn-rating-why">{turnScore.score_reason}</div>}
+                            {turnScore.improvement && <div className="sim-turn-rating-improve"><strong>Improve:</strong> {turnScore.improvement}</div>}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {/* Full Analysis — hidden for now
+              {d.fullAnalysis && (
+                <CollapsibleSection title="Full Analysis" defaultOpen={false}>
+                  <AnalysisDisplay data={d.fullAnalysis} />
+                </CollapsibleSection>
+              )}
+              */}
+              {/* AI Coach — commented out for now
+              <CollapsibleSection title="AI Coach" defaultOpen={false}>
+                <SimulationCoachChat
+                  simulationId={d.id}
+                  introMessage={d.callSummaryTitle
+                    ? `I've loaded **${d.callSummaryTitle}** (Score: ${d.score != null ? d.score + '%' : 'N/A'}). Ask me why the score was what it was, what to improve, or how to prepare better for your next deposition.`
+                    : 'Ask me anything about this simulation — performance, improvements, or deposition strategy.'}
+                />
+              </CollapsibleSection>
+              */}
+            </div>
+          )}
+
+          {simTab === 'body' && (
+            <div className="sim-body-view">
+              {!d.bodyAnalysis ? (
+                <p className="sim-body-empty">
+                  {d.bodyAnalysisModel ? 'Processing body analysis…' : 'No body language recording was captured for this simulation.'}
+                </p>
+              ) : !bodyData ? (
+                <AnalysisDisplay data={d.bodyAnalysis} />
+              ) : (
+                <>
+                  <div className="sim-body-categories">
+                    {BODY_CATEGORIES.map(({ key, label }) => {
+                      const cat = bodyData[key];
+                      const score = cat && typeof cat.score === 'number' ? cat.score : null;
+                      const scoreColor = score >= 75 ? '#58c322' : score >= 50 ? '#ffab00' : '#ed4956';
+                      return (
+                        <button
+                          key={key}
+                          className="sim-body-cat"
+                          onClick={() => setPopupCategory(cat ? key : null)}
+                          disabled={!cat}
+                        >
+                          <div className="sim-body-cat-ring" style={{ '--score-color': scoreColor }}>
+                            <span className="sim-body-cat-pct">{score != null ? `${score}%` : '—'}</span>
+                          </div>
+                          <span className="sim-body-cat-label">{label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {bodyData.timeline_of_notable_moments && bodyData.timeline_of_notable_moments.length > 0 && (
+                    <div className="sim-body-moments">
+                      <div className="sim-detail-heading">Memorable Moments</div>
+                      <div className="sim-body-moments-list">
+                        {bodyData.timeline_of_notable_moments.map((m, i) => (
+                          <button key={i} className="sim-body-moment" onClick={() => setPopupMoment(m)}>
+                            <span className="sim-body-moment-ts">{m.timestamp || ''}</span>
+                            <span className="sim-body-moment-text">{m.moment || ''}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {popupCategory && bodyData?.[popupCategory] && (
+        <div className="sim-body-popup-overlay" onClick={() => setPopupCategory(null)}>
+          <div className="sim-body-popup" onClick={e => e.stopPropagation()}>
+            <div className="sim-body-popup-header">
+              <span className="sim-body-popup-title">
+                {BODY_CATEGORIES.find(c => c.key === popupCategory)?.label || popupCategory}
+              </span>
+              <button className="sim-body-popup-close" onClick={() => setPopupCategory(null)}>×</button>
+            </div>
+            <div className="sim-body-popup-body">
+              <p><strong>Score:</strong> {bodyData[popupCategory].score}%</p>
+              {bodyData[popupCategory].score_reason && <p><strong>Why:</strong> {bodyData[popupCategory].score_reason}</p>}
+              {bodyData[popupCategory].summary && <p><strong>Summary:</strong> {bodyData[popupCategory].summary}</p>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {popupMoment && (
+        <div className="sim-body-popup-overlay" onClick={() => setPopupMoment(null)}>
+          <div className="sim-body-popup" onClick={e => e.stopPropagation()}>
+            <div className="sim-body-popup-header">
+              <span className="sim-body-popup-title">{popupMoment.timestamp || 'Moment'}</span>
+              <button className="sim-body-popup-close" onClick={() => setPopupMoment(null)}>×</button>
+            </div>
+            <div className="sim-body-popup-body">
+              <p>{popupMoment.moment || ''}</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <BottomBar tab={tab} onTab={switchTab} />
     </div>
   );
 }
@@ -783,6 +985,106 @@ function CreateCaseForm({ goBack, onSuccess, showToast, tab, switchTab }) {
   );
 }
 
+/* ===== Description accordion (truncated preview, chevron to expand) ===== */
+const DESCRIPTION_TRUNCATE_LEN = 100;
+
+function DescriptionAccordion({ description }) {
+  const [open, setOpen] = useState(false);
+  if (!description) return null;
+  const truncated = description.length <= DESCRIPTION_TRUNCATE_LEN
+    ? description
+    : description.slice(0, DESCRIPTION_TRUNCATE_LEN).trim() + '…';
+
+  return (
+    <div className={`description-accordion${open ? ' open' : ''}`}>
+      <button type="button" className="description-accordion-header" onClick={() => setOpen(o => !o)}>
+        <div className="description-accordion-content">
+          <span className="description-accordion-label">Description</span>
+          <span className="description-accordion-preview">{open ? '' : truncated}</span>
+        </div>
+        <span className={`description-accordion-chevron${open ? ' open' : ''}`}>▼</span>
+      </button>
+      {open && <div className="description-accordion-body">{description}</div>}
+    </div>
+  );
+}
+
+/* ===== Sim card: Score/Body | Name | Date (gradient) | Duration ===== */
+function getBodyScore(s) {
+  if (!s.bodyAnalysis) return null;
+  try {
+    const d = typeof s.bodyAnalysis === 'string' ? JSON.parse(s.bodyAnalysis) : s.bodyAnalysis;
+    const cats = ['overall_demeanor', 'key_body_signals', 'stress_signals', 'credible_assessment'];
+    const scores = cats.filter(k => d[k] && typeof d[k].score === 'number').map(k => d[k].score);
+    if (scores.length === 0) return null;
+    return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
+  } catch { return null; }
+}
+
+/** Combined score from voice + body (average when both exist). 0-100. */
+function getCombinedScore(s) {
+  const voice = s.score != null ? s.score : null;
+  const body = getBodyScore(s);
+  if (voice != null && body != null) return Math.round((voice + body) / 2);
+  if (voice != null) return voice;
+  if (body != null) return body;
+  return null;
+}
+
+/** Gradient for 0% (red) → orange → yellow → green (100%) */
+function getScoreGradient(percent) {
+  if (percent == null) return 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)';
+  const p = Math.max(0, Math.min(100, percent)) / 100;
+  let r, g, b;
+  if (p < 0.33) {
+    const t = p / 0.33;
+    r = Math.round(237 + t * (249 - 237));
+    g = Math.round(73 + t * (115 - 73));
+    b = Math.round(86 + t * (22 - 86));
+  } else if (p < 0.66) {
+    const t = (p - 0.33) / 0.33;
+    r = Math.round(249 + t * (234 - 249));
+    g = Math.round(115 + t * (179 - 115));
+    b = Math.round(22 + t * (8 - 22));
+  } else {
+    const t = (p - 0.66) / 0.34;
+    r = Math.round(234 + t * (88 - 234));
+    g = Math.round(179 + t * (195 - 179));
+    b = Math.round(8 + t * (34 - 8));
+  }
+  const darken = (v) => Math.max(0, Math.floor(v * 0.85));
+  const r2 = darken(r), g2 = darken(g), b2 = darken(b);
+  return `linear-gradient(135deg, rgb(${r},${g},${b}) 0%, rgb(${r2},${g2},${b2}) 100%)`;
+}
+
+function SimCard({ sim: s, caseData, onClick }) {
+  const bodyScore = getBodyScore(s);
+  const combined = getCombinedScore(s);
+  const gradient = getScoreGradient(combined);
+  const name = caseData ? `${caseData.lastName}, ${caseData.firstName}` : (s.callSummaryTitle || s.eventType || 'Simulation');
+  const dateStr = new Date(s.createdAt).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const duration = s.callDurationSecs != null ? `${Math.floor(s.callDurationSecs / 60)}m ${s.callDurationSecs % 60}s` : '—';
+
+  return (
+    <button type="button" className="sim-post-card" onClick={onClick} style={{ background: gradient }}>
+      <div className="sim-post-scores">
+        <span className="sim-post-score" style={{ color: '#fff' }}>
+          {s.score != null ? `${s.score}%` : '—'}
+        </span>
+        <span className="sim-post-sep">/</span>
+        <span className="sim-post-body">
+          {bodyScore != null ? `${bodyScore}%` : '—'} Body
+        </span>
+      </div>
+      <div className="sim-post-name">{name}</div>
+      <div className="sim-post-meta">
+        <span className="sim-post-date">{dateStr}</span>
+        <span className="sim-post-duration">{duration !== '—' ? ` · ${duration}` : ''}</span>
+      </div>
+    </button>
+  );
+}
+
 /* ===== Case Detail (with simulations) ===== */
 function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, currentDetail }) {
   const [sims, setSims] = useState([]);
@@ -807,37 +1109,31 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
           <div className="case-detail-hero">
             <div className="case-detail-name">{d.lastName}, {d.firstName}</div>
             <div className="case-detail-number">#{d.caseNumber}</div>
-          </div>
-          <div className="kv">
-            <span className="k">Phone</span><span className="v">{d.phone}</span>
-            {d.email && <><span className="k">Email</span><span className="v">{d.email}</span></>}
-            <span className="k">Description</span><span className="v">{d.description}</span>
-            <span className="k">Created</span><span className="v">{new Date(d.createdAt).toLocaleDateString()}</span>
-          </div>
-          <div className="case-detail-actions">
-            <a className="btn btn-sm primary" href={`/sim/${d.id}`} target="_blank" rel="noopener">
-              Start DepoSim
-            </a>
+            <div className="case-detail-actions" style={{ marginTop: 12 }}>
+              <a className="btn btn-sm primary" href={`/sim/${d.id}`} target="_blank" rel="noopener">
+                Start DepoSim
+              </a>
+            </div>
           </div>
 
-          {/* Call History */}
-          <div style={{ marginTop: 28 }}>
-            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 10 }}>Call History</h3>
-            {loadingSims && <p style={{ color: 'var(--muted)', fontSize: 13 }}>Loading…</p>}
-            {!loadingSims && sims.length === 0 && <p style={{ color: 'var(--muted)', fontSize: 13 }}>No simulations yet. Start a DepoSim to see results here.</p>}
-            {sims.map(s => (
-              <div key={s.id} className="sim-card" onClick={() => goDetail('simulation', s, currentDetail)}>
-                <div className="sim-card-top">
-                  <span className="sim-score" style={{ color: s.score >= 75 ? '#58c322' : s.score >= 50 ? '#ffab00' : '#ed4956' }}>
-                    {s.score != null ? `${s.score}%` : '—'}
-                  </span>
-                  <span className="sim-title">{s.callSummaryTitle || s.eventType || 'Simulation'}</span>
-                  <span className="sim-date">{new Date(s.createdAt).toLocaleDateString()}</span>
-                </div>
-                {s.scoreReason && <div className="sim-reason">{s.scoreReason}</div>}
-                {s.callDurationSecs != null && <div className="sim-duration">{Math.floor(s.callDurationSecs / 60)}m {s.callDurationSecs % 60}s</div>}
-              </div>
-            ))}
+          {d.email && (
+            <div className="kv">
+              <span className="k">Email</span><span className="v">{d.email}</span>
+            </div>
+          )}
+
+          <DescriptionAccordion description={d.description} />
+
+          {/* Simulation History */}
+          <div className="call-history-section">
+            <h3 className="call-history-title">Simulation History</h3>
+            {loadingSims && <p className="call-history-empty">Loading…</p>}
+            {!loadingSims && sims.length === 0 && <p className="call-history-empty">No simulations yet. Start a DepoSim to see results here.</p>}
+            <div className="sim-grid">
+              {sims.map(s => (
+                <SimCard key={s.id} sim={s} caseData={d} onClick={() => goDetail('simulation', s, currentDetail)} />
+              ))}
+            </div>
           </div>
         </div>
       </div>
@@ -859,8 +1155,23 @@ function MainApp() {
 
   // Filters
   const [caseSort, setCaseSort] = useState('newest');
+  const [showPrompts, setShowPrompts] = useState(false);
 
-
+  // Hidden: type "prompts" to reveal Prompts section in Settings
+  useEffect(() => {
+    if (tab !== 'settings') return;
+    let buf = '';
+    const handler = (e) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const key = (e.key || '').toLowerCase();
+      if (key.length === 1 && /[a-z]/.test(key)) {
+        buf = (buf + key).slice(-20);
+        if (buf.includes('prompts')) setShowPrompts(true);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [tab]);
 
   // Load theme
   useEffect(() => {
@@ -961,65 +1272,7 @@ function MainApp() {
       );
     }
     if (detail.type === 'simulation') {
-      const scoreColor = d.score >= 75 ? '#58c322' : d.score >= 50 ? '#ffab00' : '#ed4956';
-      return (
-        <div className="app-shell">
-          <div className="detail-screen">
-            <div className="detail-header">
-              <button className="back-btn" onClick={goBack}>{Icons.back}</button>
-              <h2>Simulation</h2>
-            </div>
-            <div className="detail-body">
-              <CollapsibleSection title="Summary" defaultOpen={true}>
-                {d.callSummaryTitle && <div className="sim-detail-title">{d.callSummaryTitle}</div>}
-                <div className="sim-detail-score-inner">
-                  <div className="sim-detail-ring" style={{ '--score-color': scoreColor }}>
-                    <span className="sim-detail-pct">{d.score != null ? `${d.score}%` : '—'}</span>
-                  </div>
-                  <div className="sim-detail-label">Score</div>
-                  {d.scoreReason && <div className="sim-detail-reason">{d.scoreReason}</div>}
-                </div>
-                <div className="sim-detail-meta">
-                  {d.callDurationSecs != null && <span className="sim-detail-meta-item"><span className="sim-detail-meta-label">Duration</span> {Math.floor(d.callDurationSecs / 60)}m {d.callDurationSecs % 60}s</span>}
-                  <span className="sim-detail-meta-item"><span className="sim-detail-meta-label">Completed</span> {new Date(d.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {new Date(d.createdAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</span>
-                </div>
-                {d.transcriptSummary && (
-                  <div className="sim-detail-transcript-wrap">
-                    <div className="sim-detail-heading">Transcript Summary</div>
-                    <p className="sim-detail-text">{d.transcriptSummary}</p>
-                  </div>
-                )}
-              </CollapsibleSection>
-
-              {d.fullAnalysis && (
-                <CollapsibleSection title="Full Analysis" defaultOpen={true}>
-                  <AnalysisDisplay data={d.fullAnalysis} />
-                </CollapsibleSection>
-              )}
-
-              <CollapsibleSection title="Body Language Analysis" defaultOpen={false}>
-                {d.bodyAnalysis ? (
-                  <AnalysisDisplay data={d.bodyAnalysis} />
-                ) : (
-                  <p className="sim-detail-text" style={{ color: 'var(--muted)', fontStyle: 'italic' }}>
-                    {d.bodyAnalysisModel ? 'Processing…' : 'No body language recording was captured for this simulation.'}
-                  </p>
-                )}
-              </CollapsibleSection>
-
-              <CollapsibleSection title="AI Coach" defaultOpen={false}>
-                <SimulationCoachChat
-                  simulationId={d.id}
-                  introMessage={d.callSummaryTitle
-                    ? `I've loaded **${d.callSummaryTitle}** (Score: ${d.score != null ? d.score + '%' : 'N/A'}). Ask me why the score was what it was, what to improve, or how to prepare better for your next deposition.`
-                    : 'Ask me anything about this simulation — performance, improvements, or deposition strategy.'}
-                />
-              </CollapsibleSection>
-            </div>
-          </div>
-          <BottomBar tab={tab} onTab={switchTab} />
-        </div>
-      );
+      return <SimulationDetail d={d} tab={tab} switchTab={switchTab} goBack={goBack} />;
     }
     if (detail.type === 'analysis') {
       return (
@@ -1044,17 +1297,22 @@ function MainApp() {
   return (
     <div className="app-shell">
       <div className="app-body">
+        <div className="app-container">
 
         {/* ===== CASES ===== */}
         {tab === 'cases' && (
           <>
             <div className="feed-header">
-              <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="header-logo" />
-              <span className="spacer" />
-              <button type="button" className="header-btn primary" onClick={() => setDetail({ type: 'createCase', data: null })} title="New Case">
-                {Icons.plus}
-                <span>New Case</span>
-              </button>
+              <div className="feed-header-left">
+                <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="header-logo" />
+              </div>
+              <h1 className="feed-header-title">Cases</h1>
+              <div className="feed-header-right">
+                <button type="button" className="header-btn primary" onClick={() => setDetail({ type: 'createCase', data: null })} title="New Case">
+                  {Icons.plus}
+                  <span>New Case</span>
+                </button>
+              </div>
             </div>
             <div className="cases-subheader">
               <span className="cases-count">{cases.length} case{cases.length !== 1 ? 's' : ''}</span>
@@ -1085,8 +1343,11 @@ function MainApp() {
         {tab === 'clients' && (
           <>
             <div className="feed-header">
-              <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="header-logo" />
-              <h1 className="header-title">Clients</h1>
+              <div className="feed-header-left">
+                <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="header-logo" />
+              </div>
+              <h1 className="feed-header-title">Clients</h1>
+              <div className="feed-header-right" />
             </div>
             <div className="profile-row">
               <div className="profile-avatar" style={{ background: '#5b51d8' }}>C</div>
@@ -1120,8 +1381,11 @@ function MainApp() {
         {tab === 'settings' && (
           <>
             <div className="feed-header">
-              <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="header-logo" />
-              <h1 className="header-title">Settings</h1>
+              <div className="feed-header-left">
+                <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="header-logo" />
+              </div>
+              <h1 className="feed-header-title">Settings</h1>
+              <div className="feed-header-right" />
             </div>
             <div className="card">
               <h3>Appearance</h3>
@@ -1130,12 +1394,15 @@ function MainApp() {
                 <button className={`theme-btn${theme === 'light' ? ' active' : ''}`} onClick={() => handleThemeChange('light')}>Light</button>
               </div>
             </div>
-            <div className="card">
-              <h3>Prompts</h3>
-              <PromptManager showToast={showToast} />
-            </div>
+            {showPrompts && (
+              <div className="card">
+                <h3>Prompts</h3>
+                <PromptManager showToast={showToast} />
+              </div>
+            )}
           </>
         )}
+        </div>
       </div>
 
       <BottomBar tab={tab} onTab={switchTab} />

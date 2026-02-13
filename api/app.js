@@ -4,7 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const multer = require('multer');
 const { PrismaClient } = require('@prisma/client');
-const { analyzeVideoUrl, analyzeVideoFile } = require('./gemini');
+const { analyzeVideoUrl, analyzeVideoFile, getBodyAnalysisPrompt } = require('./gemini');
 const { handleElevenLabsWebhook } = require('./webhook');
 const { getDefaultScorePrompt } = require('./openai');
 const { handleSimPage } = require('./sim-page');
@@ -846,20 +846,21 @@ app.post('/api/simulations/:id/video', upload.single('video'), async (req, res) 
       sim = await prisma.simulation.findUnique({ where: { id: simId } });
     }
     if (!sim && conversationId) {
-      for (let attempt = 0; attempt < 6 && !sim; attempt++) {
+      // Webhook may not have created the sim yet; retry for up to ~30s
+      for (let attempt = 0; attempt < 10 && !sim; attempt++) {
         sim = await prisma.simulation.findFirst({ where: { conversationId: String(conversationId) } });
-        if (!sim && attempt < 5) await new Promise(r => setTimeout(r, 3000));
+        if (!sim && attempt < 9) await new Promise(r => setTimeout(r, 3000));
       }
     }
     if (!sim && caseId) {
-      // Find most recent simulation for this case (created in last 3 min)
-      const cutoff = new Date(Date.now() - 3 * 60 * 1000);
-      for (let attempt = 0; attempt < 6 && !sim; attempt++) {
+      // Find most recent simulation for this case (created in last 5 min)
+      const cutoff = new Date(Date.now() - 5 * 60 * 1000);
+      for (let attempt = 0; attempt < 10 && !sim; attempt++) {
         sim = await prisma.simulation.findFirst({
           where: { caseId: String(caseId), createdAt: { gte: cutoff } },
           orderBy: { createdAt: 'desc' },
         });
-        if (!sim && attempt < 5) await new Promise(r => setTimeout(r, 3000));
+        if (!sim && attempt < 9) await new Promise(r => setTimeout(r, 3000));
       }
     }
     if (!sim && caseId) {
@@ -887,14 +888,8 @@ app.post('/api/simulations/:id/video', upload.single('video'), async (req, res) 
       mimeType = ext ? (ext[1] === 'webm' ? 'video/webm' : ext[1] === 'mp4' ? 'video/mp4' : 'video/' + ext[1]) : 'video/webm';
     }
 
-    // Fetch the active media_analysis prompt
-    const mediaPrompt = await prisma.prompt.findFirst({
-      where: { type: 'media_analysis', isActive: true },
-      orderBy: { updatedAt: 'desc' },
-    });
-    const promptText = mediaPrompt
-      ? mediaPrompt.content
-      : 'Analyze this video for body language, stress indicators, and credibility assessment.';
+    // Body analysis uses hardcoded system prompt (not user-editable)
+    const promptText = getBodyAnalysisPrompt();
 
     // Run Gemini analysis
     const result = await analyzeVideoFile(req.file.path, mimeType, promptText);

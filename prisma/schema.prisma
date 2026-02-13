@@ -116,6 +116,7 @@ enum PromptType {
   system
   first_message
   media_analysis
+  image_analysis
   score
 }
 
@@ -159,6 +160,7 @@ model Simulation {
   score             Int?     @map("score")
   scoreReason       String?  @map("score_reason")
   fullAnalysis      String?  @map("full_analysis")
+  turnScores        Json?    @map("turn_scores")  // Per Q/A pair: [{ question, response, score, score_reason, improvement }]
   transcript        Json?
   callDurationSecs  Int?     @map("call_duration_secs")
   transcriptSummary String?  @map("transcript_summary")

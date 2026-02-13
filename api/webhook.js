@@ -137,6 +137,7 @@ async function handleElevenLabsWebhook(req, res, prisma) {
   let score = 0;
   let scoreReason = '';
   let fullAnalysis = null;
+  let turnScores = null;
 
   if (Array.isArray(transcript) && transcript.length > 0) {
     const scorePrompt = await prisma.prompt
@@ -150,6 +151,7 @@ async function handleElevenLabsWebhook(req, res, prisma) {
       score = result.score;
       scoreReason = result.scoreReason;
       fullAnalysis = result.fullAnalysis;
+      turnScores = result.turnScores;
     } else {
       console.error('[webhook] OpenAI analysis failed:', result.error);
     }
@@ -164,6 +166,7 @@ async function handleElevenLabsWebhook(req, res, prisma) {
     score,
     scoreReason,
     fullAnalysis,
+    turnScores: turnScores && Array.isArray(turnScores) ? turnScores : undefined,
     transcript: transcript || undefined,
     callDurationSecs: meta.call_duration_secs != null ? parseInt(meta.call_duration_secs, 10) || null : null,
     transcriptSummary: analysis.transcript_summary ? String(analysis.transcript_summary) : null,

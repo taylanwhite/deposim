@@ -7,11 +7,47 @@
  *
  * Uses @google/genai SDK with Gemini 2.5 Flash.
  * Expects env var: AI_STUDIO_GEMINI_API_KEY
+ *
+ * Body analysis uses a hardcoded system prompt (not user-editable) and returns strict JSON.
  */
 const fs = require('fs');
 const { GoogleGenAI } = require('@google/genai');
 
 const MODEL = 'gemini-2.5-flash';
+
+/** Hardcoded body analysis prompt — NOT user-editable. Returns valid JSON. */
+const BODY_ANALYSIS_PROMPT = `You are an expert body language and behavioral analyst specializing in deposition video review. Analyze this video carefully.
+
+For each of the following categories, provide:
+1. overall_demeanor — General composure, confidence, emotional state
+2. key_body_signals — Non-verbal cues (eye movement, posture, gestures, facial expressions, head tilts, lip compression, adaptors)
+3. stress_signals — Discomfort, anxiety, deception (gaze aversion, blink rate, throat clearing, fidgeting, defensive posturing)
+4. credible_assessment — Consistency between verbal and non-verbal signals
+5. timeline_of_notable_moments — Significant behavioral changes with timestamps
+
+CRITICAL — RETURN VALID JSON ONLY. No markdown, no extra text before or after.
+Each category (overall_demeanor, key_body_signals, stress_signals, credible_assessment) MUST have:
+- score: number 0-100
+- score_reason: string explaining why that score
+- summary: string brief summary
+
+timeline_of_notable_moments MUST be an array of objects: { "moment": "description", "timestamp": "0:45" }
+
+Example structure:
+{
+  "overall_demeanor": { "score": 75, "score_reason": "...", "summary": "..." },
+  "key_body_signals": { "score": 70, "score_reason": "...", "summary": "..." },
+  "stress_signals": { "score": 65, "score_reason": "...", "summary": "..." },
+  "credible_assessment": { "score": 80, "score_reason": "...", "summary": "..." },
+  "timeline_of_notable_moments": [{ "moment": "...", "timestamp": "0:45" }]
+}
+
+Every score must be 0-100. Every message/category must include score, score_reason, and summary.`;
+
+/** Get the hardcoded body analysis prompt (not from DB). */
+function getBodyAnalysisPrompt() {
+  return BODY_ANALYSIS_PROMPT;
+}
 
 let _ai = null;
 function getAI() {
@@ -121,4 +157,4 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-module.exports = { analyzeVideoUrl, analyzeVideoFile, MODEL };
+module.exports = { analyzeVideoUrl, analyzeVideoFile, getBodyAnalysisPrompt, MODEL };

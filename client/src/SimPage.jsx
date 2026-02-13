@@ -127,6 +127,7 @@ function SimPage() {
   const recordedChunks = useRef([]);
   const pipVideoRef = useRef(null);
   const conversationIdRef = useRef(null);
+  const conversationRef = useRef(null);
 
   // Fetch signed URL + config when caseId is set
   useEffect(() => {
@@ -144,7 +145,8 @@ function SimPage() {
       .catch((err) => setConfigError(err.message));
   }, [caseId]);
 
-  const handleConnect = useCallback(() => {
+  const handleConnect = useCallback((props) => {
+    if (props?.conversationId) conversationIdRef.current = props.conversationId;
     setPhase('calling');
     setMessages([]);
     recordedChunks.current = [];
@@ -178,7 +180,7 @@ function SimPage() {
     setPhase('postcall');
 
     const chunks = recordedChunks.current;
-    const convId = conversationIdRef.current || '';
+    const convId = conversationIdRef.current || conversationRef.current?.getId?.() || '';
     const useCaseId = !convId && caseId;
 
     if (chunks.length > 0 && (convId || useCaseId)) {
@@ -194,7 +196,13 @@ function SimPage() {
 
       fetch(url, { method: 'POST', body: formData })
         .then((r) => r.json())
-        .then((d) => setPostCallMessage(d.ok ? 'complete' : `error: ${d.error || 'Upload failed'}`))
+        .then((d) => {
+          if (d.ok) {
+            setPostCallMessage('complete');
+          } else {
+            setPostCallMessage(`error: ${d.error || 'Upload failed'}`);
+          }
+        })
         .catch((err) => setPostCallMessage(`error: ${err.message}`));
     } else {
       setPostCallMessage('complete');
@@ -274,6 +282,7 @@ function SimPage() {
       setPostCallMessage(`error: ${err?.message || 'Unknown error'}`);
     },
   });
+  conversationRef.current = conversation;
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -485,7 +494,7 @@ function SimPage() {
         <div className="sim-postcall-status">Session Complete</div>
         <div className="sim-postcall-body">
           {postCallMessage === 'uploading' && (
-            <p>Uploading simulation analysis… Results will appear in your simulation detail.</p>
+            <p>Uploading video for body language analysis… This may take a minute. Results will appear in your simulation detail.</p>
           )}
           {postCallMessage === 'complete' && (
             <p>View your simulation results and analysis in the app.</p>
