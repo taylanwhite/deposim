@@ -809,23 +809,29 @@ function SimulationDetail({ d, tab, switchTab, goBack }) {
 
                     return (
                       <div key={i} className={`sim-transcript-row sim-transcript-row-${isUser ? 'user' : 'agent'}`}>
-                        {isUser && turnScore && (
+                        {isUser && (
                           <div className="sim-turn-score-inline">
-                            <button
-                              type="button"
-                              className="sim-turn-score-btn"
-                              style={{ color: turnScore.score >= 75 ? '#58c322' : turnScore.score >= 50 ? '#ffc107' : '#ed4956' }}
-                              onClick={() => setExpandedTurn(prev => prev === turnIdx ? null : turnIdx)}
-                            >
-                              {turnScore.score}%
-                            </button>
-                            {expandedTurn === turnIdx && (
-                              <div className="sim-turn-score-popover" onClick={e => e.stopPropagation()}>
-                                {turnScore.question && <p><strong>Q:</strong> {turnScore.question}</p>}
-                                {turnScore.score_reason && <p><strong>Why:</strong> {turnScore.score_reason}</p>}
-                                {turnScore.improvement && <p><strong>Improve:</strong> {turnScore.improvement}</p>}
-                                <button type="button" className="sim-turn-score-close" onClick={() => setExpandedTurn(null)}>Close</button>
-                              </div>
+                            {turnScore ? (
+                              <>
+                                <button
+                                  type="button"
+                                  className="sim-turn-score-btn"
+                                  style={{ color: turnScore.score >= 75 ? '#58c322' : turnScore.score >= 50 ? '#ffc107' : '#ed4956' }}
+                                  onClick={() => setExpandedTurn(prev => prev === turnIdx ? null : turnIdx)}
+                                >
+                                  {turnScore.score}%
+                                </button>
+                                {expandedTurn === turnIdx && (
+                                  <div className="sim-turn-score-popover" onClick={e => e.stopPropagation()}>
+                                    {turnScore.question && <p><strong>Q:</strong> {turnScore.question}</p>}
+                                    {turnScore.score_reason && <p><strong>Why:</strong> {turnScore.score_reason}</p>}
+                                    {turnScore.improvement && <p><strong>Improve:</strong> {turnScore.improvement}</p>}
+                                    <button type="button" className="sim-turn-score-close" onClick={() => setExpandedTurn(null)}>Close</button>
+                                  </div>
+                                )}
+                              </>
+                            ) : (
+                              <span className="sim-turn-score-placeholder" title="Score not yet available — Post-call analysis pending">—</span>
                             )}
                           </div>
                         )}

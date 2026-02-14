@@ -2014,6 +2014,15 @@
   margin-left: 0;
 }
 .sim-turn-score-spacer { width: 48px; flex-shrink: 0; }
+.sim-turn-score-placeholder {
+  display: inline-block;
+  min-width: 48px;
+  padding: 6px 12px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--muted);
+  text-align: center;
+}
 .sim-turn-score-inline {
   flex-shrink: 0;
   position: relative;
