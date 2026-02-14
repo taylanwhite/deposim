@@ -61,15 +61,34 @@ Example: {"score": 72, "score_reason": "Several risky moments", "turn_scores": [
 
 After the JSON line, provide the full analysis (do NOT repeat the score or score_reason). When score is 0 (only when no substantive A: lines), keep the analysis short.`;
 
-/** Required output format appended to custom score prompts from DB */
+/**
+ * ALWAYS appended to whatever score prompt is in the database. Ensures valid JSON with per-answer scores.
+ */
 const SCORE_OUTPUT_FORMAT = `
 
-You MUST start your response with a JSON block on its own line. The JSON MUST include:
-- "score": number 0-100
-- "score_reason": string
-- "turn_scores": array for each user (A:) response, paired with the preceding Q:. Each item: { "question", "response", "score", "score_reason", "improvement" }
+CRITICAL OUTPUT FORMAT — Your response MUST be exactly one valid JSON object. Nothing else. No markdown, no code blocks, no extra text.
 
-After the JSON line, provide the full analysis.`;
+{
+  "score": <0-100 overall>,
+  "score_reason": "<string>",
+  "turn_scores": [
+    {
+      "question": "<exact Q text from transcript>",
+      "response": "<exact A text from transcript>",
+      "score": <0-100 for THIS answer>,
+      "score_reason": "<why this specific answer got this rating>",
+      "improvement": "<what to do better>"
+    }
+  ],
+  "full_analysis": "<markdown analysis: risky moments, patterns to fix, rules to follow, drill questions>"
+}
+
+Rules for turn_scores:
+- Include exactly one object for EACH user (A:) response in the transcript.
+- Pair each A: with the immediately preceding Q:.
+- Each "score" is 0–100: how well that specific answer considered the question and responded (brief, on-point, no volunteering = higher; volunteering, speculation, legal conclusions = lower).
+- Order MUST match transcript order.
+- If there are zero A: lines (or only greetings), turn_scores must be [] and score 0.`;
 
 /**
  * Build the messages array for OpenAI chat completion.
@@ -86,7 +105,8 @@ function buildMessages(conversationText, scorePrompt = null) {
     conversationText;
 
   const custom = scorePrompt && String(scorePrompt).trim();
-  const systemContent = custom ? custom + SCORE_OUTPUT_FORMAT : SYSTEM_PROMPT;
+  // Always append strict JSON format so we reliably get turn_scores
+  const systemContent = (custom || SYSTEM_PROMPT) + SCORE_OUTPUT_FORMAT;
 
   return [
     { role: 'system', content: systemContent },
@@ -118,7 +138,11 @@ async function analyzeDeposition(transcript, scorePrompt = null) {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({ model: 'gpt-4o', messages }),
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        messages,
+        response_format: { type: 'json_object' },
+      }),
       signal: AbortSignal.timeout(60_000),
     });
     raw = await resp.json();
@@ -133,42 +157,52 @@ async function analyzeDeposition(transcript, scorePrompt = null) {
   const content = raw.choices?.[0]?.message?.content || '';
   if (!content) return { success: false, error: 'Empty content in OpenAI response.' };
 
-  // Parse score JSON line and extract analysis (content after JSON, without score/score_reason)
   let score = null;
   let scoreReason = '';
-  let fullAnalysisText = content;
+  let fullAnalysisText = '';
   let turnScores = null;
-  let foundJson = false;
 
-  for (const line of content.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed[0] !== '{') continue;
-    try {
-      const parsed = JSON.parse(trimmed);
-      if (typeof parsed.score === 'number') {
-        score = Math.max(0, Math.min(100, Math.round(parsed.score)));
-        scoreReason = String(parsed.score_reason || '');
-        if (Array.isArray(parsed.turn_scores)) turnScores = parsed.turn_scores;
-        const jsonLineEnd = content.indexOf(trimmed) + trimmed.length;
-        fullAnalysisText = content.slice(jsonLineEnd).trim();
-        foundJson = true;
-        break;
+  // With response_format: json_object, entire response is valid JSON
+  try {
+    const parsed = JSON.parse(content.trim());
+    if (typeof parsed.score === 'number') {
+      score = Math.max(0, Math.min(100, Math.round(parsed.score)));
+      scoreReason = String(parsed.score_reason || '');
+      fullAnalysisText = String(parsed.full_analysis || '');
+      if (Array.isArray(parsed.turn_scores)) {
+        turnScores = parsed.turn_scores.map((t) => ({
+          question: t.question,
+          response: t.response,
+          score: typeof t.score === 'number' ? Math.max(0, Math.min(100, Math.round(t.score))) : 0,
+          score_reason: t.score_reason,
+          improvement: t.improvement,
+        }));
       }
-    } catch { /* not JSON, skip */ }
-  }
-
-  if (!foundJson) {
-    const m = content.match(/"score"\s*:\s*(\d+)/);
-    if (m) score = Math.max(0, Math.min(100, parseInt(m[1], 10)));
-    const r = content.match(/"score_reason"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-    if (r) scoreReason = r[1].replace(/\\(.)/g, '$1');
+    }
+  } catch {
+    // Fallback: try to find JSON block (for older responses without json_object)
+    for (const line of content.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed[0] !== '{') continue;
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (typeof parsed.score === 'number') {
+          score = Math.max(0, Math.min(100, Math.round(parsed.score)));
+          scoreReason = String(parsed.score_reason || '');
+          if (Array.isArray(parsed.turn_scores)) turnScores = parsed.turn_scores;
+          const jsonLineEnd = content.indexOf(trimmed) + trimmed.length;
+          fullAnalysisText = content.slice(jsonLineEnd).trim();
+          break;
+        }
+      } catch { /* skip */ }
+    }
   }
 
   return {
     success: true,
     score: score ?? 0,
     scoreReason,
-    fullAnalysis: fullAnalysisText,
+    fullAnalysis: fullAnalysisText || content,
     turnScores: turnScores || [],
   };
 }
