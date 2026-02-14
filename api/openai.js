@@ -203,6 +203,13 @@ async function analyzeDeposition(transcript, scorePrompt = null) {
     }
   }
 
+  // Retry for turn_scores only when AI returned empty but transcript has user messages
+  const aCount = (conversationText.match(/^A: /gm) || []).length;
+  if ((!turnScores || turnScores.length === 0) && aCount > 0) {
+    const turnOnly = await fetchTurnScoresOnly(conversationText, aCount, apiKey);
+    if (turnOnly && turnOnly.length > 0) turnScores = turnOnly;
+  }
+
   return {
     success: true,
     score: score ?? 0,
@@ -210,6 +217,44 @@ async function analyzeDeposition(transcript, scorePrompt = null) {
     fullAnalysis: fullAnalysisText || content,
     turnScores: turnScores || [],
   };
+}
+
+/**
+ * Second call: focused prompt that ONLY asks for turn_scores. Used when main call returns empty.
+ */
+async function fetchTurnScoresOnly(conversationText, expectedCount, apiKey) {
+  const system = `You are a deposition rater. Return ONLY a JSON object with one key "turn_scores" (array).
+For EACH "A:" line in the transcript, output exactly one object: { "question": "<preceding Q: text>", "response": "<A: text>", "score": 0-100, "score_reason": "<why>", "improvement": "<suggestion>" }.
+The transcript has ${expectedCount} A: lines. You MUST return exactly ${expectedCount} objects. Empty array is invalid.`;
+
+  const user = `Transcript:\n\n${conversationText}\n\nReturn JSON: { "turn_scores": [ ... ] }`;
+
+  try {
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+        response_format: { type: 'json_object' },
+      }),
+      signal: AbortSignal.timeout(45_000),
+    });
+    const raw = await resp.json();
+    if (raw.error) return null;
+    const content = raw.choices?.[0]?.message?.content || '';
+    const parsed = JSON.parse(content.trim());
+    if (!Array.isArray(parsed.turn_scores)) return null;
+    return parsed.turn_scores.map((t) => ({
+      question: t.question,
+      response: t.response,
+      score: typeof t.score === 'number' ? Math.max(0, Math.min(100, Math.round(t.score))) : 0,
+      score_reason: t.score_reason,
+      improvement: t.improvement,
+    }));
+  } catch {
+    return null;
+  }
 }
 
 /** Default score analysis prompt (for creating first score prompt from UI) */

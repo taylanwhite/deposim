@@ -834,7 +834,7 @@ function SimulationDetail({ d, tab, switchTab, goBack }) {
                                 )}
                               </>
                             ) : (
-                              <span className="sim-turn-score-placeholder" title="Score not yet available — Post-call analysis pending">—</span>
+                              <span className="sim-turn-score-placeholder" title="Score not yet available">—</span>
                             )}
                           </div>
                         )}
