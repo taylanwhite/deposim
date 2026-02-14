@@ -85,9 +85,9 @@ CRITICAL OUTPUT FORMAT — Your response MUST be exactly one valid JSON object. 
 
 Rules for turn_scores:
 - Include exactly one object for EACH user (A:) response in the transcript.
-- Pair each A: with the immediately preceding Q:.
-- Each "score" is 0–100: how well that specific answer considered the question and responded (brief, on-point, no volunteering = higher; volunteering, speculation, legal conclusions = lower).
-- Order MUST match transcript order.
+- CRITICAL: "question" MUST be the exact text of the PRECEDING agent (Q:) message — i.e. the question the user was answering. NEVER use the agent's FOLLOW-UP (the message that comes AFTER the user's answer).
+- Each "score" is 0–100: how well that specific answer addressed the preceding question (brief, on-point, no volunteering = higher).
+- Order MUST match transcript order (first user reply → first turn_score, etc.).
 - If there are zero A: lines (or only greetings), turn_scores must be [] and score 0.`;
 
 /**

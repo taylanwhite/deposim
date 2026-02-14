@@ -669,6 +669,17 @@ function SimulationDetail({ d, tab, switchTab, goBack }) {
   const [simTab, setSimTab] = useState('transcript');
   const [popupCategory, setPopupCategory] = useState(null);
   const [popupMoment, setPopupMoment] = useState(null);
+  const [expandedTurn, setExpandedTurn] = useState(null);
+  const [showScoreSummary, setShowScoreSummary] = useState(false);
+
+  useEffect(() => {
+    if (expandedTurn == null) return;
+    const onDocClick = (e) => {
+      if (!e.target.closest('.sim-turn-score-inline')) setExpandedTurn(null);
+    };
+    document.addEventListener('click', onDocClick);
+    return () => document.removeEventListener('click', onDocClick);
+  }, [expandedTurn]);
 
   const scoreColor = d.score >= 75 ? '#58c322' : d.score >= 50 ? '#ffab00' : '#ed4956';
   const transcript = Array.isArray(d.transcript) ? d.transcript : [];
@@ -701,9 +712,15 @@ function SimulationDetail({ d, tab, switchTab, goBack }) {
         <div className="detail-body sim-detail-body">
           {/* Summary strip */}
           <div className="sim-detail-summary">
-            <div className="sim-detail-ring" style={{ '--score-color': scoreColor }}>
+            <button
+              type="button"
+              className="sim-detail-ring sim-detail-ring-btn"
+              style={{ '--score-color': scoreColor }}
+              onClick={() => setShowScoreSummary(true)}
+              title="View score summary"
+            >
               <span className="sim-detail-pct">{d.score != null ? `${d.score}%` : '—'}</span>
-            </div>
+            </button>
             <div className="sim-detail-summary-meta">
               {((d.case?.client || d.case)
                 ? `${(d.case.client?.lastName || d.case?.lastName) || ''}, ${(d.case.client?.firstName || d.case?.firstName) || ''}`.trim()
@@ -718,6 +735,50 @@ function SimulationDetail({ d, tab, switchTab, goBack }) {
               </div>
             </div>
           </div>
+
+          {showScoreSummary && (
+            <div className="sim-score-summary-overlay" onClick={() => setShowScoreSummary(false)}>
+              <div className="sim-score-summary-modal" onClick={e => e.stopPropagation()}>
+                <div className="sim-score-summary-header">
+                  <h3>Score Summary</h3>
+                  <button type="button" className="sim-score-summary-close" onClick={() => setShowScoreSummary(false)}>×</button>
+                </div>
+                <div className="sim-score-summary-body">
+                  <div className="sim-score-summary-ring" style={{ '--score-color': scoreColor }}>
+                    <span>{d.score != null ? `${d.score}%` : '—'}</span>
+                  </div>
+                  {d.scoreReason && (
+                    <div className="sim-score-summary-reason">
+                      <strong>Why:</strong> {d.scoreReason}
+                    </div>
+                  )}
+                  {d.fullAnalysis && (
+                    <div className="sim-score-summary-analysis">
+                      <strong>Full Analysis</strong>
+                      <AnalysisDisplay data={d.fullAnalysis} />
+                    </div>
+                  )}
+                  {turnScores.length > 0 && (
+                    <div className="sim-score-summary-turns">
+                      <strong>Per-answer breakdown</strong>
+                      <ul>
+                        {turnScores.map((ts, i) => (
+                          <li key={i}>
+                            <span className="sim-score-summary-turn-pct" style={{ color: (ts.score >= 75 ? '#58c322' : ts.score >= 50 ? '#ffab00' : '#ed4956') }}>{ts.score}%</span>
+                            {ts.question && <span className="sim-score-summary-turn-q">Q: {ts.question.length > 80 ? ts.question.slice(0, 80) + '…' : ts.question}</span>}
+                            {ts.response && <span className="sim-score-summary-turn-a">A: {ts.response.length > 80 ? ts.response.slice(0, 80) + '…' : ts.response}</span>}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {!d.scoreReason && !d.fullAnalysis && turnScores.length === 0 && (
+                    <p className="sim-score-summary-empty">No score details available.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Instagram-style tabs */}
           <div className="sim-detail-tabs">
@@ -747,21 +808,30 @@ function SimulationDetail({ d, tab, switchTab, goBack }) {
                     const turnScore = turnIdx >= 0 && turnScores[turnIdx] ? turnScores[turnIdx] : null;
 
                     return (
-                      <div key={i}>
+                      <div key={i} className={`sim-transcript-row sim-transcript-row-${isUser ? 'user' : 'agent'}`}>
+                        {isUser && turnScore && (
+                          <div className="sim-turn-score-inline" style={{ color: (turnScore.score >= 75 ? '#58c322' : turnScore.score >= 50 ? '#ffab00' : '#ed4956') }}>
+                            <button
+                              type="button"
+                              className="sim-turn-score-btn"
+                              onClick={() => setExpandedTurn(prev => prev === turnIdx ? null : turnIdx)}
+                            >
+                              {turnScore.score}%
+                            </button>
+                            {expandedTurn === turnIdx && (
+                              <div className="sim-turn-score-popover" onClick={e => e.stopPropagation()}>
+                                {turnScore.question && <p><strong>Q:</strong> {turnScore.question}</p>}
+                                {turnScore.score_reason && <p><strong>Why:</strong> {turnScore.score_reason}</p>}
+                                {turnScore.improvement && <p><strong>Improve:</strong> {turnScore.improvement}</p>}
+                                <button type="button" className="sim-turn-score-close" onClick={() => setExpandedTurn(null)}>Close</button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {!isUser && <div className="sim-turn-score-spacer" />}
                         <div className={`sim-bubble sim-bubble-${isUser ? 'user' : 'agent'}`}>
                           <div className="sim-bubble-text">{msg}</div>
                         </div>
-                        {isUser && turnScore && (
-                          <div className="sim-turn-rating">
-                            <div className="sim-turn-rating-pct" style={{ color: (turnScore.score >= 75 ? '#58c322' : turnScore.score >= 50 ? '#ffab00' : '#ed4956') }}>
-                              {turnScore.score}%
-                            </div>
-                            <div className="sim-turn-rating-label">Response rating</div>
-                            {turnScore.question && <div className="sim-turn-rating-q"><strong>Q:</strong> {turnScore.question}</div>}
-                            {turnScore.score_reason && <div className="sim-turn-rating-why">{turnScore.score_reason}</div>}
-                            {turnScore.improvement && <div className="sim-turn-rating-improve"><strong>Improve:</strong> {turnScore.improvement}</div>}
-                          </div>
-                        )}
                       </div>
                     );
                   })}
