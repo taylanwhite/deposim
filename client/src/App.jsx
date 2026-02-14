@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Routes, Route } from 'react-router-dom';
 import './App.css';
 import SimPage from './SimPage';
@@ -599,6 +599,71 @@ function PromptManager({ showToast }) {
   );
 }
 
+/* ===== Parse timestamp "M:SS" or "0:45" to seconds ===== */
+function parseTimestamp(ts) {
+  if (!ts || typeof ts !== 'string') return 0;
+  const m = ts.trim().match(/^(\d+):(\d+)$/);
+  if (!m) return 0;
+  return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+}
+
+/* ===== Moment popup with video player (seeks to timestamp) ===== */
+function MomentVideoPopup({ moment, simulationId, onClose }) {
+  const videoRef = useRef(null);
+  const [videoUrl, setVideoUrl] = useState(null);
+  const [loading, setLoading] = useState(!!simulationId);
+  const [error, setError] = useState(null);
+  const seekSeconds = parseTimestamp(moment?.timestamp);
+
+  useEffect(() => {
+    if (!simulationId) return;
+    setLoading(true);
+    setError(null);
+    fetch(`${API}/simulations/${simulationId}/recording-url`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.url) setVideoUrl(d.url);
+        else setError(d.error || 'No recording');
+      })
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, [simulationId]);
+
+  const handleLoadedMetadata = useCallback(() => {
+    const v = videoRef.current;
+    if (v && seekSeconds > 0 && !isNaN(v.duration)) {
+      v.currentTime = Math.min(seekSeconds, v.duration);
+    }
+  }, [seekSeconds]);
+
+  return (
+    <div className="sim-body-popup-overlay" onClick={onClose}>
+      <div className="sim-body-popup sim-body-popup-video" onClick={(e) => e.stopPropagation()}>
+        <div className="sim-body-popup-header">
+          <span className="sim-body-popup-title">{moment?.timestamp || 'Moment'}</span>
+          <button className="sim-body-popup-close" onClick={onClose}>×</button>
+        </div>
+        <div className="sim-body-popup-body">
+          {loading && <p className="sim-moment-loading">Loading video…</p>}
+          {error && <p className="sim-moment-error">{error}</p>}
+          {videoUrl && !error && (
+            <video
+              ref={videoRef}
+              src={videoUrl}
+              controls
+              playsInline
+              className="sim-moment-video"
+              onLoadedMetadata={handleLoadedMetadata}
+              onLoadedData={handleLoadedMetadata}
+            />
+          )}
+          <p className="sim-moment-desc">{moment?.moment || ''}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ===== Simulation Detail: Transcript bubbles + Body tab ===== */
 function SimulationDetail({ d, tab, switchTab, goBack }) {
   const [simTab, setSimTab] = useState('transcript');
@@ -640,11 +705,11 @@ function SimulationDetail({ d, tab, switchTab, goBack }) {
               <span className="sim-detail-pct">{d.score != null ? `${d.score}%` : '—'}</span>
             </div>
             <div className="sim-detail-summary-meta">
-              {(d.case
-                ? `${d.case.lastName || ''}, ${d.case.firstName || ''}`.trim()
+              {((d.case?.client || d.case)
+                ? `${(d.case.client?.lastName || d.case?.lastName) || ''}, ${(d.case.client?.firstName || d.case?.firstName) || ''}`.trim()
                 : d.callSummaryTitle) && (
                 <div className="sim-detail-title">
-                  {d.case ? `${d.case.lastName || ''}, ${d.case.firstName || ''}`.trim() : d.callSummaryTitle}
+                  {d.case ? `${(d.case.client?.lastName || d.case?.lastName) || ''}, ${(d.case.client?.firstName || d.case?.firstName) || ''}`.trim() : d.callSummaryTitle}
                 </div>
               )}
               <div className="sim-detail-meta">
@@ -791,17 +856,11 @@ function SimulationDetail({ d, tab, switchTab, goBack }) {
       )}
 
       {popupMoment && (
-        <div className="sim-body-popup-overlay" onClick={() => setPopupMoment(null)}>
-          <div className="sim-body-popup" onClick={e => e.stopPropagation()}>
-            <div className="sim-body-popup-header">
-              <span className="sim-body-popup-title">{popupMoment.timestamp || 'Moment'}</span>
-              <button className="sim-body-popup-close" onClick={() => setPopupMoment(null)}>×</button>
-            </div>
-            <div className="sim-body-popup-body">
-              <p>{popupMoment.moment || ''}</p>
-            </div>
-          </div>
-        </div>
+        <MomentVideoPopup
+          moment={popupMoment}
+          simulationId={d.id}
+          onClose={() => setPopupMoment(null)}
+        />
       )}
 
       <BottomBar tab={tab} onTab={switchTab} />
@@ -910,7 +969,7 @@ function CreateCaseForm({ goBack, onSuccess, showToast, tab, switchTab }) {
     e.preventDefault();
     setError(null);
     if (!caseNumber.trim() || !firstName.trim() || !lastName.trim() || !phone.trim() || !description.trim()) {
-      setError('Case number, first name, last name, phone, and description are required.');
+      setError('Case number, client first name, last name, phone, and description are required.');
       return;
     }
     setSaving(true);
@@ -920,11 +979,13 @@ function CreateCaseForm({ goBack, onSuccess, showToast, tab, switchTab }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           caseNumber: caseNumber.trim(),
-          firstName: firstName.trim(),
-          lastName: lastName.trim(),
-          phone: phone.trim(),
-          email: email.trim() || null,
           description: description.trim(),
+          client: {
+            firstName: firstName.trim(),
+            lastName: lastName.trim(),
+            phone: phone.trim(),
+            email: email.trim() || null,
+          },
         }),
       });
       const data = await r.json();
@@ -952,6 +1013,7 @@ function CreateCaseForm({ goBack, onSuccess, showToast, tab, switchTab }) {
               <span className="label-text">Case Number</span>
               <input className="input" type="text" value={caseNumber} onChange={e => setCaseNumber(e.target.value)} placeholder="e.g. 2024123095" required />
             </label>
+            <div className="form-section-label">Client (deponent) information</div>
             <label>
               <span className="label-text">First Name</span>
               <input className="input" type="text" value={firstName} onChange={e => setFirstName(e.target.value)} required />
@@ -1013,7 +1075,9 @@ function DescriptionAccordion({ description }) {
 function getBodyScore(s) {
   if (!s.bodyAnalysis) return null;
   try {
-    const d = typeof s.bodyAnalysis === 'string' ? JSON.parse(s.bodyAnalysis) : s.bodyAnalysis;
+    let raw = typeof s.bodyAnalysis === 'string' ? s.bodyAnalysis : JSON.stringify(s.bodyAnalysis);
+    raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    const d = JSON.parse(raw);
     const cats = ['overall_demeanor', 'key_body_signals', 'stress_signals', 'credible_assessment'];
     const scores = cats.filter(k => d[k] && typeof d[k].score === 'number').map(k => d[k].score);
     if (scores.length === 0) return null;
@@ -1061,7 +1125,8 @@ function SimCard({ sim: s, caseData, onClick }) {
   const bodyScore = getBodyScore(s);
   const combined = getCombinedScore(s);
   const gradient = getScoreGradient(combined);
-  const name = caseData ? `${caseData.lastName}, ${caseData.firstName}` : (s.callSummaryTitle || s.eventType || 'Simulation');
+  const client = caseData?.client || caseData;
+  const name = client ? `${client.lastName || ''}, ${client.firstName || ''}`.trim() || (s.callSummaryTitle || s.eventType || 'Simulation') : (s.callSummaryTitle || s.eventType || 'Simulation');
   const dateStr = new Date(s.createdAt).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
   const duration = s.callDurationSecs != null ? `${Math.floor(s.callDurationSecs / 60)}m ${s.callDurationSecs % 60}s` : '—';
 
@@ -1107,7 +1172,7 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
         </div>
         <div className="detail-body case-detail-body">
           <div className="case-detail-hero">
-            <div className="case-detail-name">{d.lastName}, {d.firstName}</div>
+            <div className="case-detail-name">{d.client ? `${d.client.lastName || ''}, ${d.client.firstName || ''}`.trim() : '—'}</div>
             <div className="case-detail-number">#{d.caseNumber}</div>
             <div className="case-detail-actions" style={{ marginTop: 12 }}>
               <a className="btn btn-sm primary" href={`/sim/${d.id}`} target="_blank" rel="noopener">
@@ -1116,9 +1181,14 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
             </div>
           </div>
 
-          {d.email && (
+          {d.client?.email && (
             <div className="kv">
-              <span className="k">Email</span><span className="v">{d.email}</span>
+              <span className="k">Email</span><span className="v">{d.client.email}</span>
+            </div>
+          )}
+          {d.client?.phone && (
+            <div className="kv">
+              <span className="k">Phone</span><span className="v">{d.client.phone}</span>
             </div>
           )}
 
@@ -1220,7 +1290,7 @@ function MainApp() {
   const sortedCases = [...cases].sort((a, b) => {
     if (caseSort === 'newest') return new Date(b.createdAt) - new Date(a.createdAt);
     if (caseSort === 'oldest') return new Date(a.createdAt) - new Date(b.createdAt);
-    if (caseSort === 'lastName') return (a.lastName || '').localeCompare(b.lastName || '');
+    if (caseSort === 'lastName') return ((a.client?.lastName || '')).localeCompare((b.client?.lastName || ''));
     return 0;
   });
 
@@ -1249,14 +1319,14 @@ function MainApp() {
           <div className="detail-screen">
             <div className="detail-header">
               <button className="back-btn" onClick={goBack}>{Icons.back}</button>
-              <h2>{d.name}</h2>
+              <h2>{d.firstName} {d.lastName}</h2>
             </div>
             <div className="detail-body">
               <div style={{ textAlign: 'center', margin: '20px 0' }}>
                 <div className="profile-avatar" style={{ margin: '0 auto 12px', background: 'var(--gradient)' }}>
-                  {(d.name || '?')[0].toUpperCase()}
+                  {(d.firstName || d.lastName || '?')[0].toUpperCase()}
                 </div>
-                <div style={{ fontSize: 24, fontWeight: 700 }}>{d.name}</div>
+                <div style={{ fontSize: 24, fontWeight: 700 }}>{d.firstName} {d.lastName}</div>
               </div>
               <div className="kv">
                 {d.email && <><span className="k">Email</span><span className="v">{d.email}</span></>}
@@ -1330,7 +1400,7 @@ function MainApp() {
                   <div key={c.id} className="tile" style={{ '--tile-accent': accent }} onClick={() => goDetail('case', c)}>
                     <div className="tile-icon">{isAuto ? Icons.car : Icons.walking}</div>
                     <div className="tile-label">#{c.caseNumber}</div>
-                    <div className="tile-sublabel">{c.lastName}, {c.firstName}</div>
+                    <div className="tile-sublabel">{c.client ? `${c.client.lastName || ''}, ${c.client.firstName || ''}`.trim() : '—'}</div>
                   </div>
                 );
               })}
@@ -1362,7 +1432,7 @@ function MainApp() {
                 return (
                   <div key={c.id} className="tile" style={{ '--tile-accent': accent }} onClick={() => goDetail('client', c)}>
                     <div className="tile-icon">{Icons.clients}</div>
-                    <div className="tile-label">{c.name}</div>
+                    <div className="tile-label">{c.firstName} {c.lastName}</div>
                     {c.phone && <div className="tile-sublabel">{c.phone}</div>}
                   </div>
                 );

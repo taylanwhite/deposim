@@ -46,18 +46,22 @@ async function handleSimPage(req, res, prisma) {
     return res.redirect('/');
   }
 
-  // Load case
-  const caseRecord = await prisma.case.findUnique({ where: { id: caseId } });
+  // Load case (client has deponent info)
+  const caseRecord = await prisma.case.findUnique({
+    where: { id: caseId },
+    include: { client: true },
+  });
   if (!caseRecord) {
     return res.redirect('/');
   }
 
-  const firstName = caseRecord.firstName || '';
-  const lastName = caseRecord.lastName || '';
+  const client = caseRecord.client;
+  const firstName = client?.firstName || '';
+  const lastName = client?.lastName || '';
   const name = `${firstName} ${lastName}`.trim() || 'Deponent';
   const caseNumber = caseRecord.caseNumber || '';
   const desc = caseRecord.description || '';
-  const phone = caseRecord.phone || '';
+  const phone = client?.phone || '';
 
   // Load prompts from DB
   let depoPrompt = '';
@@ -513,6 +517,9 @@ async function handleSimPage(req, res, prisma) {
           status.textContent = 'Camera active — you look great!';
           status.style.color = '#58c322';
 
+          // Record that the client granted camera/mic consent
+          fetch('/api/cases/' + encodeURIComponent(CASE_ID) + '/record-consent', { method: 'POST' }).catch(function() {});
+
           // Hide grant button, show start button
           document.getElementById('consent-actions').style.display = 'none';
           document.getElementById('start-actions').style.display = 'block';
@@ -631,51 +638,106 @@ async function handleSimPage(req, res, prisma) {
       var conversationId = detail?.conversationId || detail?.conversation_id || '';
       var useCaseId = !conversationId && CASE_ID;
 
-      // Upload the video if we have recorded data
+      // Upload the video if we have recorded data (S3 multipart for large files)
       if (recordedChunks.length > 0 && (conversationId || useCaseId)) {
-        postBody.innerHTML =
-          '<div style="text-align:center;">' +
-            '<div style="margin-bottom:12px;"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#6236ff" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>' +
-            '<p style="font-size:15px;font-weight:600;color:#111;">Uploading video for body language analysis…</p>' +
-            '<p style="font-size:13px;color:rgba(0,0,0,0.45);margin-top:6px;">This may take a moment. You can close this page — results will appear in your simulation detail.</p>' +
-          '</div>';
-
-        var blob = new Blob(recordedChunks, { type: (mediaRecorder && mediaRecorder.mimeType) || 'video/webm' });
-        var formData = new FormData();
-        formData.append('video', blob, 'body-recording.' + (blob.type.includes('mp4') ? 'mp4' : 'webm'));
-
-        var uploadUrl = conversationId
-          ? '/api/simulations/by-conversation/video?conversationId=' + encodeURIComponent(conversationId)
-          : '/api/simulations/by-case/video?caseId=' + encodeURIComponent(CASE_ID);
-
-        fetch(uploadUrl, {
-          method: 'POST',
-          body: formData,
-        })
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-          if (data.ok) {
-            postBody.innerHTML =
-              '<div style="text-align:center;">' +
-                '<div style="margin-bottom:12px;"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#58c322" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div>' +
-                '<p style="font-size:15px;font-weight:600;color:#111;">Body Language Analysis Complete</p>' +
-                '<p style="font-size:13px;color:rgba(0,0,0,0.45);margin-top:6px;">View the full results in your simulation detail page.</p>' +
-              '</div>';
-          } else {
-            postBody.innerHTML =
-              '<div style="text-align:center;">' +
-                '<p style="font-size:15px;font-weight:600;color:#111;">Session Complete</p>' +
-                '<p style="font-size:13px;color:rgba(0,0,0,0.45);margin-top:6px;">Video analysis: ' + (data.error || 'Upload issue') + '</p>' +
-              '</div>';
-          }
-        })
-        .catch(function(err) {
-          console.error('[DepoSim] Video upload failed:', err);
+        function showUploading(msg) {
+          postBody.innerHTML =
+            '<div style="text-align:center;">' +
+              '<div style="margin-bottom:12px;"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#6236ff" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>' +
+              '<p style="font-size:15px;font-weight:600;color:#111;">' + msg + '</p>' +
+              '<p style="font-size:13px;color:rgba(0,0,0,0.45);margin-top:6px;">This may take a moment. You can close this page — results will appear in your simulation detail.</p>' +
+            '</div>';
+        }
+        function showComplete() {
+          postBody.innerHTML =
+            '<div style="text-align:center;">' +
+              '<div style="margin-bottom:12px;"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#58c322" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div>' +
+              '<p style="font-size:15px;font-weight:600;color:#111;">Body Language Analysis Complete</p>' +
+              '<p style="font-size:13px;color:rgba(0,0,0,0.45);margin-top:6px;">View the full results in your simulation detail page.</p>' +
+            '</div>';
+        }
+        function showError(errMsg) {
           postBody.innerHTML =
             '<div style="text-align:center;">' +
               '<p style="font-size:15px;font-weight:600;color:#111;">Session Complete</p>' +
-              '<p style="font-size:13px;color:rgba(0,0,0,0.45);margin-top:6px;">Body language video could not be uploaded. Results are still available for this session.</p>' +
+              '<p style="font-size:13px;color:rgba(0,0,0,0.45);margin-top:6px;">Body language video could not be uploaded: ' + (errMsg || 'Unknown error') + '</p>' +
             '</div>';
+        }
+
+        var blob = new Blob(recordedChunks, { type: (mediaRecorder && mediaRecorder.mimeType) || 'video/webm' });
+        var PART_SIZE = 10 * 1024 * 1024;
+        var parts = [];
+        for (var i = 0; i < blob.size; i += PART_SIZE) {
+          parts.push(blob.slice(i, Math.min(i + PART_SIZE, blob.size)));
+        }
+        var partNumbers = parts.map(function(_, idx) { return idx + 1; });
+        showUploading('Uploading video for body language analysis…');
+
+        fetch('/api/simulations/video/upload-init', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversationId: conversationId || null, caseId: CASE_ID }),
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(initData) {
+          if (!initData.ok) throw new Error(initData.error || 'Upload init failed');
+          return initData;
+        })
+        .then(function(initData) {
+          return fetch('/api/simulations/video/upload-urls', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ uploadId: initData.uploadId, key: initData.key, partNumbers: partNumbers }),
+          }).then(function(r) { return r.json(); }).then(function(urlsData) {
+            if (!urlsData.ok) throw new Error(urlsData.error || 'Failed to get upload URLs');
+            return { init: initData, urls: urlsData.urls };
+          });
+        })
+        .then(function(data) {
+          var uploadId = data.init.uploadId;
+          var key = data.init.key;
+          var urls = data.urls;
+          var completedParts = [];
+          var seq = Promise.resolve();
+          for (var i = 0; i < parts.length; i++) {
+            (function(partIdx) {
+              seq = seq.then(function() {
+                var partNum = partIdx + 1;
+                var url = urls[partNum];
+                if (!url) throw new Error('No URL for part ' + partNum);
+                return fetch(url, { method: 'PUT', body: parts[partIdx] }).then(function(res) {
+                  if (!res.ok) throw new Error('Part ' + partNum + ' upload failed');
+                  var etag = res.headers.get('ETag');
+                  if (!etag) throw new Error('Part ' + partNum + ' missing ETag');
+                  completedParts.push({ partNumber: partNum, etag: etag });
+                  var pct = Math.round(((partIdx + 1) / parts.length) * 100);
+                  showUploading('Uploading video… ' + pct + '%');
+                });
+              });
+            })(i);
+          }
+          return seq.then(function() {
+            showUploading('Upload complete. Analyzing video…');
+            return fetch('/api/simulations/video/upload-complete', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                uploadId: uploadId,
+                key: key,
+                parts: completedParts,
+                conversationId: conversationId || null,
+                caseId: CASE_ID,
+              }),
+            }).then(function(r) { return r.json(); });
+          });
+        })
+        .then(function(data) {
+          if (data.ok) showComplete();
+          else showError(data.error || 'Upload complete failed');
+        })
+        .catch(function(err) {
+          console.error('[DepoSim] Video upload failed:', err);
+          showError(err.message || 'Upload failed');
         });
       } else {
         postBody.innerHTML =

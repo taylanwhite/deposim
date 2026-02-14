@@ -187,11 +187,15 @@ async function handleElevenLabsWebhook(req, res, prisma) {
     console.log(`[webhook] Simulation saved: ${simulation.id} case=${caseId} score=${score}`);
   }
 
-  // Touch case updatedAt
-  await prisma.case.update({
-    where: { id: caseId },
-    data: { updatedAt: new Date() },
-  });
+  // Touch case updatedAt (non-fatal; main work is simulation save)
+  try {
+    await prisma.case.update({
+      where: { id: caseId },
+      data: { updatedAt: new Date() },
+    });
+  } catch (caseErr) {
+    console.error('[webhook] Failed to touch case updatedAt:', caseErr.message, caseErr.code);
+  }
 
   return res.json({
     ok: true,

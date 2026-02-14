@@ -46,7 +46,8 @@ model Client {
   id               String   @id @default(cuid())
   organizationId   String   @map("organization_id")
   companyId        String?  @map("company_id")
-  name             String
+  firstName        String   @map("first_name")
+  lastName         String   @map("last_name")
   email            String?
   phone            String?
   consentCamera    Boolean  @default(false) @map("consent_camera")
@@ -67,19 +68,15 @@ model Case {
   id             String   @id @default(cuid())
   organizationId String?  @map("organization_id")
   companyId      String?  @map("company_id")
-  clientId       String?  @map("client_id")
+  clientId       String   @map("client_id")  // required – deponent info comes from client
   caseNumber     String   @map("case_number")
-  firstName      String   @map("first_name")
-  lastName       String   @map("last_name")
-  phone          String
-  email          String?
   description    String
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
   company      Company?     @relation(fields: [companyId], references: [id], onDelete: SetNull)
-  client       Client?     @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  client       Client       @relation(fields: [clientId], references: [id], onDelete: Restrict)
   simulations  Simulation[]
   prompts      Prompt[]
 
@@ -167,6 +164,7 @@ model Simulation {
   callSummaryTitle  String?  @map("call_summary_title")
   bodyAnalysis      String?  @map("body_analysis")
   bodyAnalysisModel String?  @map("body_analysis_model")
+  recordingS3Key    String?  @map("recording_s3_key")  // S3 key for body-language recording (archival)
   createdAt         DateTime @default(now()) @map("created_at")
 
   case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)

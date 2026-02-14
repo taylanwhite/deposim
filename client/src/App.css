@@ -526,6 +526,15 @@
 
 /* Sticky Create Case / Cancel so they’re always visible */
 .detail-body-with-actions { padding-bottom: 100px; }
+.form-section-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin: 16px 0 8px 0;
+}
+.form-section-label:first-of-type { margin-top: 0; }
 .form-actions-sticky {
   position: sticky;
   bottom: 0;
@@ -2050,3 +2059,16 @@
 .sim-body-popup-body { padding: 16px; font-size: 15px; line-height: 1.65; color: var(--text); }
 .sim-body-popup-body p { margin-bottom: 10px; }
 .sim-body-popup-body p:last-child { margin-bottom: 0; }
+
+/* Moment popup with video */
+.sim-body-popup.sim-body-popup-video { max-width: 560px; }
+.sim-moment-video {
+  width: 100%;
+  aspect-ratio: 4/3;
+  background: #000;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+.sim-moment-loading { color: var(--muted); font-size: 14px; }
+.sim-moment-error { color: #ed4956; font-size: 14px; }
+.sim-moment-desc { margin-top: 8px; }

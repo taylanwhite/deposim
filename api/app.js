@@ -8,6 +8,14 @@ const { analyzeVideoUrl, analyzeVideoFile, getBodyAnalysisPrompt } = require('./
 const { handleElevenLabsWebhook } = require('./webhook');
 const { getDefaultScorePrompt } = require('./openai');
 const { handleSimPage } = require('./sim-page');
+const {
+  generateRecordingKey,
+  createMultipartUpload,
+  getPresignedUploadUrls,
+  completeMultipartUpload,
+  downloadToTemp,
+  getPresignedViewUrl,
+} = require('./s3-upload');
 
 const app = express();
 const prisma = new PrismaClient();
@@ -34,7 +42,9 @@ app.post('/api/webhook/elevenlabs', express.raw({ type: '*/*', limit: '10mb' }),
   } catch (err) {
     console.error('POST /api/webhook/elevenlabs error:', err.message);
     console.error(err.stack);
-    if (!res.headersSent) res.status(500).json({ error: 'Internal server error' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Internal server error', detail: process.env.NODE_ENV === 'development' ? err.message : undefined });
+    }
   }
 });
 
@@ -59,6 +69,26 @@ app.get('/api/cases', async (req, res) => {
   }
 });
 
+// Record that the client granted camera/mic consent (when user enables it during a simulation)
+app.post('/api/cases/:id/record-consent', async (req, res) => {
+  try {
+    const c = await prisma.case.findUnique({
+      where: { id: req.params.id },
+      include: { client: true },
+    });
+    if (!c) return res.status(404).json({ error: 'Case not found' });
+    if (!c.clientId) return res.status(400).json({ error: 'Case has no client' });
+    await prisma.client.update({
+      where: { id: c.clientId },
+      data: { consentCamera: true, consentMicrophone: true },
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('POST /api/cases/:id/record-consent', err);
+    res.status(500).json({ error: err.message || 'Failed to record consent' });
+  }
+});
+
 // Get one case
 app.get('/api/cases/:id', async (req, res) => {
   try {
@@ -74,32 +104,63 @@ app.get('/api/cases/:id', async (req, res) => {
   }
 });
 
-// Create case
+// Create case (client info comes from client, not case)
 app.post('/api/cases', async (req, res) => {
   try {
-    const { organizationId, companyId, clientId, caseNumber, firstName, lastName, phone, email, description } = req.body;
-    if (!caseNumber || !firstName || !lastName || !phone || !description) {
+    const { organizationId, companyId, clientId, caseNumber, description, client } = req.body;
+    if (!caseNumber || !description) {
       return res.status(400).json({
-        error: 'Missing required fields: caseNumber, firstName, lastName, phone, description',
+        error: 'Missing required fields: caseNumber, description',
       });
     }
+
+    let resolvedClientId = clientId && String(clientId).trim() ? String(clientId).trim() : null;
+
+    // If client data provided inline, create client first
+    if (!resolvedClientId && client && typeof client === 'object') {
+      const { firstName, lastName, phone, email } = client;
+      if (!firstName?.trim() || !lastName?.trim() || !phone?.trim()) {
+        return res.status(400).json({
+          error: 'When creating a new client: firstName, lastName, and phone are required',
+        });
+      }
+      const firstOrg = await prisma.organization.findFirst();
+      const orgId = (organizationId && String(organizationId).trim()) || firstOrg?.id;
+      if (!orgId) return res.status(400).json({ error: 'No organization exists. Create one first.' });
+      const newClient = await prisma.client.create({
+        data: {
+          organizationId: orgId,
+          companyId: companyId != null && companyId !== '' ? String(companyId) : null,
+          firstName: String(firstName).trim(),
+          lastName: String(lastName).trim(),
+          phone: String(phone).trim(),
+          email: email != null && String(email).trim() ? String(email).trim() : null,
+        },
+      });
+      resolvedClientId = newClient.id;
+    }
+
+    if (!resolvedClientId) {
+      return res.status(400).json({
+        error: 'clientId or client (firstName, lastName, phone, email) is required',
+      });
+    }
+
     const c = await prisma.case.create({
       data: {
         organizationId: organizationId != null && organizationId !== '' ? String(organizationId) : null,
         companyId: companyId != null && companyId !== '' ? String(companyId) : null,
-        clientId: clientId != null && clientId !== '' ? String(clientId) : null,
+        clientId: resolvedClientId,
         caseNumber: String(caseNumber),
-        firstName: String(firstName),
-        lastName: String(lastName),
-        phone: String(phone),
-        email: email != null ? String(email) : null,
         description: String(description),
       },
+      include: { client: true },
     });
 
     // Fire-and-forget SMS notification to moderators
     const moderatorPhones = (process.env.MODERATOR_PHONES || '').split(',').map(s => s.trim()).filter(Boolean);
-    const smsMsg = `New DepoSim case created: #${caseNumber} – ${lastName}, ${firstName}`;
+    const name = c.client ? `${c.client.lastName}, ${c.client.firstName}` : 'Deponent';
+    const smsMsg = `New DepoSim case created: #${caseNumber} – ${name}`;
     for (const to of moderatorPhones) {
       const smsUrl = `https://vsfy.com/txt/?to=${encodeURIComponent(to)}&msg=${encodeURIComponent(smsMsg)}`;
       fetch(smsUrl).catch(err => console.error('[sms] failed to notify', to, err.message));
@@ -112,10 +173,10 @@ app.post('/api/cases', async (req, res) => {
   }
 });
 
-// Update case
+// Update case (client info via clientId or PATCH /clients/:id)
 app.patch('/api/cases/:id', async (req, res) => {
   try {
-    const { organizationId, companyId, clientId, caseNumber, firstName, lastName, phone, email, description } = req.body;
+    const { organizationId, companyId, clientId, caseNumber, description } = req.body;
     const c = await prisma.case.update({
       where: { id: req.params.id },
       data: {
@@ -123,12 +184,9 @@ app.patch('/api/cases/:id', async (req, res) => {
         ...(companyId !== undefined && { companyId: companyId === null || companyId === '' ? null : String(companyId) }),
         ...(clientId !== undefined && { clientId: clientId === null || clientId === '' ? null : String(clientId) }),
         ...(caseNumber != null && { caseNumber: String(caseNumber) }),
-        ...(firstName != null && { firstName: String(firstName) }),
-        ...(lastName != null && { lastName: String(lastName) }),
-        ...(phone != null && { phone: String(phone) }),
-        ...(email !== undefined && { email: email === null || email === '' ? null : String(email) }),
         ...(description != null && { description: String(description) }),
       },
+      include: { client: true },
     });
     res.json(c);
   } catch (err) {
@@ -314,14 +372,15 @@ app.get('/api/clients/:id', async (req, res) => {
 });
 app.post('/api/clients', async (req, res) => {
   try {
-    const { organizationId, companyId, name, email, phone, consentCamera, consentMicrophone } = req.body;
-    if (!organizationId || !name || !String(name).trim())
-      return res.status(400).json({ error: 'organizationId and name are required' });
+    const { organizationId, companyId, firstName, lastName, email, phone, consentCamera, consentMicrophone } = req.body;
+    if (!organizationId || !firstName?.trim() || !lastName?.trim())
+      return res.status(400).json({ error: 'organizationId, firstName, and lastName are required' });
     const c = await prisma.client.create({
       data: {
         organizationId: String(organizationId),
         companyId: companyId != null && companyId !== '' ? String(companyId) : null,
-        name: String(name).trim(),
+        firstName: String(firstName).trim(),
+        lastName: String(lastName).trim(),
         email: email != null && email !== '' ? String(email) : null,
         phone: phone != null && phone !== '' ? String(phone) : null,
         consentCamera: Boolean(consentCamera),
@@ -336,13 +395,14 @@ app.post('/api/clients', async (req, res) => {
 });
 app.patch('/api/clients/:id', async (req, res) => {
   try {
-    const { organizationId, companyId, name, email, phone, consentCamera, consentMicrophone } = req.body;
+    const { organizationId, companyId, firstName, lastName, email, phone, consentCamera, consentMicrophone } = req.body;
     const c = await prisma.client.update({
       where: { id: req.params.id },
       data: {
         ...(organizationId != null && { organizationId: String(organizationId) }),
         ...(companyId !== undefined && { companyId: companyId === null || companyId === '' ? null : String(companyId) }),
-        ...(name != null && { name: String(name).trim() }),
+        ...(firstName != null && { firstName: String(firstName).trim() }),
+        ...(lastName != null && { lastName: String(lastName).trim() }),
         ...(email !== undefined && { email: email === null || email === '' ? null : String(email) }),
         ...(phone !== undefined && { phone: phone === null || phone === '' ? null : String(phone) }),
         ...(consentCamera !== undefined && { consentCamera: Boolean(consentCamera) }),
@@ -812,8 +872,38 @@ app.get('/api/simulations', async (req, res) => {
       where,
       orderBy: { createdAt: 'desc' },
       take: 100,
-      include: { case: { select: { id: true, firstName: true, lastName: true, caseNumber: true } } },
+      include: { case: { include: { client: true } } },
     });
+
+    // For sims missing bodyAnalysis/recordingS3Key, try to copy from a sibling with same conversationId
+    const byConv = new Map();
+    for (const s of list) {
+      if (s.conversationId) {
+        const key = s.conversationId;
+        if (!byConv.has(key)) byConv.set(key, []);
+        byConv.get(key).push(s);
+      }
+    }
+    for (const [, sims] of byConv) {
+      const withBody = sims.find((s) => s.bodyAnalysis);
+      const withRecording = sims.find((s) => s.recordingS3Key);
+      const withTranscript = sims.find((s) => s.transcript || s.score != null);
+      for (const s of sims) {
+        if (!s.bodyAnalysis && withBody) s.bodyAnalysis = withBody.bodyAnalysis;
+        if (!s.recordingS3Key && withRecording) s.recordingS3Key = withRecording.recordingS3Key;
+        if (withTranscript) {
+          if (!s.transcript && withTranscript.transcript) s.transcript = withTranscript.transcript;
+          if (s.score == null && withTranscript.score != null) s.score = withTranscript.score;
+          if (!s.scoreReason && withTranscript.scoreReason) s.scoreReason = withTranscript.scoreReason;
+          if (!s.fullAnalysis && withTranscript.fullAnalysis) s.fullAnalysis = withTranscript.fullAnalysis;
+          if (!s.turnScores && withTranscript.turnScores) s.turnScores = withTranscript.turnScores;
+          if (s.callDurationSecs == null && withTranscript.callDurationSecs != null) s.callDurationSecs = withTranscript.callDurationSecs;
+          if (!s.transcriptSummary && withTranscript.transcriptSummary) s.transcriptSummary = withTranscript.transcriptSummary;
+          if (!s.callSummaryTitle && withTranscript.callSummaryTitle) s.callSummaryTitle = withTranscript.callSummaryTitle;
+        }
+      }
+    }
+
     res.json(list);
   } catch (err) {
     console.error('GET /api/simulations', err);
@@ -821,10 +911,53 @@ app.get('/api/simulations', async (req, res) => {
   }
 });
 
-app.get('/api/simulations/:id', async (req, res) => {
+// ---------- Presigned URL for recording playback (must be before generic :id) ----------
+app.get('/api/simulations/:id/recording-url', async (req, res) => {
   try {
     const s = await prisma.simulation.findUnique({ where: { id: req.params.id } });
     if (!s) return res.status(404).json({ error: 'Simulation not found' });
+
+    let key = s.recordingS3Key;
+    // Fallback: this sim may not have the key (race with webhook); find one with same conversationId that does
+    if (!key && s.conversationId) {
+      const alt = await prisma.simulation.findFirst({
+        where: { conversationId: s.conversationId, recordingS3Key: { not: null } },
+      });
+      if (alt) key = alt.recordingS3Key;
+    }
+    if (!key) return res.status(404).json({ error: 'No recording for this simulation' });
+
+    const url = await getPresignedViewUrl(key);
+    res.json({ url });
+  } catch (err) {
+    console.error('GET /api/simulations/:id/recording-url', err);
+    res.status(500).json({ error: err.message || 'Failed to get recording URL' });
+  }
+});
+
+app.get('/api/simulations/:id', async (req, res) => {
+  try {
+    let s = await prisma.simulation.findUnique({
+      where: { id: req.params.id },
+      include: { case: { include: { client: true } } },
+    });
+    if (!s) return res.status(404).json({ error: 'Simulation not found' });
+    // If missing transcript/score, try to merge from sibling with same conversationId (webhook may have updated a different record)
+    if ((!s.transcript && s.score == null) && s.conversationId) {
+      const sibling = await prisma.simulation.findFirst({
+        where: { conversationId: s.conversationId, id: { not: s.id } },
+      });
+      if (sibling) {
+        if (!s.transcript && sibling.transcript) s.transcript = sibling.transcript;
+        if (s.score == null && sibling.score != null) s.score = sibling.score;
+        if (!s.scoreReason && sibling.scoreReason) s.scoreReason = sibling.scoreReason;
+        if (!s.fullAnalysis && sibling.fullAnalysis) s.fullAnalysis = sibling.fullAnalysis;
+        if (!s.turnScores && sibling.turnScores) s.turnScores = sibling.turnScores;
+        if (s.callDurationSecs == null && sibling.callDurationSecs != null) s.callDurationSecs = sibling.callDurationSecs;
+        if (!s.transcriptSummary && sibling.transcriptSummary) s.transcriptSummary = sibling.transcriptSummary;
+        if (!s.callSummaryTitle && sibling.callSummaryTitle) s.callSummaryTitle = sibling.callSummaryTitle;
+      }
+    }
     res.json(s);
   } catch (err) {
     console.error('GET /api/simulations/:id', err);
@@ -832,70 +965,138 @@ app.get('/api/simulations/:id', async (req, res) => {
   }
 });
 
-// ---------- Upload body-language video for a simulation ----------
-// Accepts :id (simulation id), ?conversationId=xxx, or ?caseId=xxx (finds most recent sim for case)
+// ---------- Resolve simulation by id, conversationId, or caseId (shared for video uploads) ----------
+async function resolveSimForVideo(prisma, simId, conversationId, caseId) {
+  let sim = null;
+  if (simId && simId !== 'by-conversation' && simId !== 'by-case') {
+    sim = await prisma.simulation.findUnique({ where: { id: simId } });
+  }
+  if (!sim && conversationId) {
+    for (let attempt = 0; attempt < 10 && !sim; attempt++) {
+      sim = await prisma.simulation.findFirst({ where: { conversationId: String(conversationId) } });
+      if (!sim && attempt < 9) await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+  if (!sim && caseId) {
+    const cutoff = new Date(Date.now() - 5 * 60 * 1000);
+    for (let attempt = 0; attempt < 10 && !sim; attempt++) {
+      sim = await prisma.simulation.findFirst({
+        where: { caseId: String(caseId), createdAt: { gte: cutoff } },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (!sim && attempt < 9) await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+  if (!sim && caseId) {
+    const caseExists = await prisma.case.findUnique({ where: { id: String(caseId) } });
+    if (caseExists) {
+      sim = await prisma.simulation.create({
+        data: {
+          caseId: String(caseId),
+          conversationId: conversationId ? String(conversationId) : null,
+          status: 'completed',
+        },
+      });
+    }
+  }
+  return sim;
+}
+
+// ---------- S3 multipart upload: init (for large recordings) ----------
+app.post('/api/simulations/video/upload-init', async (req, res) => {
+  try {
+    const { conversationId, caseId } = req.body || req.query || {};
+    if (!caseId || typeof caseId !== 'string') return res.status(400).json({ error: 'caseId required' });
+
+    const sim = await resolveSimForVideo(prisma, null, conversationId, caseId);
+    if (!sim) return res.status(404).json({ error: 'Simulation not found' });
+
+    const ext = 'webm';
+    const key = generateRecordingKey(caseId, conversationId, ext);
+    const { uploadId } = await createMultipartUpload(key, 'video/webm');
+
+    res.json({ ok: true, uploadId, key });
+  } catch (err) {
+    console.error('POST /api/simulations/video/upload-init', err);
+    res.status(500).json({ error: err.message || 'Upload init failed' });
+  }
+});
+
+// ---------- S3 multipart upload: get presigned URLs for parts ----------
+app.post('/api/simulations/video/upload-urls', async (req, res) => {
+  try {
+    const { uploadId, key, partNumbers } = req.body || {};
+    if (!uploadId || !key || !Array.isArray(partNumbers) || partNumbers.length === 0) {
+      return res.status(400).json({ error: 'uploadId, key, and partNumbers required' });
+    }
+
+    const urls = await getPresignedUploadUrls(key, uploadId, partNumbers);
+    res.json({ ok: true, urls });
+  } catch (err) {
+    console.error('POST /api/simulations/video/upload-urls', err);
+    res.status(500).json({ error: err.message || 'Failed to get upload URLs' });
+  }
+});
+
+// ---------- S3 multipart upload: complete, then run Gemini analysis ----------
+app.post('/api/simulations/video/upload-complete', async (req, res) => {
+  let tmpPath = null;
+  try {
+    const { uploadId, key, parts, conversationId, caseId } = req.body || {};
+    if (!uploadId || !key || !Array.isArray(parts) || parts.length === 0) {
+      return res.status(400).json({ error: 'uploadId, key, and parts required' });
+    }
+    if (!caseId || typeof caseId !== 'string') return res.status(400).json({ error: 'caseId required' });
+
+    await completeMultipartUpload(key, uploadId, parts);
+
+    const sim = await resolveSimForVideo(prisma, null, conversationId, caseId);
+    if (!sim) return res.status(404).json({ error: 'Simulation not found' });
+
+    tmpPath = await downloadToTemp(key);
+    const promptText = getBodyAnalysisPrompt();
+    const mimeType = key.endsWith('.mp4') ? 'video/mp4' : 'video/webm';
+    const result = await analyzeVideoFile(tmpPath, mimeType, promptText);
+
+    await prisma.simulation.update({
+      where: { id: sim.id },
+      data: {
+        bodyAnalysis: String(result.text || ''),
+        bodyAnalysisModel: String(result.model || 'gemini-2.5-flash'),
+        recordingS3Key: key,
+      },
+    });
+
+    res.json({ ok: true, bodyAnalysis: result.text, bodyAnalysisModel: result.model });
+  } catch (err) {
+    console.error('POST /api/simulations/video/upload-complete', err);
+    res.status(500).json({ error: err.message || 'Upload complete failed' });
+  } finally {
+    if (tmpPath) fs.unlink(tmpPath, () => {});
+  }
+});
+
+// ---------- Upload body-language video (legacy FormData, kept for small files when S3 unavailable) ----------
 app.post('/api/simulations/:id/video', upload.single('video'), async (req, res) => {
   try {
     const simId = req.params.id;
     const conversationId = req.query.conversationId || req.body?.conversationId;
     const caseId = req.query.caseId || req.body?.caseId;
 
-    // Find the simulation - try by ID first, then by conversationId, then by caseId (most recent)
-    let sim = null;
-    if (simId && simId !== 'by-conversation' && simId !== 'by-case') {
-      sim = await prisma.simulation.findUnique({ where: { id: simId } });
-    }
-    if (!sim && conversationId) {
-      // Webhook may not have created the sim yet; retry for up to ~30s
-      for (let attempt = 0; attempt < 10 && !sim; attempt++) {
-        sim = await prisma.simulation.findFirst({ where: { conversationId: String(conversationId) } });
-        if (!sim && attempt < 9) await new Promise(r => setTimeout(r, 3000));
-      }
-    }
-    if (!sim && caseId) {
-      // Find most recent simulation for this case (created in last 5 min)
-      const cutoff = new Date(Date.now() - 5 * 60 * 1000);
-      for (let attempt = 0; attempt < 10 && !sim; attempt++) {
-        sim = await prisma.simulation.findFirst({
-          where: { caseId: String(caseId), createdAt: { gte: cutoff } },
-          orderBy: { createdAt: 'desc' },
-        });
-        if (!sim && attempt < 9) await new Promise(r => setTimeout(r, 3000));
-      }
-    }
-    if (!sim && caseId) {
-      // Race: webhook may not have created the simulation yet. Create a stub so the video has a home.
-      // The webhook will update this record when it runs.
-      const caseExists = await prisma.case.findUnique({ where: { id: String(caseId) } });
-      if (caseExists) {
-        sim = await prisma.simulation.create({
-          data: {
-            caseId: String(caseId),
-            conversationId: conversationId ? String(conversationId) : null,
-            status: 'completed',
-          },
-        });
-      }
-    }
+    const sim = await resolveSimForVideo(prisma, simId, conversationId, caseId);
     if (!sim) return res.status(404).json({ error: 'Simulation not found' });
-
     if (!req.file) return res.status(400).json({ error: 'No video file uploaded' });
 
-    // Normalize mimetype (browser may send application/octet-stream for webm)
     let mimeType = req.file.mimetype || '';
     if (!mimeType.startsWith('video/')) {
       const ext = (req.file.originalname || '').toLowerCase().match(/\.(webm|mp4|mov|avi|mkv)$/);
       mimeType = ext ? (ext[1] === 'webm' ? 'video/webm' : ext[1] === 'mp4' ? 'video/mp4' : 'video/' + ext[1]) : 'video/webm';
     }
 
-    // Body analysis uses hardcoded system prompt (not user-editable)
     const promptText = getBodyAnalysisPrompt();
-
-    // Run Gemini analysis
     const result = await analyzeVideoFile(req.file.path, mimeType, promptText);
 
-    // Save analysis to the simulation
-    const updated = await prisma.simulation.update({
+    await prisma.simulation.update({
       where: { id: sim.id },
       data: {
         bodyAnalysis: String(result.text || ''),
@@ -903,10 +1104,8 @@ app.post('/api/simulations/:id/video', upload.single('video'), async (req, res) 
       },
     });
 
-    // Clean up temp file
     fs.unlink(req.file.path, () => {});
-
-    res.json({ ok: true, bodyAnalysis: updated.bodyAnalysis, bodyAnalysisModel: updated.bodyAnalysisModel });
+    res.json({ ok: true, bodyAnalysis: result.text, bodyAnalysisModel: result.model });
   } catch (err) {
     console.error('POST /api/simulations/:id/video', err);
     if (req.file) fs.unlink(req.file.path, () => {});
@@ -920,15 +1119,19 @@ app.post('/api/sim/signed-url', async (req, res) => {
     const { caseId } = req.body || {};
     if (!caseId || typeof caseId !== 'string') return res.status(400).json({ error: 'caseId required' });
 
-    const caseRecord = await prisma.case.findUnique({ where: { id: caseId } });
+    const caseRecord = await prisma.case.findUnique({
+      where: { id: caseId },
+      include: { client: true },
+    });
     if (!caseRecord) return res.status(404).json({ error: 'Case not found' });
 
-    const firstName = caseRecord.firstName || '';
-    const lastName = caseRecord.lastName || '';
+    const client = caseRecord.client;
+    const firstName = client?.firstName || '';
+    const lastName = client?.lastName || '';
     const name = `${firstName} ${lastName}`.trim() || 'Deponent';
     const caseNumber = caseRecord.caseNumber || '';
     const desc = caseRecord.description || '';
-    const phone = caseRecord.phone || '';
+    const phone = client?.phone || '';
     const caseInfo = `Case Number: ${caseNumber}\nDeponent: ${name}\nPhone: ${phone}\nDescription: ${desc}`;
 
     let depoPrompt = '';
@@ -1001,10 +1204,11 @@ app.post('/api/chat', async (req, res) => {
     if (simulationId) {
       const sim = await prisma.simulation.findUnique({
         where: { id: simulationId },
-        include: { case: true },
+        include: { case: { include: { client: true } } },
       });
       if (sim) {
-        const caseName = sim.case ? `${sim.case.firstName} ${sim.case.lastName}` : 'Unknown';
+        const client = sim.case?.client;
+        const caseName = client ? `${client.firstName || ''} ${client.lastName || ''}`.trim() || 'Unknown' : 'Unknown';
         const caseNum = sim.case?.caseNumber || '';
         const caseDesc = sim.case?.description || '';
         const transcriptText = Array.isArray(sim.transcript)

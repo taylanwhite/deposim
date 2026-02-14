@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useConversation } from '@elevenlabs/react';
+import { uploadRecordingToS3 } from './lib/s3MultipartUpload';
 
 const API = '/api';
 
@@ -150,8 +151,8 @@ function SimPage() {
     setPhase('calling');
     setMessages([]);
     recordedChunks.current = [];
-    if (cameraStream && pipVideoRef.current) {
-      pipVideoRef.current.srcObject = cameraStream;
+    if (pipVideoRef.current) pipVideoRef.current.srcObject = cameraStream;
+    if (cameraStream) {
       try {
         const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
           ? 'video/webm;codecs=vp9'
@@ -162,7 +163,7 @@ function SimPage() {
         mediaRecorder.current.ondataavailable = (e) => {
           if (e.data && e.data.size > 0) recordedChunks.current.push(e.data);
         };
-        mediaRecorder.current.start(5000);
+        mediaRecorder.current.start(1000); // 1s chunks so short calls get data
       } catch (err) {
         console.warn('[DepoSim] MediaRecorder start failed:', err);
       }
@@ -184,18 +185,18 @@ function SimPage() {
     const useCaseId = !convId && caseId;
 
     if (chunks.length > 0 && (convId || useCaseId)) {
+      console.log('[DepoSim] Uploading recording:', chunks.length, 'chunks,', Math.round(chunks.reduce((a, c) => a + c.size, 0) / 1024), 'KB');
       setPostCallMessage('uploading');
       const blob = new Blob(chunks, {
         type: (mediaRecorder.current?.mimeType) || 'video/webm',
       });
-      const formData = new FormData();
-      formData.append('video', blob, 'body-recording.webm');
-      const url = convId
-        ? `${API}/simulations/by-conversation/video?conversationId=${encodeURIComponent(convId)}&caseId=${encodeURIComponent(caseId)}`
-        : `${API}/simulations/by-case/video?caseId=${encodeURIComponent(caseId)}`;
 
-      fetch(url, { method: 'POST', body: formData })
-        .then((r) => r.json())
+      uploadRecordingToS3(blob, {
+        conversationId: convId || undefined,
+        caseId,
+        onProgress: ({ phase, pct }) =>
+          setPostCallMessage(phase === 'analyzing' ? 'analyzing' : `uploading ${Math.round(pct)}%`),
+      })
         .then((d) => {
           if (d.ok) {
             setPostCallMessage('complete');
@@ -205,6 +206,7 @@ function SimPage() {
         })
         .catch((err) => setPostCallMessage(`error: ${err.message}`));
     } else {
+      console.warn('[DepoSim] No recording to upload:', { chunks: chunks.length, convId: !!convId, useCaseId: !!useCaseId });
       setPostCallMessage('complete');
     }
   }, [cameraStream, caseId]);
@@ -297,6 +299,10 @@ function SimPage() {
       });
       setCameraStream(stream);
       setPhase('ready');
+      // Record that the client granted camera/mic consent
+      if (caseId) {
+        fetch(`${API}/cases/${caseId}/record-consent`, { method: 'POST' }).catch(() => {});
+      }
     } catch (err) {
       const denied = err.name === 'NotAllowedError' || /denied/i.test(err.message);
       setCameraError(denied ? 'denied' : err.message);
@@ -378,10 +384,6 @@ function SimPage() {
             <div className="sim-feature">
               <span className="sim-feat-icon">📊</span>
               <span><strong>Post-Session Report</strong> — Detailed breakdown after the simulation.</span>
-            </div>
-            <div className="sim-feature">
-              <span className="sim-feat-icon">🔒</span>
-              <span><strong>Private</strong> — Video is processed for analysis only, not stored.</span>
             </div>
           </div>
           {cameraError === 'denied' && (
@@ -493,8 +495,11 @@ function SimPage() {
         <div className="sim-postcall-name">{config?.case?.name || 'Deponent'}</div>
         <div className="sim-postcall-status">Session Complete</div>
         <div className="sim-postcall-body">
-          {postCallMessage === 'uploading' && (
-            <p>Uploading video for body language analysis… This may take a minute. Results will appear in your simulation detail.</p>
+          {(postCallMessage === 'uploading' || postCallMessage.startsWith('uploading ')) && (
+            <p>Uploading video for body language analysis… {postCallMessage.includes('%') ? postCallMessage : 'This may take a minute.'} Results will appear in your simulation detail.</p>
+          )}
+          {postCallMessage === 'analyzing' && (
+            <p>Upload complete. Analyzing video… This may take a few minutes for long recordings.</p>
           )}
           {postCallMessage === 'complete' && (
             <p>View your simulation results and analysis in the app.</p>
