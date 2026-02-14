@@ -801,10 +801,13 @@ function SimulationDetail({ d, tab, switchTab, goBack }) {
               ) : (
                 <div className="sim-transcript-bubbles">
                   {transcript.map((t, i) => {
-                    const role = (t.role || '').toLowerCase();
-                    const msg = t.message || t.original_message || '';
+                    const role = (t.role || t.speaker || '').toLowerCase();
+                    const msg = t.message || t.original_message || t.text || t.content || '';
                     const isUser = role === 'user';
-                    const turnIdx = transcript.slice(0, i + 1).filter(x => (x.role || '').toLowerCase() === 'user').length - 1;
+                    const turnIdx = transcript.slice(0, i + 1).filter(x => {
+                      const r = (x.role || x.speaker || '').toLowerCase();
+                      return r === 'user' || (r !== 'agent' && r !== 'assistant');
+                    }).length - 1;
                     const turnScore = turnIdx >= 0 && turnScores[turnIdx] ? turnScores[turnIdx] : null;
 
                     return (

@@ -7,17 +7,17 @@
 
 /**
  * Convert ElevenLabs transcript array to Q/A text.
- * Each turn has { role: 'agent'|'user', message } or { original_message }.
+ * Supports: role/message, role/original_message, speaker/text, role/content.
  */
 function transcriptToText(transcript) {
   if (!Array.isArray(transcript)) return '';
   const lines = [];
   for (const t of transcript) {
     if (!t || typeof t !== 'object') continue;
-    const role = String(t.role || 'unknown').trim().toLowerCase();
-    const msg = String(t.message || t.original_message || '').trim();
+    const role = String(t.role || t.speaker || 'unknown').trim().toLowerCase();
+    const msg = String(t.message || t.original_message || t.text || t.content || '').trim();
     if (!msg) continue;
-    const label = role === 'agent' ? 'Q' : 'A';
+    const label = role === 'agent' || role === 'assistant' ? 'Q' : 'A';
     lines.push(`${label}: ${msg}`);
   }
   return lines.join('\n\n');
@@ -25,9 +25,9 @@ function transcriptToText(transcript) {
 
 const SYSTEM_PROMPT = `You are a deposition conversation rater. You rate ONLY what is in the transcript. You never invent, assume, or hallucinate Q/A that is not there.
 
-CRITICAL — When to give score 0 (and ONLY then):
-- score 0 ONLY when: (1) there are zero "A:" lines, OR (2) every "A:" line is purely a greeting with no deposition content (e.g. only "Hi", "Hello", "Hello?" and no Q/A about case type, role, danger topics, or any deposition question).
-- If there is ANY "A:" line that answers a question (case type, role, facts, danger topics, or any deposition-style Q), you MUST rate the conversation. Give a score 1–100 and analyze. Short answers like "Injury." or "Personal injury" COUNT. Interrupted or rambling answers COUNT. "I was in an accident..." COUNTS. Even one substantive deponent answer means you MUST rate, not 0.
+CRITICAL — You MUST score EVERY user (A:) message in turn_scores. Never return turn_scores: [] when there are any A: lines.
+- "Substantive" includes: confirming readiness ("I'm ready"), acknowledging rules ("I understand", "I know"), giving name when asked, case type, role, any response to a Q. Even "Hi" or "Yes" gets a turn_score (rate how appropriate it was).
+- score 0 overall ONLY when there are literally zero "A:" lines in the transcript.
 - Do NOT return 0 claiming "partial Q/A" or "no full deponent answers" when the transcript clearly has A: lines answering questions. Rate what is there.
 
 When there ARE deponent answers to rate:
@@ -90,7 +90,7 @@ Rules for turn_scores:
 - Each "score" is 0–100: how well that specific answer addressed the preceding question (brief, on-point, no volunteering = higher).
 - INTERRUPTING = very low score (1–30). If the deponent's response appears to interrupt the interviewer (e.g. answering before the Q is finished, or saying things like "I know we're all ready" / "we're good" when the attorney was mid-sentence or mid-explanation), score it 1–30. Never give 100% for an answer that interrupted the questioner.
 - Order MUST match transcript order (first user reply → first turn_score, etc.).
-- If there are zero A: lines (or only greetings), turn_scores must be [] and score 0.`;
+- For "greetings" or minimal responses ("I'm ready", "Hi", "I understand"): still include a turn_score. NEVER return empty turn_scores when there are A: lines.`;
 
 /**
  * Build the messages array for OpenAI chat completion.
@@ -110,9 +110,12 @@ function buildMessages(conversationText, scorePrompt = null) {
   // Always append strict JSON format so we reliably get turn_scores
   const systemContent = (custom || SYSTEM_PROMPT) + SCORE_OUTPUT_FORMAT;
 
+  const aCount = (conversationText.match(/^A: /gm) || []).length;
+  const userContentWithCount = userContent + (aCount > 0 ? `\n\n[There are ${aCount} deponent (A:) responses above. You MUST return exactly ${aCount} turn_scores objects.]` : '');
+
   return [
     { role: 'system', content: systemContent },
-    { role: 'user', content: userContent },
+    { role: 'user', content: userContentWithCount },
   ];
 }
 
