@@ -1266,11 +1266,6 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
               <span className="k">Email</span><span className="v">{d.client.email}</span>
             </div>
           )}
-          {d.client?.phone && (
-            <div className="kv">
-              <span className="k">Phone</span><span className="v">{d.client.phone}</span>
-            </div>
-          )}
 
           <DescriptionAccordion description={d.description} />
 
