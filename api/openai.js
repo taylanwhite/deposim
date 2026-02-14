@@ -32,6 +32,7 @@ CRITICAL — When to give score 0 (and ONLY then):
 
 When there ARE deponent answers to rate:
 - Be blunt. Flag volunteering, guessing/speculating, "always/never," motives/intent, legal conclusions, privilege/work-product.
+- INTERRUPTING the questioner is a major error — score 1–30 for any answer that interrupts, talks over, or responds before the attorney finishes. Phrases like "I know we're all ready" or "we're good" when cutting off the attorney = low score.
 - No legal advice. Communication coaching only.
 - Quote only exact Q/A from the transcript for risky moments. If there are fewer than 5 risky moments, list only what exists.
 
@@ -87,6 +88,7 @@ Rules for turn_scores:
 - Include exactly one object for EACH user (A:) response in the transcript.
 - CRITICAL: "question" MUST be the exact text of the PRECEDING agent (Q:) message — i.e. the question the user was answering. NEVER use the agent's FOLLOW-UP (the message that comes AFTER the user's answer).
 - Each "score" is 0–100: how well that specific answer addressed the preceding question (brief, on-point, no volunteering = higher).
+- INTERRUPTING = very low score (1–30). If the deponent's response appears to interrupt the interviewer (e.g. answering before the Q is finished, or saying things like "I know we're all ready" / "we're good" when the attorney was mid-sentence or mid-explanation), score it 1–30. Never give 100% for an answer that interrupted the questioner.
 - Order MUST match transcript order (first user reply → first turn_score, etc.).
 - If there are zero A: lines (or only greetings), turn_scores must be [] and score 0.`;
 

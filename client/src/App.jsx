@@ -810,10 +810,11 @@ function SimulationDetail({ d, tab, switchTab, goBack }) {
                     return (
                       <div key={i} className={`sim-transcript-row sim-transcript-row-${isUser ? 'user' : 'agent'}`}>
                         {isUser && turnScore && (
-                          <div className="sim-turn-score-inline" style={{ color: (turnScore.score >= 75 ? '#58c322' : turnScore.score >= 50 ? '#ffab00' : '#ed4956') }}>
+                          <div className="sim-turn-score-inline">
                             <button
                               type="button"
                               className="sim-turn-score-btn"
+                              style={{ color: turnScore.score >= 75 ? '#58c322' : turnScore.score >= 50 ? '#ffc107' : '#ed4956' }}
                               onClick={() => setExpandedTurn(prev => prev === turnIdx ? null : turnIdx)}
                             >
                               {turnScore.score}%
