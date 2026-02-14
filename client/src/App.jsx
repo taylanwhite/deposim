@@ -730,7 +730,7 @@ function SimulationDetail({ d, tab, switchTab, goBack }) {
                 </div>
               )}
               <div className="sim-detail-meta">
-                {d.callDurationSecs != null && <span>{Math.floor(d.callDurationSecs / 60)}m {d.callDurationSecs % 60}s</span>}
+                {d.callDurationSecs != null && <span>{Math.max(1, Math.round(d.callDurationSecs / 60))}m</span>}
                 <span> · {new Date(d.createdAt).toLocaleDateString()}</span>
               </div>
             </div>
@@ -1208,7 +1208,7 @@ function SimCard({ sim: s, caseData, onClick }) {
   const client = caseData?.client || caseData;
   const name = client ? `${client.lastName || ''}, ${client.firstName || ''}`.trim() || (s.callSummaryTitle || s.eventType || 'Simulation') : (s.callSummaryTitle || s.eventType || 'Simulation');
   const dateStr = new Date(s.createdAt).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
-  const duration = s.callDurationSecs != null ? `${Math.floor(s.callDurationSecs / 60)}m ${s.callDurationSecs % 60}s` : '—';
+  const duration = s.callDurationSecs != null ? `${Math.max(1, Math.round(s.callDurationSecs / 60))}m` : '—';
 
   return (
     <button type="button" className="sim-post-card" onClick={onClick} style={{ background: gradient }}>
