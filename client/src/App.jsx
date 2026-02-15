@@ -775,7 +775,7 @@ function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterCli
                       <ul>
                         {turnScores.map((ts, i) => (
                           <li key={i}>
-                            <span className="sim-score-summary-turn-pct" style={{ color: (ts.score >= 75 ? SCORE_GREEN : ts.score >= 50 ? '#ffab00' : '#ed4956') }}>{ts.score}%</span>
+                            <span className="sim-score-summary-turn-pct sim-score-summary-turn-pct-circle" style={{ color: (ts.score >= 75 ? SCORE_GREEN : ts.score >= 50 ? '#ffab00' : '#ed4956') }}>{ts.score}%</span>
                             {ts.question && <span className="sim-score-summary-turn-q">Q: {ts.question.length > 80 ? ts.question.slice(0, 80) + '…' : ts.question}</span>}
                             {ts.response && <span className="sim-score-summary-turn-a">A: {ts.response.length > 80 ? ts.response.slice(0, 80) + '…' : ts.response}</span>}
                           </li>
@@ -916,13 +916,15 @@ function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterCli
                   </div>
                   {bodyData.timeline_of_notable_moments && bodyData.timeline_of_notable_moments.length > 0 && (
                     <div className="sim-body-moments">
-                      <div className="sim-detail-heading">Memorable Moments</div>
+                      <div className="sim-body-moments-header">
+                        <span className="sim-detail-heading">Memorable Moments</span>
+                        <span className="sim-body-moment-play">Tap to Play</span>
+                      </div>
                       <div className="sim-body-moments-list">
                         {bodyData.timeline_of_notable_moments.map((m, i) => (
                           <button key={i} className="sim-body-moment" onClick={() => setPopupMoment(m)}>
                             <span className="sim-body-moment-ts">{m.timestamp || ''}</span>
                             <span className="sim-body-moment-text">{m.moment || ''}</span>
-                            <span className="sim-body-moment-play">Tap to Play</span>
                           </button>
                         ))}
                       </div>
@@ -1464,11 +1466,11 @@ function MainApp() {
     .filter(c => {
       if (!caseSearch.trim()) return true;
       const q = caseSearch.toLowerCase().trim();
-      const num = (c.caseNumber || '').toLowerCase();
-      const first = (c.client?.firstName || '').toLowerCase();
-      const last = (c.client?.lastName || '').toLowerCase();
-      const desc = (c.description || '').toLowerCase();
-      return num.includes(q) || first.includes(q) || last.includes(q) || desc.includes(q);
+      try {
+        return JSON.stringify(c).toLowerCase().includes(q);
+      } catch {
+        return false;
+      }
     })
     .sort((a, b) => {
       if (caseSort === 'newest') return new Date(b.createdAt) - new Date(a.createdAt);
