@@ -373,7 +373,7 @@ function SimPage() {
     return (
       <div className="sim-page sim-page-dark">
         <div className="sim-consent">
-          <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="sim-logo" />
+          <a href="https://deposim.com" target="_blank" rel="noopener noreferrer"><img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="sim-logo" /></a>
           <h1>Prepare for Your Simulation</h1>
           <p className="sim-subtitle">We need camera and microphone access for body language analysis during the deposition.</p>
           <div className="sim-features">
@@ -413,7 +413,7 @@ function SimPage() {
     return (
       <div className="sim-page sim-page-dark">
         <div className="sim-consent">
-          <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="sim-logo" />
+          <a href="https://deposim.com" target="_blank" rel="noopener noreferrer"><img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="sim-logo" /></a>
           <h1>Ready</h1>
           <p className="sim-subtitle">Camera active. Tap below to start your deposition simulation.</p>
           <div className="sim-preview-wrap">
@@ -434,8 +434,12 @@ function SimPage() {
         <div className="sim-header">
           <Link to="/" className="sim-back">← Back</Link>
           <div className="sim-header-info">
-            <span className="sim-case-num">Case #{config?.case?.caseNumber || '—'}</span>
-            <span className="sim-deponent">{config?.case?.name || 'Deponent'}</span>
+            <span className="sim-deponent">
+              {config?.case?.firstName != null && config?.case?.lastName != null
+                ? `${config.case.lastName}, ${config.case.firstName}`
+                : config?.case?.name || 'Deponent'}
+            </span>
+            <span className="sim-case-num">#{config?.case?.caseNumber || '—'}</span>
           </div>
         </div>
 
@@ -491,8 +495,12 @@ function SimPage() {
     <div className="sim-page">
       <div className="sim-postcall">
         <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="sim-logo" />
-        <div className="sim-postcall-case">Case #{config?.case?.caseNumber || '—'}</div>
-        <div className="sim-postcall-name">{config?.case?.name || 'Deponent'}</div>
+        <div className="sim-postcall-name">
+          {config?.case?.firstName != null && config?.case?.lastName != null
+            ? `${config.case.lastName}, ${config.case.firstName}`
+            : config?.case?.name || 'Deponent'}
+        </div>
+        <div className="sim-postcall-case">#{config?.case?.caseNumber || '—'}</div>
         <div className="sim-postcall-status">Session Complete</div>
         <div className="sim-postcall-body">
           {(postCallMessage === 'uploading' || postCallMessage.startsWith('uploading ')) && (
@@ -502,13 +510,13 @@ function SimPage() {
             <p>Upload complete. Analyzing video… This may take a few minutes for long recordings.</p>
           )}
           {postCallMessage === 'complete' && (
-            <p>View your simulation results and analysis in the app.</p>
+            <p>View your simulation results and analysis in the app. (Click below to view your simulation results in the case.)</p>
           )}
           {postCallMessage.startsWith('error:') && (
             <p style={{ color: '#ed4956' }}>{postCallMessage}</p>
           )}
         </div>
-        <Link to="/" className="sim-btn">Back to Cases</Link>
+        <Link to="/" className="sim-btn">Back to Cases — View Results</Link>
       </div>
     </div>
   );

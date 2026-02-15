@@ -72,9 +72,20 @@ const Icons = {
     </svg>
   ),
   body: (
-    <span style={{ fontSize: 22 }}>😊</span>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="6" r="3" />
+      <path d="M4 20 Q12 12 20 20" />
+    </svg>
+  ),
+  search: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+    </svg>
   ),
 };
+
+/* Spring grass green for scores */
+const SCORE_GREEN = '#16981c';
 
 /* ===== Inline AI Coach for any prompt ===== */
 function PromptCoachInline({ prompt, onPromptUpdated, showToast }) {
@@ -665,7 +676,7 @@ function MomentVideoPopup({ moment, simulationId, onClose }) {
 }
 
 /* ===== Simulation Detail: Transcript bubbles + Body tab ===== */
-function SimulationDetail({ d, tab, switchTab, goBack }) {
+function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterClick }) {
   const [simTab, setSimTab] = useState('transcript');
   const [popupCategory, setPopupCategory] = useState(null);
   const [popupMoment, setPopupMoment] = useState(null);
@@ -681,7 +692,7 @@ function SimulationDetail({ d, tab, switchTab, goBack }) {
     return () => document.removeEventListener('click', onDocClick);
   }, [expandedTurn]);
 
-  const scoreColor = d.score >= 75 ? '#58c322' : d.score >= 50 ? '#ffab00' : '#ed4956';
+  const scoreColor = d.score >= 75 ? SCORE_GREEN : d.score >= 50 ? '#ffab00' : '#ed4956';
   const transcript = Array.isArray(d.transcript) ? d.transcript : [];
   const turnScores = Array.isArray(d.turnScores) ? d.turnScores : [];
 
@@ -699,7 +710,7 @@ function SimulationDetail({ d, tab, switchTab, goBack }) {
     { key: 'overall_demeanor', label: 'Overall Demeanor' },
     { key: 'key_body_signals', label: 'Key Body Signals' },
     { key: 'stress_signals', label: 'Stress Signals' },
-    { key: 'credible_assessment', label: 'Credible Assessment' },
+    { key: 'credible_assessment', label: 'Credibility Assessment' },
   ];
 
   return (
@@ -764,7 +775,7 @@ function SimulationDetail({ d, tab, switchTab, goBack }) {
                       <ul>
                         {turnScores.map((ts, i) => (
                           <li key={i}>
-                            <span className="sim-score-summary-turn-pct" style={{ color: (ts.score >= 75 ? '#58c322' : ts.score >= 50 ? '#ffab00' : '#ed4956') }}>{ts.score}%</span>
+                            <span className="sim-score-summary-turn-pct" style={{ color: (ts.score >= 75 ? SCORE_GREEN : ts.score >= 50 ? '#ffab00' : '#ed4956') }}>{ts.score}%</span>
                             {ts.question && <span className="sim-score-summary-turn-q">Q: {ts.question.length > 80 ? ts.question.slice(0, 80) + '…' : ts.question}</span>}
                             {ts.response && <span className="sim-score-summary-turn-a">A: {ts.response.length > 80 ? ts.response.slice(0, 80) + '…' : ts.response}</span>}
                           </li>
@@ -788,7 +799,7 @@ function SimulationDetail({ d, tab, switchTab, goBack }) {
             </button>
             <button className={`sim-detail-tab${simTab === 'body' ? ' active' : ''}`} onClick={() => setSimTab('body')}>
               {Icons.body}
-              <span>Body</span>
+              <span>Body Language</span>
             </button>
           </div>
 
@@ -812,14 +823,19 @@ function SimulationDetail({ d, tab, switchTab, goBack }) {
 
                     return (
                       <div key={i} className={`sim-transcript-row sim-transcript-row-${isUser ? 'user' : 'agent'}`}>
+                        {!isUser && <div className="sim-turn-score-spacer" />}
+                        {isUser && <div className="sim-turn-score-spacer sim-turn-score-spacer-left" />}
+                        <div className={`sim-bubble sim-bubble-${isUser ? 'user' : 'agent'}`}>
+                          <div className="sim-bubble-text">{msg}</div>
+                        </div>
                         {isUser && (
                           <div className="sim-turn-score-inline">
                             {turnScore ? (
                               <>
                                 <button
                                   type="button"
-                                  className="sim-turn-score-btn"
-                                  style={{ color: turnScore.score >= 75 ? '#58c322' : turnScore.score >= 50 ? '#ffc107' : '#ed4956' }}
+                                  className="sim-turn-score-btn sim-turn-score-circle"
+                                  style={{ color: turnScore.score >= 75 ? SCORE_GREEN : turnScore.score >= 50 ? '#ffc107' : '#ed4956' }}
                                   onClick={() => setExpandedTurn(prev => prev === turnIdx ? null : turnIdx)}
                                 >
                                   {turnScore.score}%
@@ -838,13 +854,14 @@ function SimulationDetail({ d, tab, switchTab, goBack }) {
                             )}
                           </div>
                         )}
-                        {!isUser && <div className="sim-turn-score-spacer" />}
-                        <div className={`sim-bubble sim-bubble-${isUser ? 'user' : 'agent'}`}>
-                          <div className="sim-bubble-text">{msg}</div>
-                        </div>
                       </div>
                     );
                   })}
+                  {transcript.length > 0 && (
+                    <div className="sim-transcript-call-ended">
+                      Call Ended{d.endedBy ? ` — ${d.endedBy === 'user' ? 'You' : d.endedBy === 'agent' ? 'Counsel' : d.endedBy}` : ''}
+                    </div>
+                  )}
                 </div>
               )}
               {/* Full Analysis — hidden for now
@@ -881,7 +898,7 @@ function SimulationDetail({ d, tab, switchTab, goBack }) {
                     {BODY_CATEGORIES.map(({ key, label }) => {
                       const cat = bodyData[key];
                       const score = cat && typeof cat.score === 'number' ? cat.score : null;
-                      const scoreColor = score >= 75 ? '#58c322' : score >= 50 ? '#ffab00' : '#ed4956';
+                      const scoreColor = score >= 75 ? SCORE_GREEN : score >= 50 ? '#ffab00' : '#ed4956';
                       return (
                         <button
                           key={key}
@@ -905,6 +922,7 @@ function SimulationDetail({ d, tab, switchTab, goBack }) {
                           <button key={i} className="sim-body-moment" onClick={() => setPopupMoment(m)}>
                             <span className="sim-body-moment-ts">{m.timestamp || ''}</span>
                             <span className="sim-body-moment-text">{m.moment || ''}</span>
+                            <span className="sim-body-moment-play">Tap to Play</span>
                           </button>
                         ))}
                       </div>
@@ -943,7 +961,7 @@ function SimulationDetail({ d, tab, switchTab, goBack }) {
         />
       )}
 
-      <BottomBar tab={tab} onTab={switchTab} />
+      <BottomBar tab={tab} onTab={switchTab} onCenterClick={onCenterClick} centerAction={centerAction} />
     </div>
   );
 }
@@ -1014,22 +1032,29 @@ function AnalysisDisplay({ data }) {
   return <div className="analysis-readable">{renderValue(parsed)}</div>;
 }
 
-/* ===== Bottom Tab Bar ===== */
-function BottomBar({ tab, onTab }) {
-  const tabs = [
-    { key: 'cases', icon: Icons.cases, label: 'Cases' },
-    { key: 'clients', icon: Icons.clients, label: 'Clients' },
-    { key: 'sims', icon: Icons.sims, label: 'Sims' },
-    { key: 'settings', icon: Icons.settings, label: 'Settings' },
-  ];
+/* ===== Bottom Tab Bar (Instagram-style: Cases | + | Settings) ===== */
+function BottomBar({ tab, onTab, onCenterClick, centerAction }) {
+  // centerAction: { type: 'startDeposim', caseId } when on case detail; else New Case
+  const handleCenter = () => {
+    if (centerAction?.type === 'startDeposim' && centerAction.caseId) {
+      window.open(`/sim/${centerAction.caseId}`, '_blank');
+    } else {
+      onCenterClick?.();
+    }
+  };
   return (
-    <nav className="bottom-bar">
-      {tabs.map((t) => (
-        <button key={t.key} className={`tab-btn${tab === t.key ? ' active' : ''}`} onClick={() => onTab(t.key)}>
-          {t.icon}
-          <span>{t.label}</span>
-        </button>
-      ))}
+    <nav className="bottom-bar bottom-bar-centered">
+      <button className={`tab-btn${tab === 'cases' ? ' active' : ''}`} onClick={() => onTab('cases')}>
+        {Icons.cases}
+        <span>Cases</span>
+      </button>
+      <button type="button" className="tab-btn tab-btn-plus" onClick={handleCenter} title={centerAction?.type === 'startDeposim' ? 'Start DepoSim' : 'New Case'}>
+        {Icons.plus}
+      </button>
+      <button className={`tab-btn${tab === 'settings' ? ' active' : ''}`} onClick={() => onTab('settings')}>
+        {Icons.settings}
+        <span>Settings</span>
+      </button>
     </nav>
   );
 }
@@ -1122,31 +1147,73 @@ function CreateCaseForm({ goBack, onSuccess, showToast, tab, switchTab }) {
           </form>
         </div>
       </div>
-      <BottomBar tab={tab} onTab={switchTab} />
+      <BottomBar tab={tab} onTab={switchTab} onCenterClick={() => {}} />
     </div>
   );
 }
 
-/* ===== Description accordion (truncated preview, chevron to expand) ===== */
+/* ===== Description accordion (truncated preview, chevron to expand, editable) ===== */
 const DESCRIPTION_TRUNCATE_LEN = 100;
 
-function DescriptionAccordion({ description }) {
+function DescriptionAccordion({ description, onUpdate, caseId, showToast }) {
   const [open, setOpen] = useState(false);
-  if (!description) return null;
-  const truncated = description.length <= DESCRIPTION_TRUNCATE_LEN
-    ? description
-    : description.slice(0, DESCRIPTION_TRUNCATE_LEN).trim() + '…';
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(description || '');
+  const [saving, setSaving] = useState(false);
+  const canEdit = !!onUpdate && !!caseId;
+  useEffect(() => { setDraft(description || ''); }, [description]);
+  if (!canEdit && !description) return null;
+  const displayDesc = description || '';
+  const truncated = displayDesc.length <= DESCRIPTION_TRUNCATE_LEN
+    ? displayDesc
+    : displayDesc.slice(0, DESCRIPTION_TRUNCATE_LEN).trim() + '…';
+
+  const handleSave = async () => {
+    if (!caseId || !onUpdate) return;
+    setSaving(true);
+    try {
+      const r = await fetch(`${API}/cases/${caseId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: draft.trim() }),
+      });
+      if (!r.ok) throw new Error('Failed');
+      onUpdate(draft.trim());
+      setEditing(false);
+      showToast?.('Description updated');
+    } catch { showToast?.('Error saving'); }
+    finally { setSaving(false); }
+  };
 
   return (
     <div className={`description-accordion${open ? ' open' : ''}`}>
-      <button type="button" className="description-accordion-header" onClick={() => setOpen(o => !o)}>
+      <button type="button" className="description-accordion-header" onClick={() => !editing && setOpen(o => !o)}>
         <div className="description-accordion-content">
           <span className="description-accordion-label">Description</span>
-          <span className="description-accordion-preview">{open ? '' : truncated}</span>
+          {!editing && <span className="description-accordion-preview">{open ? '' : truncated}</span>}
         </div>
         <span className={`description-accordion-chevron${open ? ' open' : ''}`}>▼</span>
       </button>
-      {open && <div className="description-accordion-body">{description}</div>}
+      {open && (
+        <div className="description-accordion-body">
+          {editing ? (
+            <>
+              <textarea className="input textarea" value={draft} onChange={e => setDraft(e.target.value)} rows={6} />
+              <div className="description-accordion-actions">
+                <button type="button" className="btn secondary btn-sm" onClick={() => { setEditing(false); setDraft(description || ''); }} disabled={saving}>Cancel</button>
+                <button type="button" className="btn primary btn-sm" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="description-accordion-text">{displayDesc}</div>
+              {canEdit && (
+                <button type="button" className="btn-link description-accordion-edit" onClick={() => setEditing(true)}>Edit description</button>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1192,9 +1259,9 @@ function getScoreGradient(percent) {
     b = Math.round(22 + t * (8 - 22));
   } else {
     const t = (p - 0.66) / 0.34;
-    r = Math.round(234 + t * (88 - 234));
-    g = Math.round(179 + t * (195 - 179));
-    b = Math.round(8 + t * (34 - 8));
+    r = Math.round(234 + t * (22 - 234));
+    g = Math.round(179 + t * (152 - 179));
+    b = Math.round(8 + t * (28 - 8));
   }
   const darken = (v) => Math.max(0, Math.floor(v * 0.85));
   const r2 = darken(r), g2 = darken(g), b2 = darken(b);
@@ -1216,10 +1283,9 @@ function SimCard({ sim: s, caseData, onClick }) {
         <span className="sim-post-score" style={{ color: '#fff' }}>
           {s.score != null ? `${s.score}%` : '—'}
         </span>
-        <span className="sim-post-sep">/</span>
-        <span className="sim-post-body">
-          {bodyScore != null ? `${bodyScore}%` : '—'} Body
-        </span>
+        {bodyScore != null && (
+          <span className="sim-post-body">Body Language Score: {bodyScore}%</span>
+        )}
       </div>
       <div className="sim-post-name">{name}</div>
       <div className="sim-post-meta">
@@ -1231,9 +1297,14 @@ function SimCard({ sim: s, caseData, onClick }) {
 }
 
 /* ===== Case Detail (with simulations) ===== */
-function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, currentDetail }) {
+function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, currentDetail, showToast, onCaseUpdate }) {
   const [sims, setSims] = useState([]);
   const [loadingSims, setLoadingSims] = useState(true);
+  const [caseData, setCaseData] = useState(d);
+  const [simSort, setSimSort] = useState('newest');
+  const [simSearch, setSimSearch] = useState('');
+
+  useEffect(() => { setCaseData(d); }, [d]);
 
   useEffect(() => {
     fetch(`${API}/simulations?caseId=${d.id}`)
@@ -1243,46 +1314,72 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
       .finally(() => setLoadingSims(false));
   }, [d.id]);
 
+  const handleCaseUpdate = (updates) => {
+    setCaseData(prev => ({ ...prev, ...updates }));
+    onCaseUpdate?.(caseData.id, updates);
+  };
+
+  const sortedSims = [...sims]
+    .filter(s => {
+      if (!simSearch.trim()) return true;
+      const q = simSearch.toLowerCase();
+      const name = caseData?.client ? `${(caseData.client.lastName || '')} ${(caseData.client.firstName || '')}`.toLowerCase() : '';
+      const num = (caseData?.caseNumber || '').toLowerCase();
+      return name.includes(q) || num.includes(q);
+    })
+    .sort((a, b) => {
+      if (simSort === 'newest') return new Date(b.createdAt) - new Date(a.createdAt);
+      if (simSort === 'oldest') return new Date(a.createdAt) - new Date(b.createdAt);
+      if (simSort === 'score') return (b.score ?? 0) - (a.score ?? 0);
+      return 0;
+    });
+
   return (
     <div className="app-shell">
       <div className="detail-screen">
         <div className="detail-header">
           <button className="back-btn" onClick={goBack}>{Icons.back}</button>
-          <h2>#{d.caseNumber}</h2>
+          <h2>#{caseData.caseNumber}</h2>
         </div>
         <div className="detail-body case-detail-body">
           <div className="case-detail-hero">
-            <div className="case-detail-name">{d.client ? `${d.client.lastName || ''}, ${d.client.firstName || ''}`.trim() : '—'}</div>
-            <div className="case-detail-number">#{d.caseNumber}</div>
-            <div className="case-detail-actions" style={{ marginTop: 12 }}>
-              <a className="btn btn-sm primary" href={`/sim/${d.id}`} target="_blank" rel="noopener">
-                Start DepoSim
-              </a>
-            </div>
+            <div className="case-detail-name">{caseData.client ? `${caseData.client.lastName || ''}, ${caseData.client.firstName || ''}`.trim() : '—'}</div>
+            <div className="case-detail-number">#{caseData.caseNumber}</div>
           </div>
 
-          {d.client?.email && (
+          {caseData.client?.email && (
             <div className="kv">
               <span className="k">Email</span><span className="v">{d.client.email}</span>
             </div>
           )}
 
-          <DescriptionAccordion description={d.description} />
+          <DescriptionAccordion description={caseData.description} onUpdate={(desc) => handleCaseUpdate({ description: desc })} caseId={caseData.id} showToast={showToast} />
 
           {/* Simulation History */}
           <div className="call-history-section">
             <h3 className="call-history-title">Simulation History</h3>
+            <div className="cases-subheader">
+              <div className="cases-search-wrap">
+                <span className="cases-search-icon">{Icons.search}</span>
+                <input type="search" className="cases-search-input" placeholder="Search…" value={simSearch} onChange={e => setSimSearch(e.target.value)} />
+              </div>
+              <div className="sort-pills">
+                {[['newest','Recent'],['oldest','Oldest'],['score','Score']].map(([k,l]) => (
+                  <button key={k} className={`sort-pill${simSort === k ? ' active' : ''}`} onClick={() => setSimSort(k)}>{l}</button>
+                ))}
+              </div>
+            </div>
             {loadingSims && <p className="call-history-empty">Loading…</p>}
             {!loadingSims && sims.length === 0 && <p className="call-history-empty">No simulations yet. Start a DepoSim to see results here.</p>}
             <div className="sim-grid">
-              {sims.map(s => (
-                <SimCard key={s.id} sim={s} caseData={d} onClick={() => goDetail('simulation', s, currentDetail)} />
+              {sortedSims.map(s => (
+                <SimCard key={s.id} sim={s} caseData={caseData} onClick={() => goDetail('simulation', s, currentDetail)} />
               ))}
             </div>
           </div>
         </div>
       </div>
-      <BottomBar tab={tab} onTab={switchTab} />
+      <BottomBar tab={tab} onTab={switchTab} onCenterClick={() => {}} centerAction={{ type: 'startDeposim', caseId: caseData.id }} />
       {toast && <div className="toast">{toast}</div>}
     </div>
   );
@@ -1300,6 +1397,7 @@ function MainApp() {
 
   // Filters
   const [caseSort, setCaseSort] = useState('newest');
+  const [caseSearch, setCaseSearch] = useState('');
   const [showPrompts, setShowPrompts] = useState(false);
 
   // Hidden: type "prompts" to reveal Prompts section in Settings
@@ -1361,13 +1459,27 @@ function MainApp() {
   const goBack = () => { setDetail(detail?.parent || null); };
   const switchTab = (t) => { setDetail(null); setTab(t); };
 
-  // Sort cases
-  const sortedCases = [...cases].sort((a, b) => {
-    if (caseSort === 'newest') return new Date(b.createdAt) - new Date(a.createdAt);
-    if (caseSort === 'oldest') return new Date(a.createdAt) - new Date(b.createdAt);
-    if (caseSort === 'lastName') return ((a.client?.lastName || '')).localeCompare((b.client?.lastName || ''));
-    return 0;
-  });
+  // Sort and filter cases
+  const sortedCases = [...cases]
+    .filter(c => {
+      if (!caseSearch.trim()) return true;
+      const q = caseSearch.toLowerCase().trim();
+      const num = (c.caseNumber || '').toLowerCase();
+      const first = (c.client?.firstName || '').toLowerCase();
+      const last = (c.client?.lastName || '').toLowerCase();
+      const desc = (c.description || '').toLowerCase();
+      return num.includes(q) || first.includes(q) || last.includes(q) || desc.includes(q);
+    })
+    .sort((a, b) => {
+      if (caseSort === 'newest') return new Date(b.createdAt) - new Date(a.createdAt);
+      if (caseSort === 'oldest') return new Date(a.createdAt) - new Date(b.createdAt);
+      if (caseSort === 'lastName') return ((a.client?.lastName || '')).localeCompare((b.client?.lastName || ''));
+      return 0;
+    });
+
+  const handleCaseUpdate = (caseId, updates) => {
+    setCases(prev => prev.map(c => c.id === caseId ? { ...c, ...updates } : c));
+  };
 
   if (loading) return <div className="app-shell" style={{ display: 'grid', placeItems: 'center' }}><p style={{ color: 'var(--muted)' }}>Loading…</p></div>;
 
@@ -1386,7 +1498,7 @@ function MainApp() {
       );
     }
     if (detail.type === 'case') {
-      return <CaseDetail caseData={d} tab={tab} switchTab={switchTab} goBack={goBack} goDetail={goDetail} toast={toast} currentDetail={detail} />;
+      return <CaseDetail caseData={d} tab={tab} switchTab={switchTab} goBack={goBack} goDetail={goDetail} toast={toast} currentDetail={detail} showToast={showToast} onCaseUpdate={handleCaseUpdate} />;
     }
     if (detail.type === 'client') {
       return (
@@ -1412,12 +1524,12 @@ function MainApp() {
               </div>
             </div>
           </div>
-          <BottomBar tab={tab} onTab={switchTab} />
+          <BottomBar tab={tab} onTab={switchTab} onCenterClick={() => setDetail({ type: 'createCase', data: null })} />
         </div>
       );
     }
     if (detail.type === 'simulation') {
-      return <SimulationDetail d={d} tab={tab} switchTab={switchTab} goBack={goBack} />;
+      return <SimulationDetail d={d} tab={tab} switchTab={switchTab} goBack={goBack} centerAction={d.case?.id ? { type: 'startDeposim', caseId: d.case.id } : undefined} onCenterClick={() => setDetail({ type: 'createCase', data: null })} />;
     }
     if (detail.type === 'analysis') {
       return (
@@ -1432,7 +1544,7 @@ function MainApp() {
               <pre className="analysis-text">{d.analysisText}</pre>
             </div>
           </div>
-          <BottomBar tab={tab} onTab={switchTab} />
+          <BottomBar tab={tab} onTab={switchTab} onCenterClick={() => setDetail({ type: 'createCase', data: null })} />
         </div>
       );
     }
@@ -1449,22 +1561,25 @@ function MainApp() {
           <>
             <div className="feed-header">
               <div className="feed-header-left">
-                <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="header-logo" />
+                <a href="https://deposim.com" target="_blank" rel="noopener noreferrer" className="header-logo-link">
+                  <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="header-logo" />
+                </a>
               </div>
               <h1 className="feed-header-title">Cases</h1>
-              <div className="feed-header-right">
-                <button type="button" className="header-btn primary" onClick={() => setDetail({ type: 'createCase', data: null })} title="New Case">
-                  {Icons.plus}
-                  <span>New Case</span>
-                </button>
-              </div>
+              <div className="feed-header-right" />
             </div>
             <div className="cases-subheader">
-              <span className="cases-count">{cases.length} case{cases.length !== 1 ? 's' : ''}</span>
-              <div className="sort-pills">
+              <div className="cases-search-wrap">
+                <span className="cases-search-icon">{Icons.search}</span>
+                <input type="search" className="cases-search-input" placeholder="Search cases…" value={caseSearch} onChange={e => setCaseSearch(e.target.value)} />
+              </div>
+              <div className="cases-subheader-row">
+                <span className="cases-count">{sortedCases.length} case{sortedCases.length !== 1 ? 's' : ''}</span>
+                <div className="sort-pills">
                 {[['newest','Recent'],['oldest','Oldest'],['lastName','Name']].map(([k,l]) => (
                   <button key={k} className={`sort-pill${caseSort === k ? ' active' : ''}`} onClick={() => setCaseSort(k)}>{l}</button>
                 ))}
+                </div>
               </div>
             </div>
             <div className="tile-grid">
@@ -1480,46 +1595,8 @@ function MainApp() {
                 );
               })}
             </div>
-            {cases.length === 0 && <p style={{ textAlign: 'center', padding: 40, color: 'var(--muted)', fontSize: 14 }}>No cases yet. Tap + New Case to get started.</p>}
+            {sortedCases.length === 0 && <p style={{ textAlign: 'center', padding: 40, color: 'var(--muted)', fontSize: 14 }}>{caseSearch.trim() ? 'No matching cases.' : 'No cases yet. Tap + to create one.'}</p>}
           </>
-        )}
-
-        {/* ===== CLIENTS ===== */}
-        {tab === 'clients' && (
-          <>
-            <div className="feed-header">
-              <div className="feed-header-left">
-                <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="header-logo" />
-              </div>
-              <h1 className="feed-header-title">Clients</h1>
-              <div className="feed-header-right" />
-            </div>
-            <div className="profile-row">
-              <div className="profile-avatar" style={{ background: '#5b51d8' }}>C</div>
-              <div className="profile-info">
-                <div className="name">Clients</div>
-                <div className="sub">{clients.length} client{clients.length !== 1 ? 's' : ''}</div>
-              </div>
-            </div>
-            <div className="tile-grid">
-              {clients.map((c) => {
-                const accent = tileAccent(c.id);
-                return (
-                  <div key={c.id} className="tile" style={{ '--tile-accent': accent }} onClick={() => goDetail('client', c)}>
-                    <div className="tile-icon">{Icons.clients}</div>
-                    <div className="tile-label">{c.firstName} {c.lastName}</div>
-                    {c.phone && <div className="tile-sublabel">{c.phone}</div>}
-                  </div>
-                );
-              })}
-            </div>
-            {clients.length === 0 && <p style={{ textAlign: 'center', padding: 40, color: 'var(--muted)', fontSize: 14 }}>No clients yet</p>}
-          </>
-        )}
-
-        {/* ===== SIMS (Simulation Feed) ===== */}
-        {tab === 'sims' && (
-          <SimsFeed goDetail={goDetail} />
         )}
 
         {/* ===== SETTINGS ===== */}
@@ -1527,7 +1604,9 @@ function MainApp() {
           <>
             <div className="feed-header">
               <div className="feed-header-left">
-                <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="header-logo" />
+                <a href="https://deposim.com" target="_blank" rel="noopener noreferrer" className="header-logo-link">
+                  <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="header-logo" />
+                </a>
               </div>
               <h1 className="feed-header-title">Settings</h1>
               <div className="feed-header-right" />
@@ -1537,6 +1616,23 @@ function MainApp() {
               <div className="theme-switch">
                 <button className={`theme-btn${theme === 'dark' ? ' active' : ''}`} onClick={() => handleThemeChange('dark')}>Dark</button>
                 <button className={`theme-btn${theme === 'light' ? ' active' : ''}`} onClick={() => handleThemeChange('light')}>Light</button>
+              </div>
+            </div>
+            <div className="card">
+              <h3>Integration</h3>
+              <div className="integration-fields">
+                <label>
+                  <span className="label-text">Filevine URL</span>
+                  <input type="text" className="input" placeholder="https://app.filevine.com" />
+                </label>
+                <label>
+                  <span className="label-text">User ID</span>
+                  <input type="text" className="input" placeholder="User ID" />
+                </label>
+                <label>
+                  <span className="label-text">Access Token</span>
+                  <input type="password" className="input" placeholder="Access Token" />
+                </label>
               </div>
             </div>
             {showPrompts && (
@@ -1550,7 +1646,7 @@ function MainApp() {
         </div>
       </div>
 
-      <BottomBar tab={tab} onTab={switchTab} />
+      <BottomBar tab={tab} onTab={switchTab} onCenterClick={() => setDetail({ type: 'createCase', data: null })} />
 
       {toast && <div className="toast">{toast}</div>}
 

@@ -1177,7 +1177,7 @@ app.post('/api/sim/signed-url', async (req, res) => {
       case_info: caseInfo,
     };
 
-    res.json({ signedUrl, dynamicVariables, case: { name, caseNumber } });
+    res.json({ signedUrl, dynamicVariables, case: { name, caseNumber, firstName, lastName } });
   } catch (err) {
     console.error('POST /api/sim/signed-url', err);
     res.status(500).json({ error: err.message || 'Server error' });
