@@ -60,10 +60,19 @@
 
 /* Bottom bar with centered + button (Instagram-style) */
 .bottom-bar-centered {
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
   padding: 0 8px;
+  gap: 0;
 }
-.bottom-bar-centered .tab-btn { flex: 1; max-width: 120px; }
+.bottom-bar-centered .tab-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  justify-self: center;
+}
 .tab-btn-plus {
   flex: 0 0 auto !important;
   width: 48px;
@@ -1579,6 +1588,25 @@
   font-size: 18px;
   border-radius: 14px;
 }
+.sim-btn-deposim {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  background: transparent !important;
+  padding: 12px 24px !important;
+  border: none !important;
+}
+.sim-btn-deposim-icon {
+  width: 80px;
+  height: 80px;
+  object-fit: contain;
+}
+.sim-btn-deposim span {
+  font-size: 16px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.9);
+}
 .sim-header {
   padding: 16px;
   border-bottom: 1px solid rgba(0,0,0,0.08);
@@ -1928,7 +1956,7 @@
 }
 .sim-detail-ring-btn {
   cursor: pointer;
-  border: none;
+  border: 4px solid var(--score-color, var(--accent));
   background: transparent;
   padding: 0;
   transition: opacity 0.15s;
@@ -2069,8 +2097,8 @@
     margin-left: -16px;
     margin-right: -16px;
     width: calc(100% + 32px);
-    padding-left: 0;
-    padding-right: 0;
+    padding-left: 12px;
+    padding-right: 12px;
     box-sizing: border-box;
   }
   .sim-detail-body .sim-transcript-bubbles { margin-left: 0; padding-left: 0; }

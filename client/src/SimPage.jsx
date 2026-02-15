@@ -419,8 +419,9 @@ function SimPage() {
           <div className="sim-preview-wrap">
             <video ref={pipVideoRef} autoPlay muted playsInline />
           </div>
-          <button className="sim-btn sim-btn-start" onClick={startCall}>
-            Start Simulation
+          <button className="sim-btn sim-btn-start sim-btn-deposim" onClick={startCall}>
+            <img src="/deposim-button.png" alt="DepoSim" className="sim-btn-deposim-icon" />
+            <span>Start Simulation</span>
           </button>
         </div>
       </div>
