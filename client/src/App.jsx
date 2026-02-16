@@ -678,6 +678,15 @@ function MomentVideoPopup({ moment, simulationId, onClose }) {
 /* ===== Simulation Detail: Transcript bubbles + Body tab ===== */
 function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterClick }) {
   const [simTab, setSimTab] = useState('transcript');
+  const topRef = useRef(null);
+  const [showScrollTop, setShowScrollTop] = useState(false);
+  const [depoSimSentCaseId, setDepoSimSentCaseId] = useState(null);
+  useEffect(() => {
+    const onScroll = () => setShowScrollTop(window.scrollY > 150);
+    window.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
   const [popupCategory, setPopupCategory] = useState(null);
   const [popupMoment, setPopupMoment] = useState(null);
   const [expandedTurn, setExpandedTurn] = useState(null);
@@ -713,36 +722,39 @@ function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterCli
     { key: 'credible_assessment', label: 'Credibility Assessment' },
   ];
 
+  const clientName = d.case ? `${(d.case.client?.lastName || d.case?.lastName) || ''}, ${(d.case.client?.firstName || d.case?.firstName) || ''}`.trim() : d.callSummaryTitle || '';
+  const caseNum = d.case?.caseNumber || '';
+
   return (
     <div className="app-shell">
       <div className="detail-screen">
-        <div className="detail-header">
-          <button className="back-btn" onClick={goBack}>{Icons.back}</button>
-          <h2>Simulation</h2>
+        <div className="detail-header sim-detail-header" onClick={() => topRef.current?.scrollIntoView({ behavior: 'smooth' })}>
+          <button className="back-btn" onClick={e => { e.stopPropagation(); goBack(); }}>{Icons.back}</button>
+          <div className="sim-detail-header-title">
+            <span className="sim-detail-header-name">{clientName || 'Simulation'}</span>
+            {caseNum && <span className="sim-detail-header-case">#{caseNum}</span>}
+          </div>
         </div>
         <div className="detail-body sim-detail-body">
           {/* Summary strip */}
-          <div className="sim-detail-summary">
-            <button
-              type="button"
-              className="sim-detail-ring sim-detail-ring-btn"
-              style={{ '--score-color': scoreColor }}
-              onClick={() => setShowScoreSummary(true)}
-              title="View score summary"
-            >
-              <span className="sim-detail-pct">{d.score != null ? `${d.score}%` : '—'}</span>
-            </button>
-            <div className="sim-detail-summary-meta">
-              {((d.case?.client || d.case)
-                ? `${(d.case.client?.lastName || d.case?.lastName) || ''}, ${(d.case.client?.firstName || d.case?.firstName) || ''}`.trim()
-                : d.callSummaryTitle) && (
-                <div className="sim-detail-title">
-                  {d.case ? `${(d.case.client?.lastName || d.case?.lastName) || ''}, ${(d.case.client?.firstName || d.case?.firstName) || ''}`.trim() : d.callSummaryTitle}
+          <div className="sim-detail-summary" ref={topRef}>
+            <div className="sim-detail-summary-stack">
+              <button
+                type="button"
+                className="sim-detail-ring sim-detail-ring-btn"
+                style={{ '--score-color': scoreColor }}
+                onClick={() => setShowScoreSummary(true)}
+                title="View score summary"
+              >
+                <span className="sim-detail-pct">{d.score != null ? `${d.score}%` : '—'}</span>
+              </button>
+              <div className="sim-detail-summary-meta">
+                <div className="sim-detail-meta">
+                  {new Date(d.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                  {'. '}
+                  {new Date(d.createdAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+                  {d.callDurationSecs != null && <> . {Math.max(1, Math.round(d.callDurationSecs / 60))}m</>}
                 </div>
-              )}
-              <div className="sim-detail-meta">
-                {d.callDurationSecs != null && <span>{Math.max(1, Math.round(d.callDurationSecs / 60))}m</span>}
-                <span> {new Date(d.createdAt).toLocaleDateString()}</span>
               </div>
             </div>
           </div>
@@ -751,7 +763,7 @@ function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterCli
             <div className="sim-score-summary-overlay" onClick={() => setShowScoreSummary(false)}>
               <div className="sim-score-summary-modal" onClick={e => e.stopPropagation()}>
                 <div className="sim-score-summary-header">
-                  <h3>Score Summary</h3>
+                  <h3>Summary</h3>
                   <button type="button" className="sim-score-summary-close" onClick={() => setShowScoreSummary(false)}>×</button>
                 </div>
                 <div className="sim-score-summary-body">
@@ -763,27 +775,7 @@ function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterCli
                       <strong>Why:</strong> {d.scoreReason}
                     </div>
                   )}
-                  {d.fullAnalysis && (
-                    <div className="sim-score-summary-analysis">
-                      <strong>Full Analysis</strong>
-                      <AnalysisDisplay data={d.fullAnalysis} />
-                    </div>
-                  )}
-                  {turnScores.length > 0 && (
-                    <div className="sim-score-summary-turns">
-                      <strong>Per-answer breakdown</strong>
-                      <ul>
-                        {turnScores.map((ts, i) => (
-                          <li key={i}>
-                            <span className="sim-score-summary-turn-pct sim-score-summary-turn-pct-circle" style={{ color: (ts.score >= 75 ? SCORE_GREEN : ts.score >= 50 ? '#ffab00' : '#ed4956') }}>{ts.score}%</span>
-                            {ts.question && <span className="sim-score-summary-turn-q">Q: {ts.question.length > 80 ? ts.question.slice(0, 80) + '…' : ts.question}</span>}
-                            {ts.response && <span className="sim-score-summary-turn-a">A: {ts.response.length > 80 ? ts.response.slice(0, 80) + '…' : ts.response}</span>}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                  {!d.scoreReason && !d.fullAnalysis && turnScores.length === 0 && (
+                  {!d.scoreReason && (
                     <p className="sim-score-summary-empty">No score details available.</p>
                   )}
                 </div>
@@ -857,12 +849,22 @@ function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterCli
                       </div>
                     );
                   })}
-                  {transcript.length > 0 && (
+                    {transcript.length > 0 && (
                     <div className="sim-transcript-call-ended">
                       Call Ended{d.endedBy ? ` — ${d.endedBy === 'user' ? 'You' : d.endedBy === 'agent' ? 'Counsel' : d.endedBy}` : ''}
                     </div>
                   )}
                 </div>
+              )}
+              {transcript.length > 3 && showScrollTop && (
+                <button
+                  type="button"
+                  className="sim-transcript-scroll-top"
+                  onClick={() => topRef.current?.scrollIntoView({ behavior: 'smooth' })}
+                  aria-label="Scroll to top"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="18 15 12 9 6 15"/></svg>
+                </button>
               )}
               {/* Full Analysis — hidden for now
               {d.fullAnalysis && (
@@ -916,7 +918,7 @@ function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterCli
                   </div>
                   {bodyData.timeline_of_notable_moments && bodyData.timeline_of_notable_moments.length > 0 && (
                     <div className="sim-body-moments">
-                      <div className="sim-body-moments-header">
+                      <div className="sim-body-moments-header sim-body-moments-inline">
                         <span className="sim-detail-heading">Memorable Moments</span>
                         <span className="sim-body-moment-play">Tap to Play</span>
                       </div>
@@ -963,7 +965,8 @@ function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterCli
         />
       )}
 
-      <BottomBar tab={tab} onTab={switchTab} onCenterClick={onCenterClick} centerAction={centerAction} />
+      <BottomBar tab={tab} onTab={switchTab} onCenterClick={onCenterClick} centerAction={centerAction} onStartDeposim={async (id) => { setDepoSimSentCaseId(id); const simUrl = typeof window !== 'undefined' ? `${window.location.origin}/sim/${id}` : ''; try { const r = await fetch(API + `/cases/${id}/notify-deposim-sent`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ simUrl }) }); if (!r.ok) console.warn('[DepoSim] SMS notify:', r.status, await r.text()); } catch (e) { console.warn('[DepoSim] SMS notify failed:', e); } }} />
+      {depoSimSentCaseId && <DepoSimSentToast caseId={depoSimSentCaseId} onDismiss={() => setDepoSimSentCaseId(null)} />}
     </div>
   );
 }
@@ -1034,12 +1037,35 @@ function AnalysisDisplay({ data }) {
   return <div className="analysis-readable">{renderValue(parsed)}</div>;
 }
 
+/* ===== DepoSim Sent Toast (bottom popup with link + Okay) ===== */
+function DepoSimSentToast({ caseId, onDismiss }) {
+  const simUrl = typeof window !== 'undefined' ? `${window.location.origin}/sim/${caseId}` : '';
+  const handleLinkClick = (e) => {
+    e.preventDefault();
+    if (simUrl) {
+      navigator.clipboard?.writeText(simUrl).catch(() => {});
+      window.open(simUrl, '_blank');
+    }
+  };
+  return (
+    <div className="deposim-sent-toast">
+      <p className="deposim-sent-toast-message">The DepoSim has been prepared and sent to the client.</p>
+      {simUrl && (
+        <a href={simUrl} className="deposim-sent-toast-link" onClick={handleLinkClick}>
+          {simUrl}
+        </a>
+      )}
+      <button type="button" className="deposim-sent-toast-ok" onClick={onDismiss}>Okay</button>
+    </div>
+  );
+}
+
 /* ===== Bottom Tab Bar (Instagram-style: Cases | + | Settings) ===== */
-function BottomBar({ tab, onTab, onCenterClick, centerAction }) {
+function BottomBar({ tab, onTab, onCenterClick, centerAction, onStartDeposim }) {
   // centerAction: { type: 'startDeposim', caseId } when on case detail; else New Case
   const handleCenter = () => {
     if (centerAction?.type === 'startDeposim' && centerAction.caseId) {
-      window.open(`/sim/${centerAction.caseId}`, '_blank');
+      onStartDeposim?.(centerAction.caseId);
     } else {
       onCenterClick?.();
     }
@@ -1305,6 +1331,8 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
   const [caseData, setCaseData] = useState(d);
   const [simSort, setSimSort] = useState('newest');
   const [simSearch, setSimSearch] = useState('');
+  const [simSearchExpanded, setSimSearchExpanded] = useState(false);
+  const [depoSimSentCaseId, setDepoSimSentCaseId] = useState(null);
 
   useEffect(() => { setCaseData(d); }, [d]);
 
@@ -1336,19 +1364,18 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
       return 0;
     });
 
+  const caseClientName = caseData.client ? `${caseData.client.lastName || ''}, ${caseData.client.firstName || ''}`.trim() : '—';
   return (
     <div className="app-shell">
       <div className="detail-screen">
-        <div className="detail-header">
+        <div className="detail-header case-detail-header">
           <button className="back-btn" onClick={goBack}>{Icons.back}</button>
-          <h2>#{caseData.caseNumber}</h2>
+          <div className="case-detail-header-title">
+            <span className="sim-detail-header-name">{caseClientName}</span>
+            <span className="sim-detail-header-case">#{caseData.caseNumber}</span>
+          </div>
         </div>
         <div className="detail-body case-detail-body">
-          <div className="case-detail-hero">
-            <div className="case-detail-name">{caseData.client ? `${caseData.client.lastName || ''}, ${caseData.client.firstName || ''}`.trim() : '—'}</div>
-            <div className="case-detail-number">#{caseData.caseNumber}</div>
-          </div>
-
           {caseData.client?.email && (
             <div className="kv">
               <span className="k">Email</span><span className="v">{d.client.email}</span>
@@ -1357,13 +1384,15 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
 
           <DescriptionAccordion description={caseData.description} onUpdate={(desc) => handleCaseUpdate({ description: desc })} caseId={caseData.id} showToast={showToast} />
 
-          {/* Simulation History */}
           <div className="call-history-section">
-            <h3 className="call-history-title">Simulation History</h3>
             <div className="cases-subheader">
-              <div className="cases-search-wrap">
-                <span className="cases-search-icon">{Icons.search}</span>
-                <input type="search" className="cases-search-input" placeholder="Search…" value={simSearch} onChange={e => setSimSearch(e.target.value)} />
+              <div className={`cases-search-wrap${simSearchExpanded ? ' expanded' : ''}`}>
+                <button type="button" className="cases-search-toggle" onClick={() => setSimSearchExpanded(x => !x)} aria-label="Search">
+                  {Icons.search}
+                </button>
+                {simSearchExpanded && (
+                  <input type="search" className="cases-search-input" placeholder="Search…" value={simSearch} onChange={e => setSimSearch(e.target.value)} autoFocus />
+                )}
               </div>
               <div className="sort-pills">
                 {[['newest','Recent'],['oldest','Oldest'],['score','Score']].map(([k,l]) => (
@@ -1381,8 +1410,9 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
           </div>
         </div>
       </div>
-      <BottomBar tab={tab} onTab={switchTab} onCenterClick={() => {}} centerAction={{ type: 'startDeposim', caseId: caseData.id }} />
+      <BottomBar tab={tab} onTab={switchTab} onCenterClick={() => {}} centerAction={{ type: 'startDeposim', caseId: caseData.id }} onStartDeposim={async (id) => { setDepoSimSentCaseId(id); const simUrl = typeof window !== 'undefined' ? `${window.location.origin}/sim/${id}` : ''; try { const r = await fetch(API + `/cases/${id}/notify-deposim-sent`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ simUrl }) }); if (!r.ok) console.warn('[DepoSim] SMS notify:', r.status, await r.text()); } catch (e) { console.warn('[DepoSim] SMS notify failed:', e); } }} />
       {toast && <div className="toast">{toast}</div>}
+      {depoSimSentCaseId && <DepoSimSentToast caseId={depoSimSentCaseId} onDismiss={() => setDepoSimSentCaseId(null)} />}
     </div>
   );
 }
@@ -1400,6 +1430,7 @@ function MainApp() {
   // Filters
   const [caseSort, setCaseSort] = useState('newest');
   const [caseSearch, setCaseSearch] = useState('');
+  const [caseSearchExpanded, setCaseSearchExpanded] = useState(false);
   const [showPrompts, setShowPrompts] = useState(false);
 
   // Hidden: type "prompts" to reveal Prompts section in Settings
@@ -1429,6 +1460,23 @@ function MainApp() {
       })
       .catch(() => {});
   }, []);
+
+  // Latest simulation score per case (for tile background)
+  const [caseScores, setCaseScores] = useState({});
+  useEffect(() => {
+    fetch(API + '/simulations')
+      .then(r => r.ok ? r.json() : [])
+      .then(sims => {
+        const byCase = {};
+        for (const s of sims) {
+          if (!s.caseId) continue;
+          if (byCase[s.caseId] != null) continue;
+          byCase[s.caseId] = getCombinedScore(s) ?? s.score ?? 0;
+        }
+        setCaseScores(byCase);
+      })
+      .catch(() => {});
+  }, [cases.length]);
 
   // Load data
   useEffect(() => {
@@ -1571,9 +1619,13 @@ function MainApp() {
               <div className="feed-header-right" />
             </div>
             <div className="cases-subheader">
-              <div className="cases-search-wrap">
-                <span className="cases-search-icon">{Icons.search}</span>
-                <input type="search" className="cases-search-input" placeholder="Search cases…" value={caseSearch} onChange={e => setCaseSearch(e.target.value)} />
+              <div className={`cases-search-wrap${caseSearchExpanded ? ' expanded' : ''}`}>
+                <button type="button" className="cases-search-toggle" onClick={() => setCaseSearchExpanded(x => !x)} aria-label="Search">
+                  {Icons.search}
+                </button>
+                {caseSearchExpanded && (
+                  <input type="search" className="cases-search-input" placeholder="Search cases…" value={caseSearch} onChange={e => setCaseSearch(e.target.value)} autoFocus />
+                )}
               </div>
               <div className="cases-subheader-row">
                 <span className="cases-count">{sortedCases.length} case{sortedCases.length !== 1 ? 's' : ''}</span>
@@ -1586,10 +1638,11 @@ function MainApp() {
             </div>
             <div className="tile-grid">
               {sortedCases.map((c) => {
-                const accent = tileAccent(c.id);
+                const score = caseScores[c.id] ?? 0;
+                const gradient = getScoreGradient(score);
                 const isAuto = (c.description || '').toLowerCase().includes('car') || (c.description || '').toLowerCase().includes('vehicle') || (c.description || '').toLowerCase().includes('rear end');
                 return (
-                  <div key={c.id} className="tile" style={{ '--tile-accent': accent }} onClick={() => goDetail('case', c)}>
+                  <div key={c.id} className="tile tile-score-bg" style={{ background: gradient }} onClick={() => goDetail('case', c)}>
                     <div className="tile-icon">{isAuto ? Icons.car : Icons.walking}</div>
                     <div className="tile-label">#{c.caseNumber}</div>
                     <div className="tile-sublabel">{c.client ? `${c.client.lastName || ''}, ${c.client.firstName || ''}`.trim() : '—'}</div>

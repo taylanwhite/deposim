@@ -410,7 +410,7 @@ async function handleSimPage(req, res, prisma) {
   <div id="consent-screen">
     <div class="consent-logo"><img src="${h(logoSrc)}" alt="DepoSim" /></div>
     <h1>Prepare for Your Simulation</h1>
-    <p class="consent-subtitle">Before we begin, we need camera access to analyze your body language during the deposition — just like opposing counsel would in a real one.</p>
+    <p class="consent-subtitle">Before we begin, we need camera access to analyze your body language during the simulated deposition — just like opposing counsel would in a real one.</p>
 
     <div class="consent-card">
       <h2>Why this matters</h2>

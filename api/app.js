@@ -157,19 +157,66 @@ app.post('/api/cases', async (req, res) => {
       include: { client: true },
     });
 
-    // Fire-and-forget SMS notification to moderators
-    const moderatorPhones = (process.env.MODERATOR_PHONES || '').split(',').map(s => s.trim()).filter(Boolean);
-    const name = c.client ? `${c.client.lastName}, ${c.client.firstName}` : 'Deponent';
-    const smsMsg = `New DepoSim case created: #${caseNumber} – ${name}`;
-    for (const to of moderatorPhones) {
-      const smsUrl = `https://vsfy.com/txt/?to=${encodeURIComponent(to)}&msg=${encodeURIComponent(smsMsg)}`;
-      fetch(smsUrl).catch(err => console.error('[sms] failed to notify', to, err.message));
-    }
-
     res.status(201).json(c);
   } catch (err) {
     console.error('POST /api/cases', err);
     res.status(500).json({ error: 'Failed to create case' });
+  }
+});
+
+// Send DepoSim link to client + notify moderators (triggered by toast)
+app.post('/api/cases/:id/notify-deposim-sent', async (req, res) => {
+  try {
+    const caseId = req.params.id;
+    console.log('[sms] notify-deposim-sent hit for case', caseId);
+
+    const c = await prisma.case.findUnique({
+      where: { id: caseId },
+      include: { client: true },
+    });
+    if (!c) {
+      console.log('[sms] Case not found:', caseId);
+      return res.status(404).json({ error: 'Case not found' });
+    }
+
+    const simLink = (req.body?.simUrl || '').trim() || `${req.protocol}://${req.get('host')}/sim/${c.id}`;
+    const moderatorPhones = ['8018366183', '9175979964'];
+    const name = c.client ? `${c.client.lastName}, ${c.client.firstName}` : 'Deponent';
+
+    // Message to the client: invitation to start their simulated deposition
+    const clientMsg = `Your DepoSim simulated deposition is ready. Start here: ${simLink}`;
+
+    // Message to moderators: notification that a DepoSim was sent
+    const moderatorMsg = `DepoSim link sent to client #${c.caseNumber} – ${name}. ${simLink}`;
+
+    const sendSms = async (to, msg, label) => {
+      const smsUrl = `https://vsfy.com/txt/?to=${encodeURIComponent(to)}&msg=${encodeURIComponent(msg)}`;
+      try {
+        const r = await fetch(smsUrl);
+        console.log(`[sms] ${label} to ${to}: ${r.status}`);
+        if (!r.ok) console.error(`[sms] ${label} failed:`, await r.text());
+      } catch (err) {
+        console.error(`[sms] ${label} to ${to}:`, err.message);
+      }
+    };
+
+    // Send to client (case deponent)
+    const clientPhone = (c.client?.phone || '').replace(/\D/g, '');
+    if (clientPhone) {
+      await sendSms(clientPhone, clientMsg, 'client');
+    } else {
+      console.log('[sms] No client phone for case', caseId);
+    }
+
+    // Send to moderators
+    for (const to of moderatorPhones) {
+      await sendSms(to, moderatorMsg, 'moderator');
+    }
+
+    res.status(204).send();
+  } catch (err) {
+    console.error('POST /api/cases/:id/notify-deposim-sent', err);
+    res.status(500).json({ error: 'Failed to notify' });
   }
 });
 

@@ -375,7 +375,7 @@ function SimPage() {
         <div className="sim-consent">
           <a href="https://deposim.com" target="_blank" rel="noopener noreferrer"><img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="sim-logo" /></a>
           <h1>Prepare for Your Simulation</h1>
-          <p className="sim-subtitle">We need camera and microphone access for body language analysis during the deposition.</p>
+          <p className="sim-subtitle">We need camera and microphone access for body language analysis during the simulated deposition.</p>
           <div className="sim-features">
             <div className="sim-feature">
               <span className="sim-feat-icon">📋</span>
@@ -415,13 +415,12 @@ function SimPage() {
         <div className="sim-consent">
           <a href="https://deposim.com" target="_blank" rel="noopener noreferrer"><img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="sim-logo" /></a>
           <h1>Ready</h1>
-          <p className="sim-subtitle">Camera active. Tap below to start your deposition simulation.</p>
+          <p className="sim-subtitle">Camera active. Tap below to start your simulated deposition.</p>
           <div className="sim-preview-wrap">
             <video ref={pipVideoRef} autoPlay muted playsInline />
           </div>
-          <button className="sim-btn sim-btn-start sim-btn-deposim" onClick={startCall}>
-            <img src="/deposim-button.png" alt="DepoSim" className="sim-btn-deposim-icon" />
-            <span>Start Simulation</span>
+          <button className="sim-btn sim-btn-start sim-btn-primary" onClick={startCall}>
+            Start Simulation
           </button>
         </div>
       </div>
@@ -432,7 +431,7 @@ function SimPage() {
   if (phase === 'calling') {
     return (
       <div className="sim-page sim-calling">
-        <div className="sim-header">
+        <div className="sim-header sim-header-centered">
           <Link to="/" className="sim-back">← Back</Link>
           <div className="sim-header-info">
             <span className="sim-deponent">
