@@ -742,7 +742,7 @@ function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterCli
               )}
               <div className="sim-detail-meta">
                 {d.callDurationSecs != null && <span>{Math.max(1, Math.round(d.callDurationSecs / 60))}m</span>}
-                <span> · {new Date(d.createdAt).toLocaleDateString()}</span>
+                <span> {new Date(d.createdAt).toLocaleDateString()}</span>
               </div>
             </div>
           </div>
