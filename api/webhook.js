@@ -157,8 +157,14 @@ async function handleElevenLabsWebhook(req, res, prisma) {
     }
   }
 
+  // Extract stage and clientId from dynamic variables (passed through from signed-url)
+  const stageRaw = dyn?.stage ? parseInt(dyn.stage, 10) : null;
+  const stage = stageRaw >= 1 && stageRaw <= 4 ? stageRaw : null;
+  const clientId = dyn?.client_id ? String(dyn.client_id) : null;
+
   const simData = {
     caseId,
+    clientId,
     conversationId,
     eventType: type || null,
     agentId: data.agent_id ? String(data.agent_id) : null,
@@ -171,6 +177,8 @@ async function handleElevenLabsWebhook(req, res, prisma) {
     callDurationSecs: meta.call_duration_secs != null ? parseInt(meta.call_duration_secs, 10) || null : null,
     transcriptSummary: analysis.transcript_summary ? String(analysis.transcript_summary) : null,
     callSummaryTitle: analysis.call_summary_title ? String(analysis.call_summary_title) : null,
+    stage,
+    stageStatus: stage ? 'completed' : undefined,
   };
 
   let simulation;

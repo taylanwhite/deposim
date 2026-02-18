@@ -1,9 +1,13 @@
 const express = require('express');
 const cors = require('cors');
+const crypto = require('crypto');
 const fs = require('fs');
+const path = require('path');
 const os = require('os');
 const multer = require('multer');
 const { PrismaClient } = require('@prisma/client');
+const { clerkMiddleware, requireAuth, createClerkClient } = require('@clerk/express');
+const clerkClient = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY });
 const { analyzeVideoUrl, analyzeVideoFile, getBodyAnalysisPrompt } = require('./gemini');
 const { handleElevenLabsWebhook } = require('./webhook');
 const { getDefaultScorePrompt } = require('./openai');
@@ -20,6 +24,143 @@ const {
 const app = express();
 const prisma = new PrismaClient();
 
+// ---------- Clerk profile sync helper ----------
+async function syncClerkProfile(userId) {
+  try {
+    const clerkUser = await clerkClient.users.getUser(userId);
+    const email = clerkUser.emailAddresses?.[0]?.emailAddress || null;
+    const phone = clerkUser.phoneNumbers?.[0]?.phoneNumber || null;
+    const data = {
+      email,
+      firstName: clerkUser.firstName || null,
+      lastName: clerkUser.lastName || null,
+      phone,
+      imageUrl: clerkUser.imageUrl || null,
+    };
+    await prisma.user.update({ where: { id: userId }, data });
+    return data;
+  } catch (err) {
+    console.warn('[syncClerkProfile] Could not sync profile for', userId, err.message);
+    return null;
+  }
+}
+
+// ---------- Auth helpers ----------
+// resolveAccess: DB-only access middleware (Clerk = authentication only)
+// Sets req.accessLevel (scope) and req.userRole (permissions) from the local DB
+//   Roles:  super | attorney | member
+//   Scopes: super | org | member | client
+//   attorney = full access (manage team, locations, cases)
+//   member   = read-only
+async function resolveAccess(req, res, next) {
+  const auth = typeof req.auth === 'function' ? req.auth() : req.auth;
+  const userId = auth?.userId;
+  if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+
+  try {
+    let user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: { userLocations: { select: { locationId: true } } },
+    });
+
+    if (!user) {
+      user = await prisma.user.create({
+        data: { id: userId },
+        include: { userLocations: { select: { locationId: true } } },
+      });
+      syncClerkProfile(userId);
+    } else if (!user.email) {
+      syncClerkProfile(userId);
+    }
+
+    req.userRole = user.role;
+    req.userLanguage = user.language || 'en';
+
+    if (user.role === 'super') {
+      req.accessLevel = 'super';
+      req.orgId = user.organizationId || null;
+      return next();
+    }
+
+    // Attorney or member with org → scoped to that org's locations
+    if (user.organizationId) {
+      if (user.userLocations.length > 0) {
+        req.accessLevel = 'member';
+        req.orgId = user.organizationId;
+        req.locationIds = user.userLocations.map(ul => ul.locationId);
+      } else {
+        const orgLocs = await prisma.location.findMany({ where: { organizationId: user.organizationId }, select: { id: true } });
+        req.accessLevel = 'member';
+        req.orgId = user.organizationId;
+        req.locationIds = orgLocs.map(l => l.id);
+      }
+      return next();
+    }
+
+    // Attorney or member with location assignments only (no org)
+    if (user.userLocations.length > 0) {
+      req.accessLevel = 'member';
+      req.orgId = null;
+      req.locationIds = user.userLocations.map(ul => ul.locationId);
+      return next();
+    }
+
+    // Check if this Clerk user is a Client
+    const clients = await prisma.client.findMany({
+      where: { clerkUserId: userId },
+      select: { id: true, locationId: true },
+    });
+    if (clients.length > 0) {
+      req.accessLevel = 'client';
+      req.clientIds = clients.map(c => c.id);
+      return next();
+    }
+
+    return res.status(403).json({ error: 'No access. Use an invite link to join a location, or contact your administrator.' });
+  } catch (err) {
+    console.error('[resolveAccess] Error:', err.message);
+    res.status(500).json({ error: 'Failed to resolve access' });
+  }
+}
+
+// requireAdmin: super or attorney role (can manage team, locations, etc.)
+function requireAdmin(req, res, next) {
+  if (req.userRole === 'super' || req.userRole === 'attorney') return next();
+  return res.status(403).json({ error: 'Attorney access required.' });
+}
+
+// requireStaff: any non-client user (attorneys + members can view)
+function requireStaff(req, res, next) {
+  if (req.accessLevel === 'client') {
+    return res.status(403).json({ error: 'Staff access required.' });
+  }
+  next();
+}
+
+// requireWriteAccess: super or attorney role (members are read-only)
+function requireWriteAccess(req, res, next) {
+  if (req.userRole === 'super' || req.userRole === 'attorney') return next();
+  return res.status(403).json({ error: 'Write access required. Members have read-only access.' });
+}
+
+// Shorthand middleware arrays
+const authAndAccess = [requireAuth(), resolveAccess];                         // any tier
+const authAndAdmin = [requireAuth(), resolveAccess, requireAdmin];            // super + attorney
+const authAndStaff = [requireAuth(), resolveAccess, requireStaff];            // super + attorney + member (read)
+const authAndOrg = [requireAuth(), resolveAccess, requireStaff];              // alias
+const authAndWrite = [requireAuth(), resolveAccess, requireWriteAccess];      // super + attorney (write)
+const authAndClient = [requireAuth(), resolveAccess];                         // any tier
+
+// Helper: build a where clause scoped to the user's access level
+function scopedWhere(req, extraWhere = {}) {
+  if (req.accessLevel === 'super') return { ...extraWhere };
+  if (req.accessLevel === 'member') {
+    if (req.locationIds.length === 0) return { id: '__none__', ...extraWhere };
+    return { locationId: { in: req.locationIds }, ...extraWhere };
+  }
+  return extraWhere;
+}
+
 // Multer: store uploads in OS temp dir, accept up to 500 MB
 const upload = multer({
   dest: os.tmpdir(),
@@ -34,6 +175,7 @@ const upload = multer({
 });
 
 app.use(cors());
+app.use(clerkMiddleware());
 
 // ElevenLabs webhook needs raw body for HMAC verification — register BEFORE express.json()
 app.post('/api/webhook/elevenlabs', express.raw({ type: '*/*', limit: '10mb' }), async (req, res) => {
@@ -55,12 +197,284 @@ app.get('/api/health', (req, res) => {
   res.json({ ok: true, service: 'deposim-api' });
 });
 
-// List cases
-app.get('/api/cases', async (req, res) => {
+// ---------- Clerk webhook: sync users to local DB ----------
+app.post('/api/webhook/clerk', async (req, res) => {
   try {
-    const cases = await prisma.case.findMany({
+    const evt = req.body;
+    const type = evt?.type;
+    const data = evt?.data;
+    if (!type || !data) return res.status(400).json({ error: 'Invalid webhook payload' });
+
+    if (type === 'user.created' || type === 'user.updated') {
+      const email = data.email_addresses?.[0]?.email_address || null;
+      const phone = data.phone_numbers?.[0]?.phone_number || null;
+      await prisma.user.upsert({
+        where: { id: data.id },
+        update: {
+          email,
+          firstName: data.first_name || null,
+          lastName: data.last_name || null,
+          phone,
+          imageUrl: data.image_url || null,
+        },
+        create: {
+          id: data.id,
+          email,
+          firstName: data.first_name || null,
+          lastName: data.last_name || null,
+          phone,
+          imageUrl: data.image_url || null,
+        },
+      });
+      console.log(`[clerk-webhook] User ${type}: ${data.id} (${email})`);
+
+      // Auto-link: if a Client record has this email but no clerkUserId, link it now
+      if (email) {
+        const unlinked = await prisma.client.findMany({
+          where: { email: { equals: email, mode: 'insensitive' }, clerkUserId: null },
+        });
+        for (const c of unlinked) {
+          await prisma.client.update({ where: { id: c.id }, data: { clerkUserId: data.id } });
+          // Also ensure a CaseClient row exists for every case this client owns
+          const cases = await prisma.case.findMany({ where: { clientId: c.id }, select: { id: true } });
+          for (const cs of cases) {
+            await prisma.caseClient.upsert({
+              where: { caseId_clientId: { caseId: cs.id, clientId: c.id } },
+              update: {},
+              create: { caseId: cs.id, clientId: c.id, role: 'deponent' },
+            });
+          }
+          console.log(`[clerk-webhook] Auto-linked client ${c.id} (${email}) to Clerk user ${data.id}, synced ${cases.length} case(s)`);
+        }
+
+        // Auto-claim: if a pending Invite matches this email, claim it
+        const invite = await prisma.invite.findFirst({
+          where: { email: { equals: email, mode: 'insensitive' }, usedBy: null },
+        });
+        if (invite) {
+          await prisma.user.update({
+            where: { id: data.id },
+            data: { organizationId: invite.organizationId, role: invite.role || 'member' },
+          });
+          await prisma.invite.update({ where: { id: invite.id }, data: { usedBy: data.id } });
+          console.log(`[clerk-webhook] Auto-claimed invite ${invite.id} for user ${data.id} (${email})`);
+        }
+      }
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('POST /api/webhook/clerk error:', err.message);
+    res.status(500).json({ error: 'Webhook processing failed' });
+  }
+});
+
+// ---------- Client Portal API (auth + client-scoped) ----------
+
+// Client: list my cases (only cases linked via CaseClient)
+app.get('/api/client/cases', ...authAndClient, async (req, res) => {
+  try {
+    const caseClients = await prisma.caseClient.findMany({
+      where: { clientId: { in: req.clientIds } },
+      include: {
+        case: {
+          include: {
+            client: true,
+            simulations: { orderBy: { createdAt: 'desc' }, take: 1 },
+          },
+        },
+      },
+    });
+    const cases = caseClients.map(cc => cc.case);
+    res.json(cases);
+  } catch (err) {
+    console.error('GET /api/client/cases', err);
+    res.status(500).json({ error: 'Failed to list client cases' });
+  }
+});
+
+// Client: get a single case (only if linked)
+app.get('/api/client/cases/:id', ...authAndClient, async (req, res) => {
+  try {
+    const link = await prisma.caseClient.findFirst({
+      where: { caseId: req.params.id, clientId: { in: req.clientIds } },
+    });
+    if (!link) return res.status(404).json({ error: 'Case not found or access denied' });
+    const caseData = await prisma.case.findUnique({
+      where: { id: req.params.id },
+      include: { client: true, location: true },
+    });
+    res.json(caseData);
+  } catch (err) {
+    console.error('GET /api/client/cases/:id', err);
+    res.status(500).json({ error: 'Failed to get case' });
+  }
+});
+
+// Client: list simulations for a case (ONLY sims the client personally ran)
+app.get('/api/client/cases/:id/simulations', ...authAndClient, async (req, res) => {
+  try {
+    if (req.accessLevel !== 'client') return res.status(403).json({ error: 'Client access only' });
+    const link = await prisma.caseClient.findFirst({
+      where: { caseId: req.params.id, clientId: { in: req.clientIds } },
+    });
+    if (!link) return res.status(404).json({ error: 'Case not found or access denied' });
+    const sims = await prisma.simulation.findMany({
+      where: { caseId: req.params.id, clientId: { in: req.clientIds } },
       orderBy: { createdAt: 'desc' },
-      include: { organization: true, company: true, client: true },
+    });
+    res.json(sims);
+  } catch (err) {
+    console.error('GET /api/client/cases/:id/simulations', err);
+    res.status(500).json({ error: 'Failed to list simulations' });
+  }
+});
+
+// Client: get a single simulation (only if they personally ran it)
+app.get('/api/client/simulations/:simId', ...authAndClient, async (req, res) => {
+  try {
+    if (req.accessLevel !== 'client') return res.status(403).json({ error: 'Client access only' });
+    const sim = await prisma.simulation.findUnique({
+      where: { id: req.params.simId },
+      include: { case: true },
+    });
+    if (!sim) return res.status(404).json({ error: 'Simulation not found' });
+    if (!sim.clientId || !req.clientIds.includes(sim.clientId)) {
+      return res.status(404).json({ error: 'Simulation not found or access denied' });
+    }
+    res.json(sim);
+  } catch (err) {
+    console.error('GET /api/client/simulations/:simId', err);
+    res.status(500).json({ error: 'Failed to get simulation' });
+  }
+});
+
+// Client: get stage completion status for a case (only sims they ran)
+app.get('/api/client/cases/:id/stages', ...authAndClient, async (req, res) => {
+  try {
+    if (req.accessLevel !== 'client') return res.status(403).json({ error: 'Client access only' });
+    const link = await prisma.caseClient.findFirst({
+      where: { caseId: req.params.id, clientId: { in: req.clientIds } },
+    });
+    if (!link) return res.status(404).json({ error: 'Case not found or access denied' });
+    const sims = await prisma.simulation.findMany({
+      where: { caseId: req.params.id, stage: { not: null }, clientId: { in: req.clientIds } },
+      orderBy: { createdAt: 'desc' },
+    });
+    const stages = [1, 2, 3, 4].map(n => {
+      const stageSims = sims.filter(s => s.stage === n);
+      const completed = stageSims.some(s => s.stageStatus === 'completed');
+      return { stage: n, completed, simCount: stageSims.length };
+    });
+    const currentStage = stages.find(s => !s.completed)?.stage || 5;
+    res.json({ stages, currentStage });
+  } catch (err) {
+    console.error('GET /api/client/cases/:id/stages', err);
+    res.status(500).json({ error: 'Failed to get stage data' });
+  }
+});
+
+// Auth status: returns accessLevel, role, locations for the current user
+app.get('/api/client/me', requireAuth(), resolveAccess, async (req, res) => {
+  try {
+    const auth = typeof req.auth === 'function' ? req.auth() : req.auth;
+    const userId = auth?.userId;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+
+    const clients = await prisma.client.findMany({
+      where: { clerkUserId: userId },
+      select: { id: true, firstName: true, lastName: true, email: true, locationId: true, language: true },
+    });
+
+    // Resolve location objects based on access level
+    let locations = [];
+    const locationIds = req.locationIds || [];
+    if (req.accessLevel === 'super') {
+      locations = await prisma.location.findMany({
+        select: { id: true, name: true, organizationId: true, organization: { select: { id: true, name: true } } },
+        orderBy: { name: 'asc' },
+      });
+    } else if (req.accessLevel === 'member' && locationIds.length > 0) {
+      locations = await prisma.location.findMany({
+        where: { id: { in: locationIds } },
+        select: { id: true, name: true, organizationId: true, organization: { select: { id: true, name: true } } },
+      });
+    }
+
+    let organizations = [];
+    if (req.accessLevel === 'super') {
+      organizations = await prisma.organization.findMany({ select: { id: true, name: true }, orderBy: { name: 'asc' } });
+    } else if (req.orgId) {
+      const org = await prisma.organization.findUnique({ where: { id: req.orgId }, select: { id: true, name: true } });
+      if (org) organizations = [org];
+    }
+
+    const language = req.accessLevel === 'client'
+      ? (clients[0]?.language || 'en')
+      : (req.userLanguage || 'en');
+
+    res.json({
+      userId,
+      accessLevel: req.accessLevel,
+      userRole: req.userRole,
+      isAdmin: req.userRole === 'super' || req.userRole === 'attorney',
+      isSuper: req.accessLevel === 'super',
+      orgId: req.orgId || null,
+      locationIds,
+      locations,
+      organizations,
+      language,
+      isClient: clients.length > 0,
+      clients,
+    });
+  } catch (err) {
+    console.error('GET /api/client/me', err);
+    res.status(500).json({ error: 'Failed to get user info' });
+  }
+});
+
+app.patch('/api/client/me/language', requireAuth(), resolveAccess, async (req, res) => {
+  try {
+    const auth = typeof req.auth === 'function' ? req.auth() : req.auth;
+    const userId = auth?.userId;
+    const { language } = req.body;
+    if (!language || !['en', 'es'].includes(language)) {
+      return res.status(400).json({ error: 'Invalid language. Use "en" or "es".' });
+    }
+
+    if (req.accessLevel === 'client') {
+      const clients = await prisma.client.findMany({ where: { clerkUserId: userId } });
+      for (const c of clients) {
+        await prisma.client.update({ where: { id: c.id }, data: { language } });
+      }
+    } else {
+      await prisma.user.update({ where: { id: userId }, data: { language } });
+    }
+
+    res.json({ language });
+  } catch (err) {
+    console.error('PATCH /api/client/me/language', err);
+    res.status(500).json({ error: 'Failed to update language' });
+  }
+});
+
+// ---------- Staff API routes (auth + staff-scoped: org admin or member) ----------
+
+// List cases
+app.get('/api/cases', ...authAndStaff, async (req, res) => {
+  try {
+    const where = scopedWhere(req);
+    if (req.query.organizationId) where.organizationId = req.query.organizationId;
+    if (req.query.locationId) where.locationId = req.query.locationId;
+    const cases = await prisma.case.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        organization: true,
+        location: true,
+        client: true,
+        caseClients: { include: { client: true } },
+      },
     });
     res.json(cases);
   } catch (err) {
@@ -90,11 +504,11 @@ app.post('/api/cases/:id/record-consent', async (req, res) => {
 });
 
 // Get one case
-app.get('/api/cases/:id', async (req, res) => {
+app.get('/api/cases/:id', ...authAndStaff, async (req, res) => {
   try {
-    const c = await prisma.case.findUnique({
-      where: { id: req.params.id },
-      include: { organization: true, company: true, client: true },
+    const c = await prisma.case.findFirst({
+      where: scopedWhere(req, { id: req.params.id }),
+      include: { organization: true, location: true, client: true, caseClients: { include: { client: true } } },
     });
     if (!c) return res.status(404).json({ error: 'Case not found' });
     res.json(c);
@@ -104,89 +518,129 @@ app.get('/api/cases/:id', async (req, res) => {
   }
 });
 
-// Create case (client info comes from client, not case)
-app.post('/api/cases', async (req, res) => {
+// Create case — staff (org admin + member)
+// Accepts `clients` array (each { clientId } or { client: { firstName, lastName, phone, email } })
+// OR legacy single `clientId` / `client` object for backward compat
+app.post('/api/cases', ...authAndWrite, async (req, res) => {
   try {
-    const { organizationId, companyId, clientId, caseNumber, description, client } = req.body;
+    const { organizationId, locationId, clientId, caseNumber, name, description, client, clients } = req.body;
     if (!caseNumber || !description) {
       return res.status(400).json({
         error: 'Missing required fields: caseNumber, description',
       });
     }
+    if (!locationId) {
+      return res.status(400).json({ error: 'locationId is required.' });
+    }
 
-    let resolvedClientId = clientId && String(clientId).trim() ? String(clientId).trim() : null;
-
-    // If client data provided inline, create client first
-    if (!resolvedClientId && client && typeof client === 'object') {
-      const { firstName, lastName, phone, email } = client;
-      if (!firstName?.trim() || !lastName?.trim() || !phone?.trim()) {
-        return res.status(400).json({
-          error: 'When creating a new client: firstName, lastName, and phone are required',
-        });
+    // Members can only create cases in their assigned locations
+    if (req.accessLevel === 'member') {
+      if (!req.locationIds.includes(String(locationId))) {
+        return res.status(403).json({ error: 'You are not assigned to this location.' });
       }
-      const firstOrg = await prisma.organization.findFirst();
-      const orgId = (organizationId && String(organizationId).trim()) || firstOrg?.id;
-      if (!orgId) return res.status(400).json({ error: 'No organization exists. Create one first.' });
+    }
+
+    const resolveOrCreateClient = async (entry) => {
+      if (entry.clientId && String(entry.clientId).trim()) return String(entry.clientId).trim();
+      const c = entry.client || entry;
+      const { firstName, lastName, phone, email } = c;
+      if (!firstName?.trim() || !lastName?.trim()) {
+        throw new Error('Client firstName and lastName are required');
+      }
       const newClient = await prisma.client.create({
         data: {
-          organizationId: orgId,
-          companyId: companyId != null && companyId !== '' ? String(companyId) : null,
+          organizationId: req.orgId,
+          locationId: locationId != null && locationId !== '' ? String(locationId) : null,
           firstName: String(firstName).trim(),
           lastName: String(lastName).trim(),
-          phone: String(phone).trim(),
+          phone: phone != null && String(phone).trim() ? String(phone).trim() : null,
           email: email != null && String(email).trim() ? String(email).trim() : null,
         },
       });
-      resolvedClientId = newClient.id;
+      return newClient.id;
+    };
+
+    // Build list of client IDs to link
+    const clientIds = [];
+    if (Array.isArray(clients) && clients.length > 0) {
+      for (const entry of clients) {
+        clientIds.push(await resolveOrCreateClient(entry));
+      }
+    } else if (clientId && String(clientId).trim()) {
+      clientIds.push(String(clientId).trim());
+    } else if (client && typeof client === 'object') {
+      clientIds.push(await resolveOrCreateClient({ client }));
     }
 
-    if (!resolvedClientId) {
+    if (clientIds.length === 0) {
       return res.status(400).json({
-        error: 'clientId or client (firstName, lastName, phone, email) is required',
+        error: 'At least one client is required (clients array, clientId, or client object)',
       });
     }
 
+    const primaryClientId = clientIds[0];
+
     const c = await prisma.case.create({
       data: {
-        organizationId: organizationId != null && organizationId !== '' ? String(organizationId) : null,
-        companyId: companyId != null && companyId !== '' ? String(companyId) : null,
-        clientId: resolvedClientId,
+        organizationId: req.orgId,
+        locationId: locationId != null && locationId !== '' ? String(locationId) : null,
+        clientId: primaryClientId,
+        name: name != null && String(name).trim() ? String(name).trim() : null,
         caseNumber: String(caseNumber),
         description: String(description),
       },
       include: { client: true },
     });
 
-    res.status(201).json(c);
+    // Create CaseClient join rows for all clients
+    for (const cid of clientIds) {
+      await prisma.caseClient.upsert({
+        where: { caseId_clientId: { caseId: c.id, clientId: cid } },
+        update: {},
+        create: { caseId: c.id, clientId: cid, role: 'deponent' },
+      });
+    }
+
+    const full = await prisma.case.findUnique({
+      where: { id: c.id },
+      include: { client: true, caseClients: { include: { client: true } } },
+    });
+    res.status(201).json(full);
   } catch (err) {
     console.error('POST /api/cases', err);
-    res.status(500).json({ error: 'Failed to create case' });
+    res.status(500).json({ error: err.message || 'Failed to create case' });
   }
 });
 
 // Send DepoSim link to client + notify moderators (triggered by toast)
-app.post('/api/cases/:id/notify-deposim-sent', async (req, res) => {
+// Accepts optional `clientId` in body to target a specific client; defaults to primary case client
+app.post('/api/cases/:id/notify-deposim-sent', ...authAndStaff, async (req, res) => {
   try {
     const caseId = req.params.id;
-    console.log('[sms] notify-deposim-sent hit for case', caseId);
+    const targetClientId = req.body?.clientId || null;
+    console.log('[sms] notify-deposim-sent hit for case', caseId, 'targetClient:', targetClientId);
 
     const c = await prisma.case.findUnique({
       where: { id: caseId },
-      include: { client: true },
+      include: { client: true, caseClients: { include: { client: true } } },
     });
     if (!c) {
       console.log('[sms] Case not found:', caseId);
       return res.status(404).json({ error: 'Case not found' });
     }
 
+    // Resolve the target client: specific clientId, or fall back to primary
+    let targetClient = c.client;
+    if (targetClientId) {
+      const cc = c.caseClients.find(cc => cc.clientId === targetClientId);
+      if (cc?.client) targetClient = cc.client;
+    }
+
     const simLink = (req.body?.simUrl || '').trim() || `${req.protocol}://${req.get('host')}/sim/${c.id}`;
     const moderatorPhones = ['8018366183', '9175979964'];
-    const name = c.client ? `${c.client.lastName}, ${c.client.firstName}` : 'Deponent';
+    const name = targetClient ? `${targetClient.lastName}, ${targetClient.firstName}` : 'Deponent';
 
-    // Message to the client: invitation to start their simulated deposition
     const clientMsg = `Your DepoSim simulated deposition is ready. Start here: ${simLink}`;
-
-    // Message to moderators: notification that a DepoSim was sent
     const moderatorMsg = `DepoSim link sent to client #${c.caseNumber} – ${name}. ${simLink}`;
 
     const sendSms = async (to, msg, label) => {
@@ -200,15 +654,13 @@ app.post('/api/cases/:id/notify-deposim-sent', async (req, res) => {
       }
     };
 
-    // Send to client (case deponent)
-    const clientPhone = (c.client?.phone || '').replace(/\D/g, '');
+    const clientPhone = (targetClient?.phone || '').replace(/\D/g, '');
     if (clientPhone) {
       await sendSms(clientPhone, clientMsg, 'client');
     } else {
       console.log('[sms] No client phone for case', caseId);
     }
 
-    // Send to moderators
     for (const to of moderatorPhones) {
       await sendSms(to, moderatorMsg, 'moderator');
     }
@@ -220,16 +672,17 @@ app.post('/api/cases/:id/notify-deposim-sent', async (req, res) => {
   }
 });
 
-// Update case (client info via clientId or PATCH /clients/:id)
-app.patch('/api/cases/:id', async (req, res) => {
+// Update case (client info via clientId or PATCH /clients/:id) — org-level only
+app.patch('/api/cases/:id', ...authAndWrite, async (req, res) => {
   try {
-    const { organizationId, companyId, clientId, caseNumber, description } = req.body;
+    const { organizationId, locationId, clientId, caseNumber, name, description } = req.body;
     const c = await prisma.case.update({
       where: { id: req.params.id },
       data: {
         ...(organizationId !== undefined && { organizationId: organizationId === null || organizationId === '' ? null : String(organizationId) }),
-        ...(companyId !== undefined && { companyId: companyId === null || companyId === '' ? null : String(companyId) }),
+        ...(locationId !== undefined && { locationId: locationId === null || locationId === '' ? null : String(locationId) }),
         ...(clientId !== undefined && { clientId: clientId === null || clientId === '' ? null : String(clientId) }),
+        ...(name !== undefined && { name: name === null || name === '' ? null : String(name).trim() }),
         ...(caseNumber != null && { caseNumber: String(caseNumber) }),
         ...(description != null && { description: String(description) }),
       },
@@ -243,8 +696,8 @@ app.patch('/api/cases/:id', async (req, res) => {
   }
 });
 
-// Delete case
-app.delete('/api/cases/:id', async (req, res) => {
+// Delete case — org-level only
+app.delete('/api/cases/:id', ...authAndWrite, async (req, res) => {
   try {
     await prisma.case.delete({ where: { id: req.params.id } });
     res.status(204).send();
@@ -255,21 +708,105 @@ app.delete('/api/cases/:id', async (req, res) => {
   }
 });
 
-// ---------- Organizations ----------
-app.get('/api/organizations', async (req, res) => {
+// ---------- Case-Client management ----------
+
+// List clients assigned to a case
+app.get('/api/cases/:id/clients', ...authAndStaff, async (req, res) => {
   try {
-    const list = await prisma.organization.findMany({ orderBy: { createdAt: 'desc' } });
+    const caseClients = await prisma.caseClient.findMany({
+      where: { caseId: req.params.id },
+      include: { client: true },
+      orderBy: { client: { lastName: 'asc' } },
+    });
+    res.json(caseClients);
+  } catch (err) {
+    console.error('GET /api/cases/:id/clients', err);
+    res.status(500).json({ error: 'Failed to list case clients' });
+  }
+});
+
+// Add a client to a case (existing clientId or create inline)
+app.post('/api/cases/:id/clients', ...authAndWrite, async (req, res) => {
+  try {
+    const caseId = req.params.id;
+    const { clientId, client, role } = req.body;
+    const resolvedRole = role || 'deponent';
+
+    const caseRecord = await prisma.case.findUnique({ where: { id: caseId } });
+    if (!caseRecord) return res.status(404).json({ error: 'Case not found' });
+
+    let resolvedClientId = clientId && String(clientId).trim() ? String(clientId).trim() : null;
+
+    if (!resolvedClientId && client && typeof client === 'object') {
+      const { firstName, lastName, phone, email } = client;
+      if (!firstName?.trim() || !lastName?.trim()) {
+        return res.status(400).json({ error: 'firstName and lastName are required' });
+      }
+      const newClient = await prisma.client.create({
+        data: {
+          organizationId: req.orgId,
+          firstName: String(firstName).trim(),
+          lastName: String(lastName).trim(),
+          phone: phone != null && String(phone).trim() ? String(phone).trim() : null,
+          email: email != null && String(email).trim() ? String(email).trim() : null,
+        },
+      });
+      resolvedClientId = newClient.id;
+    }
+
+    if (!resolvedClientId) {
+      return res.status(400).json({ error: 'clientId or client object is required' });
+    }
+
+    const cc = await prisma.caseClient.upsert({
+      where: { caseId_clientId: { caseId, clientId: resolvedClientId } },
+      update: { role: resolvedRole },
+      create: { caseId, clientId: resolvedClientId, role: resolvedRole },
+    });
+    const full = await prisma.caseClient.findUnique({
+      where: { id: cc.id },
+      include: { client: true },
+    });
+    res.status(201).json(full);
+  } catch (err) {
+    console.error('POST /api/cases/:id/clients', err);
+    res.status(500).json({ error: 'Failed to add client to case' });
+  }
+});
+
+// Remove a client from a case
+app.delete('/api/cases/:id/clients/:clientId', ...authAndWrite, async (req, res) => {
+  try {
+    const { id: caseId, clientId } = req.params;
+    await prisma.caseClient.delete({
+      where: { caseId_clientId: { caseId, clientId } },
+    });
+    res.status(204).send();
+  } catch (err) {
+    if (err.code === 'P2025') return res.status(404).json({ error: 'Case-client link not found' });
+    console.error('DELETE /api/cases/:id/clients/:clientId', err);
+    res.status(500).json({ error: 'Failed to remove client from case' });
+  }
+});
+
+// ---------- Organizations (admin only) ----------
+app.get('/api/organizations', ...authAndAdmin, async (req, res) => {
+  try {
+    const list = await prisma.organization.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: { _count: { select: { users: true, locations: true, cases: true } } },
+    });
     res.json(list);
   } catch (err) {
     console.error('GET /api/organizations', err);
     res.status(500).json({ error: 'Failed to list organizations' });
   }
 });
-app.get('/api/organizations/:id', async (req, res) => {
+app.get('/api/organizations/:id', ...authAndAdmin, async (req, res) => {
   try {
     const o = await prisma.organization.findUnique({
       where: { id: req.params.id },
-      include: { companies: true, clients: true, cases: true, brandings: true },
+      include: { locations: true, clients: true, cases: true, brandings: true },
     });
     if (!o) return res.status(404).json({ error: 'Organization not found' });
     res.json(o);
@@ -278,7 +815,7 @@ app.get('/api/organizations/:id', async (req, res) => {
     res.status(500).json({ error: 'Failed to get organization' });
   }
 });
-app.post('/api/organizations', async (req, res) => {
+app.post('/api/organizations', ...authAndAdmin, async (req, res) => {
   try {
     const { name } = req.body;
     if (!name || !String(name).trim()) return res.status(400).json({ error: 'name is required' });
@@ -289,7 +826,7 @@ app.post('/api/organizations', async (req, res) => {
     res.status(500).json({ error: 'Failed to create organization' });
   }
 });
-app.patch('/api/organizations/:id', async (req, res) => {
+app.patch('/api/organizations/:id', ...authAndAdmin, async (req, res) => {
   try {
     const { name } = req.body;
     const o = await prisma.organization.update({
@@ -303,7 +840,7 @@ app.patch('/api/organizations/:id', async (req, res) => {
     res.status(500).json({ error: 'Failed to update organization' });
   }
 });
-app.delete('/api/organizations/:id', async (req, res) => {
+app.delete('/api/organizations/:id', ...authAndAdmin, async (req, res) => {
   try {
     await prisma.organization.delete({ where: { id: req.params.id } });
     res.status(204).send();
@@ -314,53 +851,64 @@ app.delete('/api/organizations/:id', async (req, res) => {
   }
 });
 
-// ---------- Companies ----------
-app.get('/api/companies', async (req, res) => {
+// ---------- Locations ----------
+app.get('/api/locations', ...authAndStaff, async (req, res) => {
   try {
-    const organizationId = req.query.organizationId;
-    const where = organizationId ? { organizationId } : {};
-    const list = await prisma.company.findMany({
+    let where;
+    if (req.accessLevel === 'super') {
+      where = req.query.organizationId ? { organizationId: req.query.organizationId } : {};
+    } else if (req.accessLevel === 'member') {
+      where = req.locationIds?.length > 0 ? { id: { in: req.locationIds } } : { id: '__none__' };
+    } else {
+      where = { id: '__none__' };
+    }
+    const list = await prisma.location.findMany({
       where,
       orderBy: { createdAt: 'desc' },
       include: { organization: true },
     });
     res.json(list);
   } catch (err) {
-    console.error('GET /api/companies', err);
-    res.status(500).json({ error: 'Failed to list companies' });
+    console.error('GET /api/locations', err);
+    res.status(500).json({ error: 'Failed to list locations' });
   }
 });
-app.get('/api/companies/:id', async (req, res) => {
+app.get('/api/locations/:id', ...authAndStaff, async (req, res) => {
   try {
-    const c = await prisma.company.findUnique({
+    if (req.accessLevel === 'member' && !req.locationIds.includes(req.params.id)) {
+      return res.status(403).json({ error: 'Access denied: you are not assigned to this location.' });
+    }
+    const c = await prisma.location.findUnique({
       where: { id: req.params.id },
       include: { organization: true, clients: true, cases: true, brandings: true },
     });
-    if (!c) return res.status(404).json({ error: 'Company not found' });
+    if (!c) return res.status(404).json({ error: 'Location not found' });
     res.json(c);
   } catch (err) {
-    console.error('GET /api/companies/:id', err);
-    res.status(500).json({ error: 'Failed to get company' });
+    console.error('GET /api/locations/:id', err);
+    res.status(500).json({ error: 'Failed to get location' });
   }
 });
-app.post('/api/companies', async (req, res) => {
+app.post('/api/locations', ...authAndAdmin, async (req, res) => {
   try {
-    const { organizationId, name } = req.body;
-    if (!organizationId || !name || !String(name).trim())
-      return res.status(400).json({ error: 'organizationId and name are required' });
-    const c = await prisma.company.create({
-      data: { organizationId: String(organizationId), name: String(name).trim() },
+    const { name, organizationId } = req.body;
+    if (!name || !String(name).trim())
+      return res.status(400).json({ error: 'name is required' });
+    const orgId = (req.userRole === 'super' ? organizationId : req.orgId);
+    if (!orgId) return res.status(400).json({ error: 'organizationId is required.' });
+    const c = await prisma.location.create({
+      data: { organizationId: orgId, name: String(name).trim() },
     });
     res.status(201).json(c);
   } catch (err) {
-    console.error('POST /api/companies', err);
-    res.status(500).json({ error: 'Failed to create company' });
+    console.error('POST /api/locations', err);
+    res.status(500).json({ error: 'Failed to create location' });
   }
 });
-app.patch('/api/companies/:id', async (req, res) => {
+app.patch('/api/locations/:id', ...authAndAdmin, async (req, res) => {
   try {
     const { organizationId, name } = req.body;
-    const c = await prisma.company.update({
+    const c = await prisma.location.update({
       where: { id: req.params.id },
       data: {
         ...(organizationId != null && { organizationId: String(organizationId) }),
@@ -369,34 +917,314 @@ app.patch('/api/companies/:id', async (req, res) => {
     });
     res.json(c);
   } catch (err) {
-    if (err.code === 'P2025') return res.status(404).json({ error: 'Company not found' });
-    console.error('PATCH /api/companies/:id', err);
-    res.status(500).json({ error: 'Failed to update company' });
+    if (err.code === 'P2025') return res.status(404).json({ error: 'Location not found' });
+    console.error('PATCH /api/locations/:id', err);
+    res.status(500).json({ error: 'Failed to update location' });
   }
 });
-app.delete('/api/companies/:id', async (req, res) => {
+app.delete('/api/locations/:id', ...authAndAdmin, async (req, res) => {
   try {
-    await prisma.company.delete({ where: { id: req.params.id } });
+    await prisma.location.delete({ where: { id: req.params.id } });
     res.status(204).send();
   } catch (err) {
-    if (err.code === 'P2025') return res.status(404).json({ error: 'Company not found' });
-    console.error('DELETE /api/companies/:id', err);
-    res.status(500).json({ error: 'Failed to delete company' });
+    if (err.code === 'P2025') return res.status(404).json({ error: 'Location not found' });
+    console.error('DELETE /api/locations/:id', err);
+    res.status(500).json({ error: 'Failed to delete location' });
+  }
+});
+
+// ---------- User-Location assignments (admin only) ----------
+app.get('/api/locations/:id/users', ...authAndAdmin, async (req, res) => {
+  try {
+    const rows = await prisma.userLocation.findMany({
+      where: { locationId: req.params.id },
+      include: { user: { select: { id: true, email: true, firstName: true, lastName: true, imageUrl: true, role: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json(rows.map(r => ({ ...r.user, userLocationId: r.id, assignedAt: r.createdAt })));
+  } catch (err) {
+    console.error('GET /api/locations/:id/users', err);
+    res.status(500).json({ error: 'Failed to list location users' });
+  }
+});
+
+app.post('/api/locations/:id/users', ...authAndAdmin, async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId is required' });
+    const loc = await prisma.location.findUnique({ where: { id: req.params.id } });
+    if (!loc) return res.status(404).json({ error: 'Location not found' });
+    if (req.userRole !== 'super' && loc.organizationId !== req.orgId) {
+      return res.status(403).json({ error: 'Location does not belong to your organization' });
+    }
+    const ul = await prisma.userLocation.upsert({
+      where: { userId_locationId: { userId: String(userId), locationId: req.params.id } },
+      update: {},
+      create: { userId: String(userId), locationId: req.params.id },
+    });
+    res.status(201).json(ul);
+  } catch (err) {
+    console.error('POST /api/locations/:id/users', err);
+    res.status(500).json({ error: 'Failed to assign user to location' });
+  }
+});
+
+app.delete('/api/locations/:id/users/:userId', ...authAndAdmin, async (req, res) => {
+  try {
+    await prisma.userLocation.delete({
+      where: { userId_locationId: { userId: req.params.userId, locationId: req.params.id } },
+    });
+    res.status(204).send();
+  } catch (err) {
+    if (err.code === 'P2025') return res.status(404).json({ error: 'User-location assignment not found' });
+    console.error('DELETE /api/locations/:id/users/:userId', err);
+    res.status(500).json({ error: 'Failed to remove user from location' });
+  }
+});
+
+// ---------- Users (admin only) ----------
+app.get('/api/users', ...authAndAdmin, async (req, res) => {
+  try {
+    let where = {};
+    if (req.accessLevel === 'super' && req.query.organizationId) {
+      where.organizationId = req.query.organizationId;
+    } else if (req.accessLevel === 'super' && req.query.unassigned === 'true') {
+      where.organizationId = null;
+    } else if (req.accessLevel === 'super') {
+      // no filter — return all users
+    } else {
+      // Non-super admin: users with this org OR users on any of this org's locations
+      const orgLocations = await prisma.location.findMany({ where: { organizationId: req.orgId }, select: { id: true } });
+      const orgLocIds = orgLocations.map(l => l.id);
+      where = {
+        OR: [
+          { organizationId: req.orgId },
+          { userLocations: { some: { locationId: { in: orgLocIds } } } },
+        ],
+      };
+    }
+    const users = await prisma.user.findMany({
+      where,
+      select: { id: true, email: true, firstName: true, lastName: true, imageUrl: true, role: true, organizationId: true, userLocations: { select: { locationId: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json(users);
+  } catch (err) {
+    console.error('GET /api/users', err);
+    res.status(500).json({ error: 'Failed to list users' });
+  }
+});
+
+app.get('/api/users/:id/locations', ...authAndAdmin, async (req, res) => {
+  try {
+    const rows = await prisma.userLocation.findMany({
+      where: { userId: req.params.id },
+      include: { location: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json(rows.map(r => ({ ...r.location, userLocationId: r.id, assignedAt: r.createdAt })));
+  } catch (err) {
+    console.error('GET /api/users/:id/locations', err);
+    res.status(500).json({ error: 'Failed to list user locations' });
+  }
+});
+
+app.patch('/api/users/:id', ...authAndAdmin, async (req, res) => {
+  try {
+    const { role, organizationId } = req.body;
+    if (role && !['attorney', 'member'].includes(role)) {
+      return res.status(400).json({ error: 'Invalid role. Must be "attorney" or "member".' });
+    }
+    const user = await prisma.user.findUnique({ where: { id: req.params.id } });
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+
+    // Non-super attorneys can only manage users in their own org
+    if (req.userRole !== 'super' && user.organizationId !== req.orgId) {
+      return res.status(404).json({ error: 'User not found in this organization.' });
+    }
+
+    const data = {};
+    if (role) data.role = role;
+    // Only super users can reassign org membership
+    if (req.userRole === 'super' && organizationId !== undefined) {
+      data.organizationId = organizationId || null;
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: req.params.id },
+      data,
+      select: { id: true, email: true, firstName: true, lastName: true, role: true, organizationId: true },
+    });
+    res.json(updated);
+  } catch (err) {
+    console.error('PATCH /api/users/:id', err);
+    res.status(500).json({ error: 'Failed to update user' });
+  }
+});
+
+app.delete('/api/users/:id', ...authAndAdmin, async (req, res) => {
+  try {
+    const user = await prisma.user.findUnique({ where: { id: req.params.id } });
+    if (!user || user.organizationId !== req.orgId) {
+      return res.status(404).json({ error: 'User not found in this organization.' });
+    }
+    await prisma.user.update({
+      where: { id: req.params.id },
+      data: { organizationId: null, role: 'member' },
+    });
+    await prisma.userLocation.deleteMany({ where: { userId: req.params.id } });
+    res.status(204).send();
+  } catch (err) {
+    console.error('DELETE /api/users/:id', err);
+    res.status(500).json({ error: 'Failed to remove user from organization' });
+  }
+});
+
+// ---------- Invites (admin only) ----------
+
+app.get('/api/invites', ...authAndAdmin, async (req, res) => {
+  try {
+    const where = {};
+    if (req.accessLevel === 'super' && req.query.organizationId) {
+      where.organizationId = req.query.organizationId;
+    } else if (req.accessLevel === 'super') {
+      // no filter — all invites
+    } else {
+      where.organizationId = req.orgId;
+    }
+    const invites = await prisma.invite.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      include: { organization: { select: { id: true, name: true } } },
+    });
+    res.json(invites);
+  } catch (err) {
+    console.error('GET /api/invites', err);
+    res.status(500).json({ error: 'Failed to list invites' });
+  }
+});
+
+app.post('/api/invites', ...authAndAdmin, async (req, res) => {
+  try {
+    const { email, role, organizationId, locationIds } = req.body;
+    if (role && !['attorney', 'member'].includes(role)) {
+      return res.status(400).json({ error: 'Invalid role.' });
+    }
+
+    let orgId = req.userRole === 'super' ? organizationId : req.orgId;
+
+    // Derive org from the selected locations
+    if (!orgId && locationIds?.length) {
+      const firstLoc = await prisma.location.findUnique({ where: { id: locationIds[0] } });
+      if (!firstLoc) return res.status(404).json({ error: 'Location not found.' });
+      orgId = firstLoc.organizationId;
+    }
+
+    if (!orgId) return res.status(400).json({ error: 'Select at least one location or organization.' });
+
+    const org = await prisma.organization.findUnique({ where: { id: orgId } });
+    if (!org) return res.status(404).json({ error: 'Organization not found.' });
+
+    const code = crypto.randomBytes(16).toString('hex');
+    const invite = await prisma.invite.create({
+      data: {
+        organizationId: orgId,
+        email: email?.trim() || null,
+        role: role || 'member',
+        code,
+        ...(locationIds?.length ? { locationIds } : {}),
+      },
+    });
+    res.status(201).json(invite);
+  } catch (err) {
+    console.error('POST /api/invites', err);
+    res.status(500).json({ error: 'Failed to create invite' });
+  }
+});
+
+app.delete('/api/invites/:id', ...authAndAdmin, async (req, res) => {
+  try {
+    const invite = await prisma.invite.findUnique({ where: { id: req.params.id } });
+    if (!invite) return res.status(404).json({ error: 'Invite not found.' });
+    if (req.userRole !== 'super' && invite.organizationId !== req.orgId) {
+      return res.status(404).json({ error: 'Invite not found.' });
+    }
+    await prisma.invite.delete({ where: { id: req.params.id } });
+    res.status(204).send();
+  } catch (err) {
+    console.error('DELETE /api/invites/:id', err);
+    res.status(500).json({ error: 'Failed to delete invite' });
+  }
+});
+
+// Claim an invite (any authenticated user)
+app.post('/api/invites/claim', requireAuth(), async (req, res) => {
+  try {
+    const auth = typeof req.auth === 'function' ? req.auth() : req.auth;
+    const userId = auth?.userId;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+
+    const { code } = req.body;
+    if (!code) return res.status(400).json({ error: 'Invite code is required.' });
+
+    const invite = await prisma.invite.findUnique({ where: { code } });
+    if (!invite) return res.status(404).json({ error: 'Invalid invite code.' });
+    if (invite.usedBy) return res.status(410).json({ error: 'This invite has already been used.' });
+
+    const upsertData = { role: invite.role || 'member' };
+    // Attorneys get org assignment (they manage the org)
+    if (invite.role === 'attorney') {
+      upsertData.organizationId = invite.organizationId;
+    }
+
+    await prisma.user.upsert({
+      where: { id: userId },
+      update: upsertData,
+      create: { id: userId, ...upsertData },
+    });
+
+    // Create location assignments from the invite
+    if (invite.locationIds?.length) {
+      for (const locId of invite.locationIds) {
+        await prisma.userLocation.upsert({
+          where: { userId_locationId: { userId, locationId: locId } },
+          update: {},
+          create: { userId, locationId: locId },
+        });
+      }
+    }
+
+    await prisma.invite.update({ where: { id: invite.id }, data: { usedBy: userId } });
+
+    // Sync profile data from Clerk (await so profile is saved before response)
+    await syncClerkProfile(userId);
+
+    res.json({ ok: true, organizationId: invite.organizationId, role: invite.role });
+  } catch (err) {
+    console.error('POST /api/invites/claim', err);
+    res.status(500).json({ error: 'Failed to claim invite' });
   }
 });
 
 // ---------- Clients ----------
-app.get('/api/clients', async (req, res) => {
+app.get('/api/clients', ...authAndOrg, async (req, res) => {
   try {
-    const organizationId = req.query.organizationId;
-    const companyId = req.query.companyId;
-    const where = {};
-    if (organizationId) where.organizationId = organizationId;
-    if (companyId) where.companyId = companyId;
+    const locationId = req.query.locationId;
+    const search = (req.query.search || '').trim();
+    const where = scopedWhere(req);
+    if (locationId) where.locationId = locationId;
+    if (search) {
+      where.OR = [
+        { firstName: { contains: search, mode: 'insensitive' } },
+        { lastName: { contains: search, mode: 'insensitive' } },
+        { email: { contains: search, mode: 'insensitive' } },
+        { phone: { contains: search, mode: 'insensitive' } },
+      ];
+    }
     const list = await prisma.client.findMany({
       where,
       orderBy: { createdAt: 'desc' },
-      include: { organization: true, company: true },
+      include: { organization: true, location: true },
     });
     res.json(list);
   } catch (err) {
@@ -404,28 +1232,34 @@ app.get('/api/clients', async (req, res) => {
     res.status(500).json({ error: 'Failed to list clients' });
   }
 });
-app.get('/api/clients/:id', async (req, res) => {
+app.get('/api/clients/:id', ...authAndOrg, async (req, res) => {
   try {
     const c = await prisma.client.findUnique({
       where: { id: req.params.id },
-      include: { organization: true, company: true, cases: true, brandings: true },
+      include: { organization: true, location: true, cases: true, brandings: true },
     });
     if (!c) return res.status(404).json({ error: 'Client not found' });
+    if (req.accessLevel === 'member' && (!c.locationId || !req.locationIds.includes(c.locationId))) {
+      return res.status(403).json({ error: 'Access denied: client does not belong to your assigned locations.' });
+    }
     res.json(c);
   } catch (err) {
     console.error('GET /api/clients/:id', err);
     res.status(500).json({ error: 'Failed to get client' });
   }
 });
-app.post('/api/clients', async (req, res) => {
+app.post('/api/clients', ...authAndOrg, async (req, res) => {
   try {
-    const { organizationId, companyId, firstName, lastName, email, phone, consentCamera, consentMicrophone } = req.body;
-    if (!organizationId || !firstName?.trim() || !lastName?.trim())
-      return res.status(400).json({ error: 'organizationId, firstName, and lastName are required' });
+    const { locationId, firstName, lastName, email, phone, consentCamera, consentMicrophone } = req.body;
+    if (!firstName?.trim() || !lastName?.trim())
+      return res.status(400).json({ error: 'firstName and lastName are required' });
+    if (req.accessLevel === 'member' && locationId && !req.locationIds.includes(String(locationId))) {
+      return res.status(403).json({ error: 'You are not assigned to this location.' });
+    }
     const c = await prisma.client.create({
       data: {
-        organizationId: String(organizationId),
-        companyId: companyId != null && companyId !== '' ? String(companyId) : null,
+        organizationId: req.orgId,
+        locationId: locationId != null && locationId !== '' ? String(locationId) : null,
         firstName: String(firstName).trim(),
         lastName: String(lastName).trim(),
         email: email != null && email !== '' ? String(email) : null,
@@ -440,14 +1274,14 @@ app.post('/api/clients', async (req, res) => {
     res.status(500).json({ error: 'Failed to create client' });
   }
 });
-app.patch('/api/clients/:id', async (req, res) => {
+app.patch('/api/clients/:id', ...authAndOrg, async (req, res) => {
   try {
-    const { organizationId, companyId, firstName, lastName, email, phone, consentCamera, consentMicrophone } = req.body;
+    const { organizationId, locationId, firstName, lastName, email, phone, consentCamera, consentMicrophone } = req.body;
     const c = await prisma.client.update({
       where: { id: req.params.id },
       data: {
         ...(organizationId != null && { organizationId: String(organizationId) }),
-        ...(companyId !== undefined && { companyId: companyId === null || companyId === '' ? null : String(companyId) }),
+        ...(locationId !== undefined && { locationId: locationId === null || locationId === '' ? null : String(locationId) }),
         ...(firstName != null && { firstName: String(firstName).trim() }),
         ...(lastName != null && { lastName: String(lastName).trim() }),
         ...(email !== undefined && { email: email === null || email === '' ? null : String(email) }),
@@ -463,7 +1297,7 @@ app.patch('/api/clients/:id', async (req, res) => {
     res.status(500).json({ error: 'Failed to update client' });
   }
 });
-app.delete('/api/clients/:id', async (req, res) => {
+app.delete('/api/clients/:id', ...authAndOrg, async (req, res) => {
   try {
     await prisma.client.delete({ where: { id: req.params.id } });
     res.status(204).send();
@@ -475,19 +1309,17 @@ app.delete('/api/clients/:id', async (req, res) => {
 });
 
 // ---------- Branding ----------
-app.get('/api/brandings', async (req, res) => {
+app.get('/api/brandings', ...authAndOrg, async (req, res) => {
   try {
-    const organizationId = req.query.organizationId;
-    const companyId = req.query.companyId;
+    const locationId = req.query.locationId;
     const clientId = req.query.clientId;
-    const where = {};
-    if (organizationId) where.organizationId = organizationId;
-    if (companyId) where.companyId = companyId;
+    const where = scopedWhere(req);
+    if (locationId) where.locationId = locationId;
     if (clientId) where.clientId = clientId;
     const list = await prisma.branding.findMany({
       where,
       orderBy: { createdAt: 'desc' },
-      include: { organization: true, company: true, client: true },
+      include: { organization: true, location: true, client: true },
     });
     res.json(list);
   } catch (err) {
@@ -495,11 +1327,11 @@ app.get('/api/brandings', async (req, res) => {
     res.status(500).json({ error: 'Failed to list brandings' });
   }
 });
-app.get('/api/brandings/:id', async (req, res) => {
+app.get('/api/brandings/:id', ...authAndOrg, async (req, res) => {
   try {
     const b = await prisma.branding.findUnique({
       where: { id: req.params.id },
-      include: { organization: true, company: true, client: true },
+      include: { organization: true, location: true, client: true },
     });
     if (!b) return res.status(404).json({ error: 'Branding not found' });
     res.json(b);
@@ -508,16 +1340,13 @@ app.get('/api/brandings/:id', async (req, res) => {
     res.status(500).json({ error: 'Failed to get branding' });
   }
 });
-app.post('/api/brandings', async (req, res) => {
+app.post('/api/brandings', ...authAndOrg, async (req, res) => {
   try {
-    const { organizationId, companyId, clientId, accentColor, brandColor, logoUrl } = req.body;
-    const hasTarget = [organizationId, companyId, clientId].filter(Boolean).length === 1;
-    if (!hasTarget)
-      return res.status(400).json({ error: 'Exactly one of organizationId, companyId, or clientId is required' });
+    const { locationId, clientId, accentColor, brandColor, logoUrl } = req.body;
     const b = await prisma.branding.create({
       data: {
-        organizationId: organizationId || null,
-        companyId: companyId || null,
+        organizationId: req.orgId,
+        locationId: locationId || null,
         clientId: clientId || null,
         accentColor: accentColor != null ? String(accentColor) : '#64d2ff',
         brandColor: brandColor != null ? String(brandColor) : '#0b0c10',
@@ -530,7 +1359,7 @@ app.post('/api/brandings', async (req, res) => {
     res.status(500).json({ error: 'Failed to create branding' });
   }
 });
-app.patch('/api/brandings/:id', async (req, res) => {
+app.patch('/api/brandings/:id', ...authAndOrg, async (req, res) => {
   try {
     const { accentColor, brandColor, logoUrl } = req.body;
     const b = await prisma.branding.update({
@@ -548,7 +1377,7 @@ app.patch('/api/brandings/:id', async (req, res) => {
     res.status(500).json({ error: 'Failed to update branding' });
   }
 });
-app.delete('/api/brandings/:id', async (req, res) => {
+app.delete('/api/brandings/:id', ...authAndOrg, async (req, res) => {
   try {
     await prisma.branding.delete({ where: { id: req.params.id } });
     res.status(204).send();
@@ -561,7 +1390,7 @@ app.delete('/api/brandings/:id', async (req, res) => {
 
 // ---------- App settings (theme: dark | light) ----------
 const APP_SETTINGS_ID = 'app';
-app.get('/api/settings', async (req, res) => {
+app.get('/api/settings', ...authAndOrg, async (req, res) => {
   try {
     let s = await prisma.appSettings.findUnique({ where: { id: APP_SETTINGS_ID } });
     if (!s) {
@@ -575,7 +1404,7 @@ app.get('/api/settings', async (req, res) => {
     res.status(500).json({ error: 'Failed to get settings' });
   }
 });
-app.patch('/api/settings', async (req, res) => {
+app.patch('/api/settings', ...authAndAdmin, async (req, res) => {
   try {
     const { theme } = req.body;
     if (theme !== undefined && theme !== 'dark' && theme !== 'light')
@@ -601,7 +1430,7 @@ app.patch('/api/settings', async (req, res) => {
 // ---------- Prompts ----------
 const VALID_PROMPT_TYPES = ['system', 'first_message', 'media_analysis', 'score'];
 
-app.get('/api/prompts/default-score', async (_req, res) => {
+app.get('/api/prompts/default-score', ...authAndOrg, async (_req, res) => {
   try {
     const content = getDefaultScorePrompt();
     res.json({ content });
@@ -611,7 +1440,7 @@ app.get('/api/prompts/default-score', async (_req, res) => {
   }
 });
 
-app.get('/api/prompts', async (req, res) => {
+app.get('/api/prompts', ...authAndOrg, async (req, res) => {
   try {
     const type = req.query.type;
     const active = req.query.active;
@@ -621,6 +1450,16 @@ app.get('/api/prompts', async (req, res) => {
     if (active === 'true') where.isActive = true;
     if (active === 'false') where.isActive = false;
     if (language !== undefined && language !== '') where.language = language || null;
+    if (req.accessLevel === 'member') {
+      const locFilter = req.locationIds.length > 0
+        ? [{ locationId: { in: req.locationIds } }]
+        : [];
+      where.OR = [
+        ...locFilter,
+        { organizationId: req.orgId, locationId: null },
+        { organizationId: null, locationId: null },
+      ];
+    }
     const list = await prisma.prompt.findMany({ where, orderBy: { createdAt: 'desc' } });
     res.json(list);
   } catch (err) {
@@ -630,7 +1469,7 @@ app.get('/api/prompts', async (req, res) => {
 });
 
 // Get the current (active) prompts grouped by type → language for the UI
-app.get('/api/prompts/current', async (req, res) => {
+app.get('/api/prompts/current', ...authAndOrg, async (req, res) => {
   try {
     const prompts = await prisma.prompt.findMany({
       where: { isActive: true },
@@ -650,7 +1489,7 @@ app.get('/api/prompts/current', async (req, res) => {
 });
 
 // Get version history for a specific prompt (all ancestors + descendants in chain)
-app.get('/api/prompts/:id/history', async (req, res) => {
+app.get('/api/prompts/:id/history', ...authAndOrg, async (req, res) => {
   try {
     const prompt = await prisma.prompt.findUnique({ where: { id: req.params.id } });
     if (!prompt) return res.status(404).json({ error: 'Prompt not found' });
@@ -688,7 +1527,7 @@ app.get('/api/prompts/:id/history', async (req, res) => {
   }
 });
 
-app.get('/api/prompts/:id', async (req, res) => {
+app.get('/api/prompts/:id', ...authAndOrg, async (req, res) => {
   try {
     const p = await prisma.prompt.findUnique({ where: { id: req.params.id } });
     if (!p) return res.status(404).json({ error: 'Prompt not found' });
@@ -699,9 +1538,9 @@ app.get('/api/prompts/:id', async (req, res) => {
   }
 });
 
-app.post('/api/prompts', async (req, res) => {
+app.post('/api/prompts', ...authAndOrg, async (req, res) => {
   try {
-    const { type, name, language, content, isActive, organizationId, companyId, clientId, caseId } = req.body;
+    const { type, name, language, content, isActive, organizationId, locationId, clientId, caseId } = req.body;
     if (!type || !VALID_PROMPT_TYPES.includes(type))
       return res.status(400).json({ error: 'type must be one of: ' + VALID_PROMPT_TYPES.join(', ') });
     if (!name || !String(name).trim())
@@ -716,7 +1555,7 @@ app.post('/api/prompts', async (req, res) => {
         content: String(content).trim(),
         isActive: isActive !== undefined ? Boolean(isActive) : true,
         organizationId: organizationId || null,
-        companyId: companyId || null,
+        locationId: locationId || null,
         clientId: clientId || null,
         caseId: caseId || null,
       },
@@ -729,7 +1568,7 @@ app.post('/api/prompts', async (req, res) => {
 });
 
 // PATCH = create a NEW version (old becomes inactive, new one inherits)
-app.patch('/api/prompts/:id', async (req, res) => {
+app.patch('/api/prompts/:id', ...authAndOrg, async (req, res) => {
   try {
     const existing = await prisma.prompt.findUnique({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: 'Prompt not found' });
@@ -756,7 +1595,7 @@ app.patch('/api/prompts/:id', async (req, res) => {
           isActive: true,
           parentId: existing.id,
           organizationId: existing.organizationId,
-          companyId: existing.companyId,
+          locationId: existing.locationId,
           clientId: existing.clientId,
           caseId: existing.caseId,
         },
@@ -775,7 +1614,7 @@ app.patch('/api/prompts/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/prompts/:id', async (req, res) => {
+app.delete('/api/prompts/:id', ...authAndOrg, async (req, res) => {
   try {
     await prisma.prompt.update({ where: { id: req.params.id }, data: { isActive: false } });
     res.status(204).send();
@@ -812,7 +1651,7 @@ function cleanupFiles(...paths) {
 }
 
 // --- YouTube URL analysis ---
-app.post('/api/analyze-video', async (req, res) => {
+app.post('/api/analyze-video', ...authAndOrg, async (req, res) => {
   try {
     const { youtubeUrl, promptId } = req.body;
 
@@ -846,7 +1685,7 @@ app.post('/api/analyze-video', async (req, res) => {
 });
 
 // --- Uploaded video analysis (video already compressed client-side to 640x480) ---
-app.post('/api/analyze-video/upload', upload.single('video'), async (req, res) => {
+app.post('/api/analyze-video/upload', ...authAndOrg, upload.single('video'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No video file uploaded' });
 
@@ -888,7 +1727,7 @@ app.post('/api/analyze-video/upload', upload.single('video'), async (req, res) =
 });
 
 // List past analyses
-app.get('/api/video-analyses', async (req, res) => {
+app.get('/api/video-analyses', ...authAndOrg, async (req, res) => {
   try {
     const list = await prisma.videoAnalysis.findMany({ orderBy: { createdAt: 'desc' }, take: 50 });
     res.json(list);
@@ -899,7 +1738,7 @@ app.get('/api/video-analyses', async (req, res) => {
 });
 
 // Get one analysis
-app.get('/api/video-analyses/:id', async (req, res) => {
+app.get('/api/video-analyses/:id', ...authAndOrg, async (req, res) => {
   try {
     const a = await prisma.videoAnalysis.findUnique({ where: { id: req.params.id } });
     if (!a) return res.status(404).json({ error: 'Analysis not found' });
@@ -911,10 +1750,13 @@ app.get('/api/video-analyses/:id', async (req, res) => {
 });
 
 // ---------- Simulations (call history) ----------
-app.get('/api/simulations', async (req, res) => {
+app.get('/api/simulations', ...authAndOrg, async (req, res) => {
   try {
     const caseId = req.query.caseId;
     const where = caseId ? { caseId } : {};
+    if (req.accessLevel === 'member') {
+      where.case = req.locationIds?.length > 0 ? { locationId: { in: req.locationIds } } : { id: '__none__' };
+    }
     const list = await prisma.simulation.findMany({
       where,
       orderBy: { createdAt: 'desc' },
@@ -959,7 +1801,7 @@ app.get('/api/simulations', async (req, res) => {
 });
 
 // ---------- Presigned URL for recording playback (must be before generic :id) ----------
-app.get('/api/simulations/:id/recording-url', async (req, res) => {
+app.get('/api/simulations/:id/recording-url', ...authAndOrg, async (req, res) => {
   try {
     const s = await prisma.simulation.findUnique({ where: { id: req.params.id } });
     if (!s) return res.status(404).json({ error: 'Simulation not found' });
@@ -982,7 +1824,7 @@ app.get('/api/simulations/:id/recording-url', async (req, res) => {
   }
 });
 
-app.get('/api/simulations/:id', async (req, res) => {
+app.get('/api/simulations/:id', ...authAndOrg, async (req, res) => {
   try {
     let s = await prisma.simulation.findUnique({
       where: { id: req.params.id },
@@ -1163,8 +2005,10 @@ app.post('/api/simulations/:id/video', upload.single('video'), async (req, res) 
 // ---------- Sim: signed URL for React SDK (agent + dynamic vars) ----------
 app.post('/api/sim/signed-url', async (req, res) => {
   try {
-    const { caseId } = req.body || {};
+    const { caseId, stage } = req.body || {};
     if (!caseId || typeof caseId !== 'string') return res.status(400).json({ error: 'caseId required' });
+
+    const stageNum = Math.max(1, Math.min(4, parseInt(stage, 10) || 1));
 
     const caseRecord = await prisma.case.findUnique({
       where: { id: caseId },
@@ -1185,12 +2029,34 @@ app.post('/api/sim/signed-url', async (req, res) => {
     let firstMessage = '';
     let primerMensaje = '';
     try {
-      const [sysPrompt, fmEn, fmEs] = await Promise.all([
-        prisma.prompt.findFirst({ where: { type: 'system', isActive: true }, orderBy: { updatedAt: 'desc' } }),
+      // Load stage-specific prompt from .txt file
+      const stagePromptText = loadStagePrompt(stageNum);
+      if (stagePromptText) {
+        depoPrompt = stagePromptText.replace('{{case_info}}', caseInfo);
+
+        // Inject previous stage summaries
+        if (stageNum > 1) {
+          const prevSims = await prisma.simulation.findMany({
+            where: { caseId, stage: { lt: stageNum }, stageSummary: { not: null } },
+            orderBy: { stage: 'asc' },
+          });
+          const summaryText = prevSims.length > 0
+            ? prevSims.map((s) => `[Stage ${s.stage} — ${STAGE_NAMES[s.stage] || 'Unknown'} Summary]\n${s.stageSummary}`).join('\n\n')
+            : 'No previous stage data available.';
+          depoPrompt = depoPrompt.replace('{{previous_stage_summary}}', summaryText);
+        } else {
+          depoPrompt = depoPrompt.replace('{{previous_stage_summary}}', 'This is the first stage — no prior context.');
+        }
+      } else {
+        // Fallback to DB prompt if stage file not found
+        const sysPrompt = await prisma.prompt.findFirst({ where: { type: 'system', isActive: true }, orderBy: { updatedAt: 'desc' } });
+        depoPrompt = sysPrompt?.content || 'No system prompt configured.';
+      }
+
+      const [fmEn, fmEs] = await Promise.all([
         prisma.prompt.findFirst({ where: { type: 'first_message', isActive: true, OR: [{ language: 'en' }, { language: null }] }, orderBy: { updatedAt: 'desc' } }),
         prisma.prompt.findFirst({ where: { type: 'first_message', isActive: true, language: 'es' }, orderBy: { updatedAt: 'desc' } }),
       ]);
-      depoPrompt = sysPrompt?.content || 'No system prompt configured.';
       firstMessage = fmEn?.content || 'Hello, I will be conducting your deposition practice today.';
       primerMensaje = fmEs?.content || '';
     } catch (e) {
@@ -1216,15 +2082,29 @@ app.post('/api/sim/signed-url', async (req, res) => {
     const { signed_url: signedUrl } = await elevenRes.json();
     if (!signedUrl) return res.status(502).json({ error: 'No signed_url in response' });
 
+    // Resolve which client is running this sim (from auth if available, else case primary client)
+    let simClientId = caseRecord.clientId;
+    const simAuth = typeof req.auth === 'function' ? req.auth() : req.auth;
+    const authUserId = simAuth?.userId;
+    if (authUserId) {
+      const linkedClient = await prisma.client.findFirst({
+        where: { clerkUserId: authUserId },
+        select: { id: true },
+      });
+      if (linkedClient) simClientId = linkedClient.id;
+    }
+
     const dynamicVariables = {
       depo_prompt: depoPrompt,
       first_message: firstMessage,
       primer_mensaje: primerMensaje,
       case_id: caseId,
       case_info: caseInfo,
+      stage: String(stageNum),
+      client_id: simClientId,
     };
 
-    res.json({ signedUrl, dynamicVariables, case: { name, caseNumber, firstName, lastName } });
+    res.json({ signedUrl, dynamicVariables, stage: stageNum, case: { name, caseNumber, firstName, lastName } });
   } catch (err) {
     console.error('POST /api/sim/signed-url', err);
     res.status(500).json({ error: err.message || 'Server error' });
@@ -1237,7 +2117,7 @@ app.get('/api/sim/:caseId', (req, res) => {
 });
 
 // ---------- AI Coach Chat (simulation analysis & deposition coaching) ----------
-app.post('/api/chat', async (req, res) => {
+app.post('/api/chat', ...authAndOrg, async (req, res) => {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return res.status(500).json({ error: 'OPENAI_API_KEY not set' });
@@ -1327,7 +2207,7 @@ ${simContext}`,
 });
 
 // ---------- AI Coach for Prompt Adjustment (works on any prompt type) ----------
-app.post('/api/chat/prompt-coach', async (req, res) => {
+app.post('/api/chat/prompt-coach', ...authAndOrg, async (req, res) => {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return res.status(500).json({ error: 'OPENAI_API_KEY not set' });
@@ -1389,7 +2269,7 @@ Be concise. When suggesting changes, provide the full revised prompt so the user
 });
 
 // ---------- Translate first_message to all languages ----------
-app.post('/api/prompts/translate-all', async (req, res) => {
+app.post('/api/prompts/translate-all', ...authAndOrg, async (req, res) => {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return res.status(500).json({ error: 'OPENAI_API_KEY not set' });
@@ -1467,7 +2347,7 @@ app.post('/api/prompts/translate-all', async (req, res) => {
                 isActive: true,
                 parentId: existing.id,
                 organizationId: existing.organizationId,
-                companyId: existing.companyId,
+                locationId: existing.locationId,
                 clientId: existing.clientId,
                 caseId: existing.caseId,
               },
@@ -1506,6 +2386,232 @@ app.post('/api/prompts/translate-all', async (req, res) => {
   } catch (err) {
     console.error('POST /api/prompts/translate-all', err);
     res.status(500).json({ error: err.message || 'Translation failed' });
+  }
+});
+
+// ---------- Stage system: helpers ----------
+const STAGE_FILES = {
+  1: 'stage-1-background.txt',
+  2: 'stage-2-accident.txt',
+  3: 'stage-3-medical.txt',
+  4: 'stage-4-treatment.txt',
+};
+
+const STAGE_NAMES = {
+  1: 'Background & Employment',
+  2: 'Accident & Aftermath',
+  3: 'Medical History & Treatment Discovery',
+  4: 'Treatment Details & Current Condition',
+};
+
+function loadStagePrompt(stageNum) {
+  const file = STAGE_FILES[stageNum];
+  if (!file) return null;
+  const promptPath = path.join(__dirname, 'prompts', file);
+  try {
+    return fs.readFileSync(promptPath, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+// ---------- Stage: get completion status for a case ----------
+app.get('/api/cases/:id/stages', async (req, res) => {
+  try {
+    const caseId = req.params.id;
+    const caseRecord = await prisma.case.findUnique({ where: { id: caseId } });
+    if (!caseRecord) return res.status(404).json({ error: 'Case not found' });
+
+    const sims = await prisma.simulation.findMany({
+      where: { caseId, stage: { not: null } },
+      orderBy: [{ stage: 'asc' }, { createdAt: 'desc' }],
+    });
+
+    const stageMap = {};
+    for (const s of sims) {
+      if (!stageMap[s.stage]) stageMap[s.stage] = s;
+    }
+
+    let currentStage = 1;
+    const stages = [1, 2, 3, 4].map((n) => {
+      const sim = stageMap[n];
+      if (!sim) {
+        const prevCompleted = n === 1 || (stageMap[n - 1] && stageMap[n - 1].stageStatus === 'completed');
+        return {
+          stage: n,
+          name: STAGE_NAMES[n],
+          status: prevCompleted ? 'available' : 'locked',
+          simulationId: null,
+          score: null,
+          retakeRecommended: false,
+        };
+      }
+      if (sim.stageStatus === 'completed') {
+        if (n + 1 <= 4 && !stageMap[n + 1]) currentStage = n + 1;
+      } else {
+        currentStage = n;
+      }
+      return {
+        stage: n,
+        name: STAGE_NAMES[n],
+        status: sim.stageStatus || 'completed',
+        simulationId: sim.id,
+        score: sim.score,
+        retakeRecommended: sim.retakeRecommended,
+      };
+    });
+
+    if (stageMap[4]?.stageStatus === 'completed') currentStage = 4;
+
+    res.json({ stages, currentStage });
+  } catch (err) {
+    console.error('GET /api/cases/:id/stages', err);
+    res.status(500).json({ error: 'Failed to get stages' });
+  }
+});
+
+// ---------- Stage: generate summary after stage completion ----------
+app.post('/api/cases/:id/stage-summary', async (req, res) => {
+  try {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'OPENAI_API_KEY not set' });
+
+    const { simulationId } = req.body;
+    if (!simulationId) return res.status(400).json({ error: 'simulationId is required' });
+
+    const sim = await prisma.simulation.findUnique({
+      where: { id: simulationId },
+      include: { case: { include: { client: true } } },
+    });
+    if (!sim) return res.status(404).json({ error: 'Simulation not found' });
+
+    const transcript = Array.isArray(sim.transcript)
+      ? sim.transcript.map((t) => `${t.role === 'agent' ? 'Q' : 'A'}: ${t.message || t.original_message || ''}`).join('\n')
+      : '';
+
+    if (!transcript) return res.status(400).json({ error: 'No transcript to summarize' });
+
+    const client = sim.case?.client;
+    const stageName = STAGE_NAMES[sim.stage] || `Stage ${sim.stage}`;
+
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `You are summarizing a deposition simulation stage for the AI conducting the next stage. Extract ONLY factual information the deponent confirmed. Be concise. Format as bullet points grouped by category.
+
+Include:
+- Key biographical facts confirmed (name, DOB, address, employment, etc.)
+- Key case details confirmed
+- Any notable admissions, inconsistencies, or areas of concern
+- Any topics the deponent refused to answer or said "I don't know"
+- Prior injuries or medical history mentioned (if any)
+
+Do NOT include commentary or coaching advice. Only confirmed facts and notable responses.`,
+          },
+          {
+            role: 'user',
+            content: `Summarize this ${stageName} deposition stage transcript for the deponent "${client?.firstName || ''} ${client?.lastName || ''}":\n\n${transcript}`,
+          },
+        ],
+        temperature: 0.3,
+      }),
+      signal: AbortSignal.timeout(60_000),
+    });
+
+    const data = await resp.json();
+    if (data.error) return res.status(502).json({ error: 'OpenAI: ' + (data.error.message || JSON.stringify(data.error)) });
+
+    const summary = data.choices?.[0]?.message?.content || '';
+
+    await prisma.simulation.update({
+      where: { id: simulationId },
+      data: { stageSummary: summary },
+    });
+
+    res.json({ ok: true, summary });
+  } catch (err) {
+    console.error('POST /api/cases/:id/stage-summary', err);
+    res.status(500).json({ error: err.message || 'Failed to generate summary' });
+  }
+});
+
+// ---------- Stage: evaluate whether retake is recommended ----------
+app.post('/api/simulations/:id/evaluate-stage', async (req, res) => {
+  try {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'OPENAI_API_KEY not set' });
+
+    const sim = await prisma.simulation.findUnique({
+      where: { id: req.params.id },
+      include: { case: { include: { client: true } } },
+    });
+    if (!sim) return res.status(404).json({ error: 'Simulation not found' });
+
+    const transcript = Array.isArray(sim.transcript)
+      ? sim.transcript.map((t) => `${t.role === 'agent' ? 'Q' : 'A'}: ${t.message || t.original_message || ''}`).join('\n')
+      : '';
+
+    const stageName = STAGE_NAMES[sim.stage] || `Stage ${sim.stage}`;
+
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `You evaluate whether a deposition simulation stage should be retaken. Consider:
+1. Did the deponent answer enough questions to cover the stage topics?
+2. Were there too many "I don't know" or "I don't remember" responses?
+3. Was coverage of required topics sufficient?
+4. Did the deponent show major issues (excessive volunteering, guessing, emotional responses)?
+5. Was the session too short to meaningfully cover the material?
+
+Return ONLY a JSON object: { "retakeRecommended": boolean, "reason": "brief explanation" }
+Recommend retake ONLY if there are significant gaps or performance issues. A score under 40 or very short session (< 5 min of substantive Q&A) should generally trigger a retake recommendation.`,
+          },
+          {
+            role: 'user',
+            content: `Stage: ${stageName}\nScore: ${sim.score != null ? sim.score : 'N/A'}\nDuration: ${sim.callDurationSecs ? Math.floor(sim.callDurationSecs / 60) + 'm' : 'N/A'}\n\nTranscript:\n${transcript || '(No transcript available)'}`,
+          },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.3,
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    const data = await resp.json();
+    if (data.error) return res.status(502).json({ error: 'OpenAI: ' + (data.error.message || JSON.stringify(data.error)) });
+
+    let result;
+    try {
+      result = JSON.parse(data.choices?.[0]?.message?.content || '{}');
+    } catch {
+      result = { retakeRecommended: false, reason: 'Could not parse evaluation.' };
+    }
+
+    const retakeRecommended = Boolean(result.retakeRecommended);
+    const reason = String(result.reason || '');
+
+    await prisma.simulation.update({
+      where: { id: sim.id },
+      data: {
+        retakeRecommended,
+        stageStatus: 'completed',
+      },
+    });
+
+    res.json({ retakeRecommended, reason });
+  } catch (err) {
+    console.error('POST /api/simulations/:id/evaluate-stage', err);
+    res.status(500).json({ error: err.message || 'Evaluation failed' });
   }
 });
 

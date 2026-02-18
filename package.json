@@ -17,6 +17,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.990.0",
     "@aws-sdk/s3-request-presigner": "^3.990.0",
+    "@clerk/express": "^1.7.71",
     "@google/genai": "^1.0.0",
     "@prisma/client": "^5.22.0",
     "cors": "^2.8.5",

@@ -1,9 +1,54 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useConversation } from '@elevenlabs/react';
 import { uploadRecordingToS3 } from './lib/s3MultipartUpload';
+import { useT, useLangPrefix } from './i18n/LanguageContext';
 
 const API = '/api';
+
+const STAGE_NAMES = [
+  'Background & Employment',
+  'Accident & Aftermath',
+  'Medical History',
+  'Treatment & Condition',
+];
+
+/* ===== Mini Stage Donuts for SimPage ===== */
+function SimStageProgress({ currentStage, stageData }) {
+  const { t } = useT();
+  return (
+    <div className="stage-progress stage-progress-sim">
+      {[1, 2, 3, 4].map((n, i) => {
+        const stage = stageData?.stages?.find((s) => s.stage === n);
+        const isCompleted = stage?.status === 'completed';
+        const isCurrent = n === currentStage;
+        const isRetake = stage?.retakeRecommended;
+        const isLocked = !isCompleted && !isCurrent && n > currentStage;
+
+        let stateClass = 'stage-donut-locked';
+        if (isCompleted && isRetake) stateClass = 'stage-donut-retake';
+        else if (isCompleted) stateClass = 'stage-donut-completed';
+        else if (isCurrent) stateClass = 'stage-donut-active';
+
+        return (
+          <div key={n} className="stage-donut-wrap">
+            {i > 0 && <div className={`stage-connector${n <= currentStage || isCompleted ? ' stage-connector-active' : ''}`} />}
+            <div className={`stage-donut ${stateClass}`}>
+              {isCompleted && !isRetake ? (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="stage-donut-check">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              ) : (
+                <span className="stage-donut-num">{n}</span>
+              )}
+            </div>
+            <span className="stage-label">{t(`sim.stage.short${n}`)}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 /* ===== Circular audio visualizer (wavelength indicator) ===== */
 function AudioVisualizer({ getInputData, getOutputData, isSpeaking }) {
@@ -55,10 +100,9 @@ function AudioVisualizer({ getInputData, getOutputData, isSpeaking }) {
           const outputVal = hasOutput ? outputData[outputIdx] / 255 : 0;
           combined = Math.max(inputVal * 0.6, outputVal) * (isSpeaking ? 1.2 : 0.8);
         } else {
-          // Idle animation — stronger pulse when agent is speaking
           const base = 0.15 + 0.08 * Math.sin(t * 2 + i * 0.2);
           const speakingBoost = isSpeaking ? 0.4 + 0.25 * Math.sin(t * 3) : 0;
-          combined = (base + speakingBoost);
+          combined = base + speakingBoost;
         }
         prevInput[i] = prevInput[i] * smoothing + combined * (1 - smoothing);
         prevOutput[i] = prevOutput[i] * smoothing + combined * (1 - smoothing);
@@ -114,14 +158,22 @@ function AudioVisualizer({ getInputData, getOutputData, isSpeaking }) {
 }
 
 function SimPage() {
-  const { caseId } = useParams();
+  const { caseId, stage: stageParam } = useParams();
+  const navigate = useNavigate();
+  const { t } = useT();
+  const prefix = useLangPrefix();
+  const stageNum = Math.max(1, Math.min(4, parseInt(stageParam, 10) || 1));
+
   const [config, setConfig] = useState(null);
   const [configError, setConfigError] = useState(null);
   const [phase, setPhase] = useState('consent'); // consent | ready | calling | postcall
   const [cameraStream, setCameraStream] = useState(null);
   const [cameraError, setCameraError] = useState(null);
   const [postCallMessage, setPostCallMessage] = useState('');
-  const [messages, setMessages] = useState([]); // { role: 'user'|'agent', text: string }[]
+  const [messages, setMessages] = useState([]);
+  const [stageData, setStageData] = useState(null);
+  const [stageEval, setStageEval] = useState(null); // { retakeRecommended, reason }
+  const [evaluating, setEvaluating] = useState(false);
   const messagesEndRef = useRef(null);
 
   const mediaRecorder = useRef(null);
@@ -130,13 +182,13 @@ function SimPage() {
   const conversationIdRef = useRef(null);
   const conversationRef = useRef(null);
 
-  // Fetch signed URL + config when caseId is set
+  // Fetch signed URL + config when caseId/stage is set
   useEffect(() => {
     if (!caseId) return;
     fetch(API + '/sim/signed-url', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ caseId }),
+      body: JSON.stringify({ caseId, stage: stageNum }),
     })
       .then((r) => r.json())
       .then((d) => {
@@ -144,31 +196,79 @@ function SimPage() {
         setConfig(d);
       })
       .catch((err) => setConfigError(err.message));
+  }, [caseId, stageNum]);
+
+  // Fetch stage progress
+  useEffect(() => {
+    if (!caseId) return;
+    fetch(`${API}/cases/${caseId}/stages`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then(setStageData)
+      .catch(() => {});
   }, [caseId]);
 
-  const handleConnect = useCallback((props) => {
-    if (props?.conversationId) conversationIdRef.current = props.conversationId;
-    setPhase('calling');
-    setMessages([]);
-    recordedChunks.current = [];
-    if (pipVideoRef.current) pipVideoRef.current.srcObject = cameraStream;
-    if (cameraStream) {
-      try {
-        const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
-          ? 'video/webm;codecs=vp9'
-          : MediaRecorder.isTypeSupported('video/webm')
-            ? 'video/webm'
-            : 'video/mp4';
-        mediaRecorder.current = new MediaRecorder(cameraStream, { mimeType });
-        mediaRecorder.current.ondataavailable = (e) => {
-          if (e.data && e.data.size > 0) recordedChunks.current.push(e.data);
-        };
-        mediaRecorder.current.start(1000); // 1s chunks so short calls get data
-      } catch (err) {
-        console.warn('[DepoSim] MediaRecorder start failed:', err);
+  const handleConnect = useCallback(
+    (props) => {
+      if (props?.conversationId) conversationIdRef.current = props.conversationId;
+      setPhase('calling');
+      setMessages([]);
+      recordedChunks.current = [];
+      if (pipVideoRef.current) pipVideoRef.current.srcObject = cameraStream;
+      if (cameraStream) {
+        try {
+          const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+            ? 'video/webm;codecs=vp9'
+            : MediaRecorder.isTypeSupported('video/webm')
+              ? 'video/webm'
+              : 'video/mp4';
+          mediaRecorder.current = new MediaRecorder(cameraStream, { mimeType });
+          mediaRecorder.current.ondataavailable = (e) => {
+            if (e.data && e.data.size > 0) recordedChunks.current.push(e.data);
+          };
+          mediaRecorder.current.start(1000);
+        } catch (err) {
+          console.warn('[DepoSim] MediaRecorder start failed:', err);
+        }
       }
+    },
+    [cameraStream],
+  );
+
+  const runStageEvaluation = useCallback(async () => {
+    setEvaluating(true);
+    try {
+      // Wait a bit for the webhook to process the simulation
+      await new Promise((r) => setTimeout(r, 5000));
+
+      // Find the latest simulation for this case + stage
+      const simsResp = await fetch(`${API}/simulations?caseId=${caseId}`);
+      const sims = simsResp.ok ? await simsResp.json() : [];
+      const stageSim = sims.find((s) => s.stage === stageNum);
+
+      if (stageSim) {
+        // Generate stage summary for next stage
+        await fetch(`${API}/cases/${caseId}/stage-summary`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ simulationId: stageSim.id }),
+        }).catch(() => {});
+
+        // Evaluate whether retake is recommended
+        const evalResp = await fetch(`${API}/simulations/${stageSim.id}/evaluate-stage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        if (evalResp.ok) {
+          const evalData = await evalResp.json();
+          setStageEval(evalData);
+        }
+      }
+    } catch (err) {
+      console.warn('[DepoSim] Stage evaluation failed:', err);
+    } finally {
+      setEvaluating(false);
     }
-  }, [cameraStream]);
+  }, [caseId, stageNum]);
 
   const handleDisconnect = useCallback(() => {
     if (mediaRecorder.current && mediaRecorder.current.state !== 'inactive') {
@@ -185,31 +285,27 @@ function SimPage() {
     const useCaseId = !convId && caseId;
 
     if (chunks.length > 0 && (convId || useCaseId)) {
-      console.log('[DepoSim] Uploading recording:', chunks.length, 'chunks,', Math.round(chunks.reduce((a, c) => a + c.size, 0) / 1024), 'KB');
       setPostCallMessage('uploading');
       const blob = new Blob(chunks, {
-        type: (mediaRecorder.current?.mimeType) || 'video/webm',
+        type: mediaRecorder.current?.mimeType || 'video/webm',
       });
 
       uploadRecordingToS3(blob, {
         conversationId: convId || undefined,
         caseId,
-        onProgress: ({ phase, pct }) =>
-          setPostCallMessage(phase === 'analyzing' ? 'analyzing' : `uploading ${Math.round(pct)}%`),
+        onProgress: ({ phase: p, pct }) => setPostCallMessage(p === 'analyzing' ? 'analyzing' : `uploading ${Math.round(pct)}%`),
       })
         .then((d) => {
-          if (d.ok) {
-            setPostCallMessage('complete');
-          } else {
-            setPostCallMessage(`error: ${d.error || 'Upload failed'}`);
-          }
+          setPostCallMessage(d.ok ? 'complete' : `error: ${d.error || 'Upload failed'}`);
         })
         .catch((err) => setPostCallMessage(`error: ${err.message}`));
     } else {
-      console.warn('[DepoSim] No recording to upload:', { chunks: chunks.length, convId: !!convId, useCaseId: !!useCaseId });
       setPostCallMessage('complete');
     }
-  }, [cameraStream, caseId]);
+
+    // Run stage evaluation after call ends
+    runStageEvaluation();
+  }, [cameraStream, caseId, runStageEvaluation]);
 
   useEffect(() => {
     if ((phase === 'ready' || phase === 'calling') && cameraStream && pipVideoRef.current) {
@@ -219,7 +315,6 @@ function SimPage() {
 
   const handleMessage = useCallback((event) => {
     if (!event) return;
-    // Normalized format from React SDK: { source: 'ai'|'user', role, message }
     if (event.source === 'ai' && event.role === 'agent' && event.message) {
       setMessages((prev) => [...prev.filter((m) => m.role !== 'agent_streaming'), { role: 'agent', text: event.message }]);
       return;
@@ -228,7 +323,6 @@ function SimPage() {
       setMessages((prev) => [...prev.filter((m) => m.role !== 'user_tentative'), { role: 'user', text: event.message }]);
       return;
     }
-    // Raw WebSocket event format
     if (event.type === 'user_transcript' && event.user_transcription_event?.user_transcript) {
       setMessages((prev) => [...prev.filter((m) => m.role !== 'user_tentative'), { role: 'user', text: event.user_transcription_event.user_transcript }]);
     }
@@ -267,7 +361,7 @@ function SimPage() {
       setMessages((prev) => {
         const rest = prev.filter((m) => m.role !== 'agent_streaming');
         const last = prev[prev.length - 1];
-        const append = part.type === 'start' ? part.text : (last?.role === 'agent_streaming' ? last.text + part.text : part.text);
+        const append = part.type === 'start' ? part.text : last?.role === 'agent_streaming' ? last.text + part.text : part.text;
         return [...rest, { role: 'agent_streaming', text: append }];
       });
     }
@@ -299,7 +393,6 @@ function SimPage() {
       });
       setCameraStream(stream);
       setPhase('ready');
-      // Record that the client granted camera/mic consent
       if (caseId) {
         fetch(`${API}/cases/${caseId}/record-consent`, { method: 'POST' }).catch(() => {});
       }
@@ -324,13 +417,7 @@ function SimPage() {
             language: 'en',
           },
           conversation: {
-            // Explicitly enable transcript/response events (not all enabled by default)
-            client_events: [
-              'user_transcript',
-              'tentative_user_transcript',
-              'agent_response',
-              'agent_chat_response_part',
-            ],
+            client_events: ['user_transcript', 'tentative_user_transcript', 'agent_response', 'agent_chat_response_part'],
           },
         },
         dynamicVariables: config.dynamicVariables,
@@ -350,7 +437,7 @@ function SimPage() {
     return (
       <div className="sim-page">
         <div className="sim-consent">
-          <p>No case selected. <Link to="/">Back to app</Link></p>
+          <p>{t('common.noCase')} <Link to={`${prefix}/cases`}>{t('common.backToApp')}</Link></p>
         </div>
       </div>
     );
@@ -362,7 +449,7 @@ function SimPage() {
         <div className="sim-consent">
           <h1>DepoSim</h1>
           <p style={{ color: '#ed4956' }}>{configError}</p>
-          <Link to="/" className="sim-btn">Back to app</Link>
+          <Link to={`${prefix}/cases`} className="sim-btn">{t('common.backToApp')}</Link>
         </div>
       </div>
     );
@@ -373,35 +460,37 @@ function SimPage() {
     return (
       <div className="sim-page sim-page-dark">
         <div className="sim-consent">
-          <a href="https://deposim.com" target="_blank" rel="noopener noreferrer"><img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="sim-logo" /></a>
-          <h1>Prepare for Your Simulation</h1>
-          <p className="sim-subtitle">We need camera and microphone access for body language analysis during the simulated deposition.</p>
+          <a href="https://deposim.com" target="_blank" rel="noopener noreferrer">
+            <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="sim-logo" />
+          </a>
+          <SimStageProgress currentStage={stageNum} stageData={stageData} />
+          <h1>{t('sim.consent.title')}</h1>
+          <p className="sim-subtitle">{t(`sim.stage.name${stageNum}`)}</p>
+          <p className="sim-subtitle">{t('sim.consent.subtitle')}</p>
           <div className="sim-features">
             <div className="sim-feature">
               <span className="sim-feat-icon">📋</span>
-              <span><strong>Body Language</strong> — We analyze posture, gestures, and stress indicators.</span>
+              <span><strong>{t('sim.consent.bodyLanguage')}</strong> — {t('sim.consent.bodyLanguageDesc')}</span>
             </div>
             <div className="sim-feature">
               <span className="sim-feat-icon">📊</span>
-              <span><strong>Post-Session Report</strong> — Detailed breakdown after the simulation.</span>
+              <span><strong>{t('sim.consent.report')}</strong> — {t('sim.consent.reportDesc')}</span>
             </div>
           </div>
           {cameraError === 'denied' && (
             <div className="sim-camera-denied">
-              <strong>Camera blocked</strong>
+              <strong>{t('sim.consent.cameraBlocked')}</strong>
               <ol>
-                <li>Click the lock icon in your address bar</li>
-                <li>Set Camera to Allow</li>
-                <li>Reload this page</li>
+                <li>{t('sim.consent.cameraBlockedStep1')}</li>
+                <li>{t('sim.consent.cameraBlockedStep2')}</li>
+                <li>{t('sim.consent.cameraBlockedStep3')}</li>
               </ol>
-              <button onClick={() => window.location.reload()}>Reload Page</button>
+              <button onClick={() => window.location.reload()}>{t('sim.consent.reloadPage')}</button>
             </div>
           )}
-          {cameraError && cameraError !== 'denied' && (
-            <p style={{ color: '#ed4956', fontSize: 14 }}>{cameraError}</p>
-          )}
+          {cameraError && cameraError !== 'denied' && <p style={{ color: '#ed4956', fontSize: 14 }}>{cameraError}</p>}
           <button className="sim-btn sim-btn-primary" onClick={requestCamera} disabled={!config}>
-            Enable Camera & Microphone
+            {t('sim.consent.enableCamera')}
           </button>
         </div>
       </div>
@@ -413,14 +502,17 @@ function SimPage() {
     return (
       <div className="sim-page sim-page-dark">
         <div className="sim-consent">
-          <a href="https://deposim.com" target="_blank" rel="noopener noreferrer"><img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="sim-logo" /></a>
-          <h1>Ready</h1>
-          <p className="sim-subtitle">Camera active. Tap below to start your simulated deposition.</p>
+          <a href="https://deposim.com" target="_blank" rel="noopener noreferrer">
+            <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="sim-logo" />
+          </a>
+          <SimStageProgress currentStage={stageNum} stageData={stageData} />
+          <h1>{t('sim.ready.title')}</h1>
+          <p className="sim-subtitle">{t('sim.ready.subtitle')}</p>
           <div className="sim-preview-wrap">
             <video ref={pipVideoRef} autoPlay muted playsInline />
           </div>
           <button className="sim-btn sim-btn-start sim-btn-primary" onClick={startCall}>
-            Start Simulation
+            {t('sim.ready.start')}
           </button>
         </div>
       </div>
@@ -432,14 +524,14 @@ function SimPage() {
     return (
       <div className="sim-page sim-calling">
         <div className="sim-header sim-header-centered">
-          <Link to="/" className="sim-back">← Back</Link>
+          <Link to={`${prefix}/cases`} className="sim-back">← {t('common.back')}</Link>
           <div className="sim-header-info">
             <span className="sim-deponent">
               {config?.case?.firstName != null && config?.case?.lastName != null
                 ? `${config.case.lastName}, ${config.case.firstName}`
                 : config?.case?.name || 'Deponent'}
             </span>
-            <span className="sim-case-num">#{config?.case?.caseNumber || '—'}</span>
+            <span className="sim-case-num">#{config?.case?.caseNumber || '—'} · {t(`sim.stage.short${stageNum}`)}</span>
           </div>
         </div>
 
@@ -450,22 +542,20 @@ function SimPage() {
             isSpeaking={conversation.isSpeaking}
           />
           <div className="sim-call-prompt">
-            <p>Speak normally — the AI opposing counsel will respond.</p>
-            <p className="sim-cta">When finished, tap End Call below.</p>
+            <p>{t('sim.calling.speak')}</p>
+            <p className="sim-cta">{t('sim.calling.finished')}</p>
           </div>
 
           <div className="sim-conversation-history">
-            <h4>Conversation</h4>
+            <h4>{t('sim.calling.conversation')}</h4>
             <div className="sim-messages">
-              {messages.length === 0 && (
-                <p className="sim-messages-empty">Messages will appear here as you speak.</p>
-              )}
+              {messages.length === 0 && <p className="sim-messages-empty">{t('sim.calling.messagesEmpty')}</p>}
               {messages.map((m, i) => (
                 <div
                   key={i}
                   className={`sim-msg sim-msg-${m.role}${m.role === 'user_tentative' || m.role === 'agent_streaming' ? ' sim-msg-streaming' : ''}`}
                 >
-                  <span className="sim-msg-role">{m.role === 'user' || m.role === 'user_tentative' ? 'You' : 'Counsel'}</span>
+                  <span className="sim-msg-role">{m.role === 'user' || m.role === 'user_tentative' ? t('sim.calling.you') : t('sim.calling.counsel')}</span>
                   <span className="sim-msg-text">
                     {m.text}
                     {(m.role === 'user_tentative' || m.role === 'agent_streaming') && <span className="sim-msg-cursor" />}
@@ -477,46 +567,91 @@ function SimPage() {
           </div>
 
           <button className="sim-btn-end" onClick={endCall}>
-            End Call & Upload
+            {t('sim.calling.endCall')}
           </button>
         </div>
 
-        {/* PiP camera */}
         <div className="sim-pip">
           <video ref={pipVideoRef} autoPlay muted playsInline style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }} />
-          <span className="sim-pip-label">You</span>
+          <span className="sim-pip-label">{t('sim.calling.you')}</span>
         </div>
       </div>
     );
   }
 
-  // Post-call
+  // Post-call with stage evaluation
+  const isLastStage = stageNum === 4;
+  const nextStage = stageNum + 1;
+  const currentStageName = t(`sim.stage.name${stageNum}`);
+  const nextStageName = nextStage <= 4 ? t(`sim.stage.name${nextStage}`) : '';
+
   return (
     <div className="sim-page">
       <div className="sim-postcall">
         <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="sim-logo" />
+        <SimStageProgress currentStage={stageNum} stageData={stageData} />
+
+        <div className="sim-postcall-status">{t('sim.stage.stageComplete', { name: currentStageName })}</div>
+
         <div className="sim-postcall-name">
           {config?.case?.firstName != null && config?.case?.lastName != null
             ? `${config.case.lastName}, ${config.case.firstName}`
             : config?.case?.name || 'Deponent'}
+          <span className="sim-postcall-case"> #{config?.case?.caseNumber || '—'}</span>
         </div>
-        <div className="sim-postcall-case">#{config?.case?.caseNumber || '—'}</div>
-        <div className="sim-postcall-status">Session Complete</div>
-        <div className="sim-postcall-body">
-          {(postCallMessage === 'uploading' || postCallMessage.startsWith('uploading ')) && (
-            <p>Uploading video for body language analysis… {postCallMessage.includes('%') ? postCallMessage : 'This may take a minute.'} Results will appear in your simulation detail.</p>
+
+        {(postCallMessage && postCallMessage !== 'complete') && (
+          <div className="sim-postcall-body">
+            {(postCallMessage === 'uploading' || postCallMessage.startsWith('uploading ')) && (
+              <p>{t('sim.postcall.uploading')}</p>
+            )}
+            {postCallMessage === 'analyzing' && <p>{t('sim.postcall.analyzing')}</p>}
+            {postCallMessage.startsWith('error:') && <p style={{ color: '#ed4956' }}>{postCallMessage}</p>}
+          </div>
+        )}
+
+        {/* Stage evaluation */}
+        {evaluating && (
+          <div className="sim-postcall-eval">
+            <p className="sim-postcall-eval-loading">{t('sim.stage.evaluating')}</p>
+          </div>
+        )}
+
+        {!evaluating && stageEval && stageEval.retakeRecommended && (
+          <div className="sim-postcall-eval sim-postcall-eval-retake">
+            <p className="sim-postcall-eval-reason">{t('sim.stage.retakeRecommended')}</p>
+            {stageEval.reason && <p className="sim-postcall-eval-detail">{stageEval.reason}</p>}
+          </div>
+        )}
+
+        {/* Navigation buttons */}
+        <div className="sim-postcall-actions">
+          {!isLastStage && (
+            <button
+              className="sim-btn sim-btn-primary sim-btn-continue"
+              onClick={() => navigate(`${prefix}/sim/${caseId}/stage/${nextStage}`)}
+            >
+              {t('sim.stage.continue', { name: nextStageName })}
+            </button>
           )}
-          {postCallMessage === 'analyzing' && (
-            <p>Upload complete. Analyzing video… This may take a few minutes for long recordings.</p>
+          {isLastStage && (
+            <div className="sim-postcall-all-complete">
+              <h2>{t('sim.stage.allComplete')}</h2>
+              <p>{t('sim.stage.allCompleteDesc')}</p>
+            </div>
           )}
-          {postCallMessage === 'complete' && (
-            <p>View your simulation results and analysis in the app. (Click below to view your simulation results in the case.)</p>
-          )}
-          {postCallMessage.startsWith('error:') && (
-            <p style={{ color: '#ed4956' }}>{postCallMessage}</p>
-          )}
+          <button
+            className="sim-btn-ghost"
+            onClick={() => {
+              window.location.href = `${prefix}/sim/${caseId}/stage/${stageNum}`;
+            }}
+          >
+            {t('sim.stage.retake', { name: currentStageName })}
+          </button>
+          <Link to={`${prefix}/cases`} className="sim-postcall-back-link">
+            {t('sim.postcall.backToCases')}
+          </Link>
         </div>
-        <Link to="/" className="sim-btn">Back to Cases — View Results</Link>
       </div>
     </div>
   );

@@ -11,82 +11,155 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+model User {
+  id             String   @id // Clerk user ID (e.g. "user_2x...")
+  email          String?
+  firstName      String?  @map("first_name")
+  lastName       String?  @map("last_name")
+  phone          String?
+  imageUrl       String?  @map("image_url")
+  language       String   @default("en") // 'en' | 'es'
+  role           String   @default("member") // 'super' | 'attorney' | 'member'
+  organizationId String?  @map("organization_id")
+  locationId     String?  @map("location_id")  // legacy single-location (deprecated; use UserLocation)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization  Organization?  @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  location      Location?      @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  userLocations UserLocation[]
+
+  @@map("users")
+}
+
 model Organization {
-  id        String   @id @default(cuid())
+  id        String   @id @default(uuid())
+  clerkOrgId String? @unique @map("clerk_org_id") // Clerk organization ID for lookup
   name      String
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  companies  Company[]
+  users      User[]
+  locations  Location[]
   clients    Client[]
   cases      Case[]
   brandings  Branding[] @relation("BrandingOrganization")
   prompts    Prompt[]
+  invites    Invite[]
 
   @@map("organizations")
 }
 
-model Company {
-  id             String   @id @default(cuid())
+model Location {
+  id             String   @id @default(uuid())
   organizationId String   @map("organization_id")
   name           String
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  clients     Client[]
-  cases       Case[]
-  brandings   Branding[]   @relation("BrandingCompany")
-  prompts     Prompt[]
+  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  users         User[]
+  userLocations UserLocation[]
+  clients       Client[]
+  cases         Case[]
+  brandings     Branding[]     @relation("BrandingLocation")
+  prompts       Prompt[]
 
-  @@map("companies")
+  @@map("locations")
+}
+
+model UserLocation {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  locationId String   @map("location_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  location Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, locationId])
+  @@map("user_locations")
+}
+
+model Invite {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  email          String?
+  role           String   @default("member")
+  code           String   @unique
+  locationIds    String[] @default([]) @map("location_ids")
+  usedBy         String?  @map("used_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  @@map("invites")
 }
 
 model Client {
-  id               String   @id @default(cuid())
-  organizationId   String   @map("organization_id")
-  companyId        String?  @map("company_id")
+  id               String   @id @default(uuid())
+  organizationId   String?  @map("organization_id") // optional – clients may not be in an org
+  locationId       String?  @map("location_id")
+  clerkUserId      String?  @unique @map("clerk_user_id") // Clerk user ID, set when client links account
+  externalId       String?  @unique @map("external_id")  // ID from external systems (CRM, intake, etc.)
   firstName        String   @map("first_name")
   lastName         String   @map("last_name")
   email            String?
   phone            String?
+  language          String   @default("en") // 'en' | 'es'
   consentCamera    Boolean  @default(false) @map("consent_camera")
   consentMicrophone Boolean @default(false) @map("consent_microphone")
   createdAt        DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @updatedAt @map("updated_at")
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  company     Company?     @relation(fields: [companyId], references: [id], onDelete: SetNull)
-  cases       Case[]
-  brandings   Branding[]   @relation("BrandingClient")
-  prompts     Prompt[]
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  location     Location?     @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  cases        Case[]
+  caseClients  CaseClient[]
+  simulations  Simulation[]
+  brandings    Branding[]   @relation("BrandingClient")
+  prompts      Prompt[]
 
   @@map("clients")
 }
 
 model Case {
-  id             String   @id @default(cuid())
+  id             String   @id @default(uuid())
   organizationId String?  @map("organization_id")
-  companyId      String?  @map("company_id")
+  locationId     String?  @map("location_id")
   clientId       String   @map("client_id")  // required – deponent info comes from client
+  name           String?  // display name for the case (e.g. "Smith v. Doe")
   caseNumber     String   @map("case_number")
   description    String
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
-  company      Company?     @relation(fields: [companyId], references: [id], onDelete: SetNull)
-  client       Client       @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  location     Location?     @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  client       Client        @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  caseClients  CaseClient[]
   simulations  Simulation[]
   prompts      Prompt[]
 
   @@map("cases")
 }
 
+model CaseClient {
+  id       String @id @default(uuid())
+  caseId   String @map("case_id")
+  clientId String @map("client_id")
+  role     String @default("deponent") // 'deponent' | 'observer'
+
+  case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@unique([caseId, clientId])
+  @@map("case_clients")
+}
+
 model Branding {
-  id             String  @id @default(cuid())
+  id             String  @id @default(uuid())
   organizationId  String? @map("organization_id")
-  companyId       String? @map("company_id")
+  locationId      String? @map("location_id")
   clientId       String? @map("client_id")
   accentColor     String  @default("#64d2ff") @map("accent_color")
   brandColor      String  @default("#0b0c10") @map("brand_color")
@@ -95,14 +168,14 @@ model Branding {
   updatedAt       DateTime @updatedAt @map("updated_at")
 
   organization Organization? @relation("BrandingOrganization", fields: [organizationId], references: [id], onDelete: Cascade)
-  company      Company?     @relation("BrandingCompany", fields: [companyId], references: [id], onDelete: Cascade)
-  client       Client?      @relation("BrandingClient", fields: [clientId], references: [id], onDelete: Cascade)
+  location     Location?     @relation("BrandingLocation", fields: [locationId], references: [id], onDelete: Cascade)
+  client       Client?       @relation("BrandingClient", fields: [clientId], references: [id], onDelete: Cascade)
 
   @@map("brandings")
 }
 
 model AppSettings {
-  id        String   @id @default(cuid())
+  id        String   @id @default(uuid())
   theme     String   @default("dark") // 'dark' | 'light'
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -118,7 +191,7 @@ enum PromptType {
 }
 
 model Prompt {
-  id             String     @id @default(cuid())
+  id             String     @id @default(uuid())
   type           PromptType
   name           String
   language       String?    // e.g. 'en', 'es' for first_message; null = language-agnostic
@@ -130,14 +203,14 @@ model Prompt {
   parent         Prompt?    @relation("PromptVersions", fields: [parentId], references: [id], onDelete: SetNull)
   versions       Prompt[]   @relation("PromptVersions")
 
-  // Ownership: a prompt can belong to an org, company, client, or case
+  // Ownership: a prompt can belong to an org, location, client, or case
   organizationId String?    @map("organization_id")
-  companyId      String?    @map("company_id")
+  locationId     String?    @map("location_id")
   clientId       String?    @map("client_id")
   caseId         String?    @map("case_id")
 
   organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
-  company        Company?      @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  location       Location?     @relation(fields: [locationId], references: [id], onDelete: SetNull)
   client         Client?       @relation(fields: [clientId], references: [id], onDelete: SetNull)
   case           Case?         @relation(fields: [caseId], references: [id], onDelete: SetNull)
 
@@ -148,8 +221,9 @@ model Prompt {
 }
 
 model Simulation {
-  id                String   @id @default(cuid())
+  id                String   @id @default(uuid())
   caseId            String   @map("case_id")
+  clientId          String?  @map("client_id")  // which client ran this simulation
   conversationId    String?  @map("conversation_id")
   eventType         String?  @map("event_type")
   agentId           String?  @map("agent_id")
@@ -165,15 +239,23 @@ model Simulation {
   bodyAnalysis      String?  @map("body_analysis")
   bodyAnalysisModel String?  @map("body_analysis_model")
   recordingS3Key    String?  @map("recording_s3_key")  // S3 key for body-language recording (archival)
+
+  // Stage system (1-4)
+  stage             Int?     @map("stage")              // 1-4, null for legacy simulations
+  stageStatus       String?  @map("stage_status")       // 'completed' | 'retake_recommended' | 'in_progress'
+  retakeRecommended Boolean  @default(false) @map("retake_recommended")
+  stageSummary      String?  @map("stage_summary")      // AI-generated summary for feeding into next stage
+
   createdAt         DateTime @default(now()) @map("created_at")
 
-  case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  case   Case    @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  client Client? @relation(fields: [clientId], references: [id], onDelete: SetNull)
 
   @@map("simulations")
 }
 
 model VideoAnalysis {
-  id            String   @id @default(cuid())
+  id            String   @id @default(uuid())
   youtubeUrl    String   @map("youtube_url")
   promptId      String?  @map("prompt_id")
   model         String   @default("gemini-2.5-flash")
