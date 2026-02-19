@@ -1305,13 +1305,15 @@ function CreateCaseForm({ goBack, onSuccess, showToast, tab, switchTab }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [locations, setLocations] = useState([]);
+  const [locationsLoading, setLocationsLoading] = useState(true);
   const [locationId, setLocationId] = useState('');
 
   useEffect(() => {
+    setLocationsLoading(true);
     fetch(API + '/locations').then(r => r.ok ? r.json() : []).then(locs => {
       setLocations(locs);
       if (locs.length === 1) setLocationId(locs[0].id);
-    }).catch(() => {});
+    }).catch(() => {}).finally(() => setLocationsLoading(false));
   }, []);
 
   const handleSubmit = async (e) => {
@@ -1371,10 +1373,13 @@ function CreateCaseForm({ goBack, onSuccess, showToast, tab, switchTab }) {
               <span className="label-text">Case Number</span>
               <input className="input" type="text" value={caseNumber} onChange={e => setCaseNumber(e.target.value)} placeholder="e.g. 2024123095" required />
             </label>
-            {locations.length === 0 && (
+            {locationsLoading && (
+              <p style={{ color: 'var(--muted)', fontSize: 14 }}>Loading locations…</p>
+            )}
+            {!locationsLoading && locations.length === 0 && (
               <p className="error-text">No locations available. An admin must create a location first.</p>
             )}
-            {locations.length > 1 && (
+            {!locationsLoading && locations.length > 1 && (
               <label>
                 <span className="label-text">Location</span>
                 <select className="input" value={locationId} onChange={e => setLocationId(e.target.value)} required>
@@ -2307,9 +2312,13 @@ function OrgManager({ showToast, onOrgChange }) {
     fetch(API + '/organizations').then(r => r.ok ? r.json() : []).then(setOrgs).catch(() => {}).finally(() => setLoading(false));
   };
   const loadUnassigned = () => {
-    fetch(API + '/users?unassigned=true').then(r => r.ok ? r.json() : []).then(setUnassignedUsers).catch(() => {});
+    const url = selectedOrg
+      ? `${API}/users?unassigned=true&assignableToOrg=${encodeURIComponent(selectedOrg)}`
+      : `${API}/users?unassigned=true`;
+    fetch(url).then(r => r.ok ? r.json() : []).then(setUnassignedUsers).catch(() => {});
   };
   useEffect(() => { loadOrgs(); loadUnassigned(); }, []);
+  useEffect(() => { loadUnassigned(); }, [selectedOrg]);
 
   const loadOrgUsers = (orgId) => {
     fetch(API + `/users?organizationId=${orgId}`).then(r => r.ok ? r.json() : []).then(setOrgUsers).catch(() => {});

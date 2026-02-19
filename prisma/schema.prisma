@@ -21,12 +21,10 @@ model User {
   language       String   @default("en") // 'en' | 'es'
   role           String   @default("user") // 'super' | 'admin' | 'user'
   organizationId String?  @map("organization_id")
-  locationId     String?  @map("location_id")  // legacy single-location (deprecated; use UserLocation)
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   organization  Organization?  @relation(fields: [organizationId], references: [id], onDelete: SetNull)
-  location      Location?      @relation(fields: [locationId], references: [id], onDelete: SetNull)
   userLocations UserLocation[]
 
   @@map("users")
@@ -58,7 +56,6 @@ model Location {
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  users         User[]
   userLocations UserLocation[]
   clients       Client[]
   cases         Case[]

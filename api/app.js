@@ -1275,10 +1275,16 @@ app.delete('/api/locations/:id/users/:userId', ...authAndAdmin, async (req, res)
 app.get('/api/users', ...authAndAdmin, async (req, res) => {
   try {
     let where = {};
-    if (req.accessLevel === 'super' && req.query.organizationId) {
+    if (req.accessLevel === 'super' && req.query.organizationId && req.query.unassigned !== 'true') {
       where.organizationId = req.query.organizationId;
     } else if (req.accessLevel === 'super' && req.query.unassigned === 'true') {
-      where.organizationId = null;
+      // Users assignable to an org: unassigned (no org) or in a different org. Exclude super.
+      const assignableToOrgId = req.query.assignableToOrg || req.query.organizationId;
+      if (assignableToOrgId) {
+        where = { role: { not: 'super' }, OR: [{ organizationId: null }, { organizationId: { not: assignableToOrgId } }] };
+      } else {
+        where = { organizationId: null };
+      }
     } else if (req.accessLevel === 'super') {
       // Only users with at least one assignment (org or location), so "removed" users drop out of the list
       where = {

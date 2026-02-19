@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "users" DROP COLUMN IF EXISTS "location_id";
