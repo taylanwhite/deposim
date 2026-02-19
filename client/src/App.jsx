@@ -2300,7 +2300,7 @@ function OrgManager({ showToast, onOrgChange }) {
   const [selectedOrg, setSelectedOrg] = useState(null);
   const [orgUsers, setOrgUsers] = useState([]);
   const [assignUserId, setAssignUserId] = useState('');
-  const [assignRole, setAssignRole] = useState('attorney');
+  const [assignRole, setAssignRole] = useState('admin');
   const [assigning, setAssigning] = useState(false);
 
   const loadOrgs = () => {
@@ -2460,8 +2460,8 @@ function OrgManager({ showToast, onOrgChange }) {
                     onChange={e => handleRoleChange(u.id, e.target.value)}
                     style={{ fontSize: 12, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(128,128,128,0.25)', background: 'transparent', color: 'inherit' }}
                   >
-                    <option value="attorney">{t('role.attorney')}</option>
-                    <option value="member">{t('role.member')}</option>
+                    <option value="admin">{t('role.admin')}</option>
+                    <option value="user">{t('role.user')}</option>
                   </select>
                   <button onClick={() => handleRemoveFromOrg(u.id, name)}
                     style={{ background: 'none', border: 'none', color: '#ed4956', cursor: 'pointer', fontSize: 12, fontWeight: 500, opacity: 0.7, padding: '2px 6px' }}
@@ -2483,8 +2483,8 @@ function OrgManager({ showToast, onOrgChange }) {
                 ))}
               </select>
               <select className="input" value={assignRole} onChange={e => setAssignRole(e.target.value)} style={{ width: 'auto' }}>
-                <option value="attorney">{t('role.attorney')}</option>
-                <option value="member">{t('role.member')}</option>
+                <option value="admin">{t('role.admin')}</option>
+                <option value="user">{t('role.user')}</option>
               </select>
               <button type="submit" className="btn btn-primary" disabled={assigning || !assignUserId}>{assigning ? t('org.assigning') : t('org.assign')}</button>
             </form>
@@ -2589,7 +2589,7 @@ function MemberManager({ showToast, orgRefresh }) {
   const [invites, setInvites] = useState([]);
   const [loading, setLoading] = useState(true);
   const [inviteEmail, setInviteEmail] = useState('');
-  const [inviteRole, setInviteRole] = useState('member');
+  const [inviteRole, setInviteRole] = useState('user');
   const [inviteSelections, setInviteSelections] = useState([]);
   const [inviting, setInviting] = useState(false);
   const [changingRole, setChangingRole] = useState(null);
@@ -2738,8 +2738,8 @@ function MemberManager({ showToast, orgRefresh }) {
             style={{ flex: 1, minWidth: 140 }}
           />
           <select className="input" value={inviteRole} onChange={e => { setInviteRole(e.target.value); setInviteSelections([]); }} style={{ width: 'auto' }}>
-            <option value="attorney">{t('role.attorney')}</option>
-            <option value="member">{t('role.member')}</option>
+            <option value="admin">{t('role.admin')}</option>
+            <option value="user">{t('role.user')}</option>
           </select>
           <button type="submit" className="btn btn-primary" disabled={inviting}>
             {inviting ? t('team.creating') : t('team.createInvite')}
@@ -2785,8 +2785,8 @@ function MemberManager({ showToast, orgRefresh }) {
                     disabled={changingRole === u.id}
                     style={{ fontSize: 12, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(128,128,128,0.25)', background: 'transparent', color: 'inherit' }}
                   >
-                    <option value="attorney">{t('role.attorney')}</option>
-                    <option value="member">{t('role.member')}</option>
+                    <option value="admin">{t('role.admin')}</option>
+                    <option value="user">{t('role.user')}</option>
                   </select>
                   <button
                     onClick={() => handleRemoveUser(u.id, name)}
@@ -3465,7 +3465,7 @@ function NoAccessPage() {
   );
 }
 
-/* ===== Auth Redirect: admin/member lawyers to /cases, clients to /client ===== */
+/* ===== Auth Redirect: admin/user to /cases, clients to /client ===== */
 function AuthRedirect() {
   const { isSignedIn, isLoaded } = useAuth();
   const { accessLevel, language, loading } = useAccessLevel();
@@ -3480,13 +3480,13 @@ function AuthRedirect() {
 
   const prefix = (language && language !== 'en') ? `/${language}` : contextPrefix;
 
-  if (accessLevel === 'super' || accessLevel === 'org' || accessLevel === 'member') return <Navigate to={`${prefix}/cases`} replace />;
+  if (accessLevel === 'super' || accessLevel === 'org' || accessLevel === 'user') return <Navigate to={`${prefix}/cases`} replace />;
   if (accessLevel === 'client') return <Navigate to={`${prefix}/client`} replace />;
 
   return <NoAccessPage />;
 }
 
-/* ===== Auth gate: require sign-in + org or member access for staff routes ===== */
+/* ===== Auth gate: require sign-in + org or user access for staff routes ===== */
 function RequireAuth({ children }) {
   const { isLoaded, isSignedIn } = useAuth();
   const { accessLevel, loading } = useAccessLevel();

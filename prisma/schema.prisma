@@ -19,7 +19,7 @@ model User {
   phone          String?
   imageUrl       String?  @map("image_url")
   language       String   @default("en") // 'en' | 'es'
-  role           String   @default("member") // 'super' | 'attorney' | 'member'
+  role           String   @default("user") // 'super' | 'admin' | 'user'
   organizationId String?  @map("organization_id")
   locationId     String?  @map("location_id")  // legacy single-location (deprecated; use UserLocation)
   createdAt      DateTime @default(now()) @map("created_at")
@@ -85,7 +85,7 @@ model Invite {
   id             String   @id @default(uuid())
   organizationId String   @map("organization_id")
   email          String?
-  role           String   @default("member")
+  role           String   @default("user")
   code           String   @unique
   locationIds    String[] @default([]) @map("location_ids")
   usedBy         String?  @map("used_by")

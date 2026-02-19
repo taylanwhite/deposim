@@ -59,10 +59,10 @@ function requireAuthApi(req, res, next) {
 
 // resolveAccess: DB-only access middleware (Clerk = authentication only)
 // Sets req.accessLevel (scope) and req.userRole (permissions) from the local DB
-//   Roles:  super | attorney | member
-//   Scopes: super | org | member | client
-//   attorney = full access (manage team, locations, cases)
-//   member   = read-only
+//   Roles:  super | admin | user
+//   Scopes: super | org | user | client
+//   admin = full access (manage team, locations, cases)
+//   user  = read-only
 async function resolveAccess(req, res, next) {
   const auth = typeof req.auth === 'function' ? req.auth() : req.auth;
   const userId = auth?.userId;
@@ -93,24 +93,24 @@ async function resolveAccess(req, res, next) {
       return next();
     }
 
-    // Attorney or member with org → scoped to that org's locations
+    // Admin or user with org → scoped to that org's locations
     if (user.organizationId) {
       if (user.userLocations.length > 0) {
-        req.accessLevel = 'member';
+        req.accessLevel = 'user';
         req.orgId = user.organizationId;
         req.locationIds = user.userLocations.map(ul => ul.locationId);
       } else {
         const orgLocs = await prisma.location.findMany({ where: { organizationId: user.organizationId }, select: { id: true } });
-        req.accessLevel = 'member';
+        req.accessLevel = 'user';
         req.orgId = user.organizationId;
         req.locationIds = orgLocs.map(l => l.id);
       }
       return next();
     }
 
-    // Attorney or member with location assignments only (no org)
+    // Admin or user with location assignments only (no org)
     if (user.userLocations.length > 0) {
-      req.accessLevel = 'member';
+      req.accessLevel = 'user';
       req.orgId = null;
       req.locationIds = user.userLocations.map(ul => ul.locationId);
       return next();
@@ -134,13 +134,13 @@ async function resolveAccess(req, res, next) {
   }
 }
 
-// requireAdmin: super or attorney role (can manage team, locations, etc.)
+// requireAdmin: super or admin role (can manage team, locations, etc.)
 function requireAdmin(req, res, next) {
-  if (req.userRole === 'super' || req.userRole === 'attorney') return next();
-  return res.status(403).json({ error: 'Attorney access required.' });
+  if (req.userRole === 'super' || req.userRole === 'admin') return next();
+  return res.status(403).json({ error: 'Admin access required.' });
 }
 
-// requireStaff: any non-client user (attorneys + members can view)
+// requireStaff: any non-client user (admins + users can view)
 function requireStaff(req, res, next) {
   if (req.accessLevel === 'client') {
     return res.status(403).json({ error: 'Staff access required.' });
@@ -148,24 +148,24 @@ function requireStaff(req, res, next) {
   next();
 }
 
-// requireWriteAccess: super or attorney role (members are read-only)
+// requireWriteAccess: super or admin role (users are read-only)
 function requireWriteAccess(req, res, next) {
-  if (req.userRole === 'super' || req.userRole === 'attorney') return next();
-  return res.status(403).json({ error: 'Write access required. Members have read-only access.' });
+  if (req.userRole === 'super' || req.userRole === 'admin') return next();
+  return res.status(403).json({ error: 'Write access required. Users have read-only access.' });
 }
 
 // Shorthand middleware arrays (use requireAuthApi so API always returns 401/403 JSON, never 302)
 const authAndAccess = [requireAuthApi, resolveAccess];                         // any tier
-const authAndAdmin = [requireAuthApi, resolveAccess, requireAdmin];            // super + attorney
-const authAndStaff = [requireAuthApi, resolveAccess, requireStaff];            // super + attorney + member (read)
+const authAndAdmin = [requireAuthApi, resolveAccess, requireAdmin];            // super + admin
+const authAndStaff = [requireAuthApi, resolveAccess, requireStaff];            // super + admin + user (read)
 const authAndOrg = [requireAuthApi, resolveAccess, requireStaff];              // alias
-const authAndWrite = [requireAuthApi, resolveAccess, requireWriteAccess];      // super + attorney (write)
+const authAndWrite = [requireAuthApi, resolveAccess, requireWriteAccess];      // super + admin (write)
 const authAndClient = [requireAuthApi, resolveAccess];                         // any tier
 
 // Helper: build a where clause scoped to the user's access level
 function scopedWhere(req, extraWhere = {}) {
   if (req.accessLevel === 'super') return { ...extraWhere };
-  if (req.accessLevel === 'member') {
+  if (req.accessLevel === 'user') {
     if (req.locationIds.length === 0) return { id: '__none__', ...extraWhere };
     return { locationId: { in: req.locationIds }, ...extraWhere };
   }
@@ -265,7 +265,7 @@ app.post('/api/webhook/clerk', async (req, res) => {
         if (invite) {
           await prisma.user.update({
             where: { id: data.id },
-            data: { organizationId: invite.organizationId, role: invite.role || 'member' },
+            data: { organizationId: invite.organizationId, role: invite.role || 'user' },
           });
           await prisma.invite.update({ where: { id: invite.id }, data: { usedBy: data.id } });
           console.log(`[clerk-webhook] Auto-claimed invite ${invite.id} for user ${data.id} (${email})`);
@@ -405,7 +405,7 @@ app.get('/api/client/me', requireAuthApi, resolveAccess, async (req, res) => {
         select: { id: true, name: true, organizationId: true, organization: { select: { id: true, name: true } } },
         orderBy: { name: 'asc' },
       });
-    } else if (req.accessLevel === 'member' && locationIds.length > 0) {
+    } else if (req.accessLevel === 'user' && locationIds.length > 0) {
       locations = await prisma.location.findMany({
         where: { id: { in: locationIds } },
         select: { id: true, name: true, organizationId: true, organization: { select: { id: true, name: true } } },
@@ -428,7 +428,7 @@ app.get('/api/client/me', requireAuthApi, resolveAccess, async (req, res) => {
       userId,
       accessLevel: req.accessLevel,
       userRole: req.userRole,
-      isAdmin: req.userRole === 'super' || req.userRole === 'attorney',
+      isAdmin: req.userRole === 'super' || req.userRole === 'admin',
       isSuper: req.accessLevel === 'super',
       orgId: req.orgId || null,
       locationIds,
@@ -469,7 +469,7 @@ app.patch('/api/client/me/language', requireAuthApi, resolveAccess, async (req, 
   }
 });
 
-// ---------- Staff API routes (auth + staff-scoped: org admin or member) ----------
+// ---------- Staff API routes (auth + staff-scoped: org admin or user) ----------
 
 // List cases
 app.get('/api/cases', ...authAndStaff, async (req, res) => {
@@ -529,7 +529,7 @@ app.get('/api/cases/:id', ...authAndStaff, async (req, res) => {
   }
 });
 
-// Create case — staff (org admin + member)
+// Create case — staff (org admin + user)
 // Accepts `clients` array (each { clientId } or { client: { firstName, lastName, phone, email } })
 // OR legacy single `clientId` / `client` object for backward compat
 app.post('/api/cases', ...authAndWrite, async (req, res) => {
@@ -544,8 +544,8 @@ app.post('/api/cases', ...authAndWrite, async (req, res) => {
       return res.status(400).json({ error: 'locationId is required.' });
     }
 
-    // Members can only create cases in their assigned locations
-    if (req.accessLevel === 'member') {
+    // Users can only create cases in their assigned locations
+    if (req.accessLevel === 'user') {
       if (!req.locationIds.includes(String(locationId))) {
         return res.status(403).json({ error: 'You are not assigned to this location.' });
       }
@@ -907,7 +907,7 @@ app.get('/api/locations', ...authAndStaff, async (req, res) => {
     let where;
     if (req.accessLevel === 'super') {
       where = req.query.organizationId ? { organizationId: req.query.organizationId } : {};
-    } else if (req.accessLevel === 'member') {
+    } else if (req.accessLevel === 'user') {
       where = req.locationIds?.length > 0 ? { id: { in: req.locationIds } } : { id: '__none__' };
     } else {
       where = { id: '__none__' };
@@ -925,7 +925,7 @@ app.get('/api/locations', ...authAndStaff, async (req, res) => {
 });
 app.get('/api/locations/:id', ...authAndStaff, async (req, res) => {
   try {
-    if (req.accessLevel === 'member' && !req.locationIds.includes(req.params.id)) {
+    if (req.accessLevel === 'user' && !req.locationIds.includes(req.params.id)) {
       return res.status(403).json({ error: 'Access denied: you are not assigned to this location.' });
     }
     const c = await prisma.location.findUnique({
@@ -1082,13 +1082,13 @@ app.get('/api/users/:id/locations', ...authAndAdmin, async (req, res) => {
 app.patch('/api/users/:id', ...authAndAdmin, async (req, res) => {
   try {
     const { role, organizationId } = req.body;
-    if (role && !['attorney', 'member'].includes(role)) {
-      return res.status(400).json({ error: 'Invalid role. Must be "attorney" or "member".' });
+    if (role && !['admin', 'user'].includes(role)) {
+      return res.status(400).json({ error: 'Invalid role. Must be "admin" or "user".' });
     }
     const user = await prisma.user.findUnique({ where: { id: req.params.id } });
     if (!user) return res.status(404).json({ error: 'User not found.' });
 
-    // Non-super attorneys can only manage users in their own org
+    // Non-super admins can only manage users in their own org
     if (req.userRole !== 'super' && user.organizationId !== req.orgId) {
       return res.status(404).json({ error: 'User not found in this organization.' });
     }
@@ -1120,7 +1120,7 @@ app.delete('/api/users/:id', ...authAndAdmin, async (req, res) => {
     }
     await prisma.user.update({
       where: { id: req.params.id },
-      data: { organizationId: null, role: 'member' },
+      data: { organizationId: null, role: 'user' },
     });
     await prisma.userLocation.deleteMany({ where: { userId: req.params.id } });
     res.status(204).send();
@@ -1157,7 +1157,7 @@ app.get('/api/invites', ...authAndAdmin, async (req, res) => {
 app.post('/api/invites', ...authAndAdmin, async (req, res) => {
   try {
     const { email, role, organizationId, locationIds } = req.body;
-    if (role && !['attorney', 'member'].includes(role)) {
+    if (role && !['admin', 'user'].includes(role)) {
       return res.status(400).json({ error: 'Invalid role.' });
     }
 
@@ -1180,7 +1180,7 @@ app.post('/api/invites', ...authAndAdmin, async (req, res) => {
       data: {
         organizationId: orgId,
         email: email?.trim() || null,
-        role: role || 'member',
+        role: role || 'user',
         code,
         ...(locationIds?.length ? { locationIds } : {}),
       },
@@ -1221,9 +1221,9 @@ app.post('/api/invites/claim', requireAuthApi, async (req, res) => {
     if (!invite) return res.status(404).json({ error: 'Invalid invite code.' });
     if (invite.usedBy) return res.status(410).json({ error: 'This invite has already been used.' });
 
-    const upsertData = { role: invite.role || 'member' };
-    // Attorneys get org assignment (they manage the org)
-    if (invite.role === 'attorney') {
+    const upsertData = { role: invite.role || 'user' };
+    // Admins get org assignment (they manage the org)
+    if (invite.role === 'admin') {
       upsertData.organizationId = invite.organizationId;
     }
 
@@ -1289,7 +1289,7 @@ app.get('/api/clients/:id', ...authAndOrg, async (req, res) => {
       include: { organization: true, location: true, cases: true, brandings: true },
     });
     if (!c) return res.status(404).json({ error: 'Client not found' });
-    if (req.accessLevel === 'member' && (!c.locationId || !req.locationIds.includes(c.locationId))) {
+    if (req.accessLevel === 'user' && (!c.locationId || !req.locationIds.includes(c.locationId))) {
       return res.status(403).json({ error: 'Access denied: client does not belong to your assigned locations.' });
     }
     res.json(c);
@@ -1303,7 +1303,7 @@ app.post('/api/clients', ...authAndOrg, async (req, res) => {
     const { locationId, firstName, lastName, email, phone, consentCamera, consentMicrophone } = req.body;
     if (!firstName?.trim() || !lastName?.trim())
       return res.status(400).json({ error: 'firstName and lastName are required' });
-    if (req.accessLevel === 'member' && locationId && !req.locationIds.includes(String(locationId))) {
+    if (req.accessLevel === 'user' && locationId && !req.locationIds.includes(String(locationId))) {
       return res.status(403).json({ error: 'You are not assigned to this location.' });
     }
     const c = await prisma.client.create({
@@ -1500,7 +1500,7 @@ app.get('/api/prompts', ...authAndOrg, async (req, res) => {
     if (active === 'true') where.isActive = true;
     if (active === 'false') where.isActive = false;
     if (language !== undefined && language !== '') where.language = language || null;
-    if (req.accessLevel === 'member') {
+    if (req.accessLevel === 'user') {
       const locFilter = req.locationIds.length > 0
         ? [{ locationId: { in: req.locationIds } }]
         : [];
@@ -1804,7 +1804,7 @@ app.get('/api/simulations', ...authAndOrg, async (req, res) => {
   try {
     const caseId = req.query.caseId;
     const where = caseId ? { caseId } : {};
-    if (req.accessLevel === 'member') {
+    if (req.accessLevel === 'user') {
       where.case = req.locationIds?.length > 0 ? { locationId: { in: req.locationIds } } : { id: '__none__' };
     }
     const list = await prisma.simulation.findMany({

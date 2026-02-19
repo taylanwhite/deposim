@@ -111,8 +111,8 @@
   "client.viewCase": "Ver Caso",
   "client.startSim": "Iniciar Simulación",
 
-  "role.attorney": "Abogado",
-  "role.member": "Miembro",
+  "role.admin": "Administrador",
+  "role.user": "Usuario",
 
   "org.loading": "Cargando organizaciones…",
   "org.newPlaceholder": "Nombre de nueva organización",
