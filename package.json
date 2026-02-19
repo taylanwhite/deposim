@@ -7,7 +7,7 @@
     "dev:api": "node api/server.js",
     "dev:client": "cd client && npm run dev",
     "build": "npm run build:client && npm run prisma:generate",
-    "build:client": "cd client && npm run build",
+    "build:client": "cd client && npm install && npm run build",
     "start": "cd client && npm run preview",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
