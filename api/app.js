@@ -6,7 +6,7 @@ const path = require('path');
 const os = require('os');
 const multer = require('multer');
 const { PrismaClient } = require('@prisma/client');
-const { clerkMiddleware, requireAuth, createClerkClient } = require('@clerk/express');
+const { clerkMiddleware, createClerkClient } = require('@clerk/express');
 const clerkClient = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY });
 const { analyzeVideoUrl, analyzeVideoFile, getBodyAnalysisPrompt } = require('./gemini');
 const { handleElevenLabsWebhook } = require('./webhook');
@@ -20,8 +20,11 @@ const {
   downloadToTemp,
   getPresignedViewUrl,
 } = require('./s3-upload');
+const { Resend } = require('resend');
 
 const app = express();
+const resend = process.env.RESEND_KEY ? new Resend(process.env.RESEND_KEY) : null;
+const resendFrom = process.env.RESEND_FROM || 'DepoSim <onboarding@resend.dev>';
 const prisma = new PrismaClient();
 
 // ---------- Clerk profile sync helper ----------
@@ -46,6 +49,14 @@ async function syncClerkProfile(userId) {
 }
 
 // ---------- Auth helpers ----------
+// requireAuthApi: like requireAuth() but returns 401 JSON instead of 302 redirect.
+// Clerk's requireAuth() redirects unauthenticated requests; for API routes we must return JSON.
+function requireAuthApi(req, res, next) {
+  const auth = typeof req.auth === 'function' ? req.auth() : req.auth;
+  if (!auth?.userId) return res.status(401).json({ error: 'Not authenticated' });
+  next();
+}
+
 // resolveAccess: DB-only access middleware (Clerk = authentication only)
 // Sets req.accessLevel (scope) and req.userRole (permissions) from the local DB
 //   Roles:  super | attorney | member
@@ -143,13 +154,13 @@ function requireWriteAccess(req, res, next) {
   return res.status(403).json({ error: 'Write access required. Members have read-only access.' });
 }
 
-// Shorthand middleware arrays
-const authAndAccess = [requireAuth(), resolveAccess];                         // any tier
-const authAndAdmin = [requireAuth(), resolveAccess, requireAdmin];            // super + attorney
-const authAndStaff = [requireAuth(), resolveAccess, requireStaff];            // super + attorney + member (read)
-const authAndOrg = [requireAuth(), resolveAccess, requireStaff];              // alias
-const authAndWrite = [requireAuth(), resolveAccess, requireWriteAccess];      // super + attorney (write)
-const authAndClient = [requireAuth(), resolveAccess];                         // any tier
+// Shorthand middleware arrays (use requireAuthApi so API always returns 401/403 JSON, never 302)
+const authAndAccess = [requireAuthApi, resolveAccess];                         // any tier
+const authAndAdmin = [requireAuthApi, resolveAccess, requireAdmin];            // super + attorney
+const authAndStaff = [requireAuthApi, resolveAccess, requireStaff];            // super + attorney + member (read)
+const authAndOrg = [requireAuthApi, resolveAccess, requireStaff];              // alias
+const authAndWrite = [requireAuthApi, resolveAccess, requireWriteAccess];      // super + attorney (write)
+const authAndClient = [requireAuthApi, resolveAccess];                         // any tier
 
 // Helper: build a where clause scoped to the user's access level
 function scopedWhere(req, extraWhere = {}) {
@@ -375,7 +386,7 @@ app.get('/api/client/cases/:id/stages', ...authAndClient, async (req, res) => {
 });
 
 // Auth status: returns accessLevel, role, locations for the current user
-app.get('/api/client/me', requireAuth(), resolveAccess, async (req, res) => {
+app.get('/api/client/me', requireAuthApi, resolveAccess, async (req, res) => {
   try {
     const auth = typeof req.auth === 'function' ? req.auth() : req.auth;
     const userId = auth?.userId;
@@ -433,7 +444,7 @@ app.get('/api/client/me', requireAuth(), resolveAccess, async (req, res) => {
   }
 });
 
-app.patch('/api/client/me/language', requireAuth(), resolveAccess, async (req, res) => {
+app.patch('/api/client/me/language', requireAuthApi, resolveAccess, async (req, res) => {
   try {
     const auth = typeof req.auth === 'function' ? req.auth() : req.auth;
     const userId = auth?.userId;
@@ -654,6 +665,27 @@ app.post('/api/cases/:id/notify-deposim-sent', ...authAndStaff, async (req, res)
       }
     };
 
+    const sendEmail = async (to, subject, text, label) => {
+      if (!resend || !to) return;
+      const email = String(to).trim();
+      if (!email || !email.includes('@')) return;
+      try {
+        const { data, error } = await resend.emails.send({
+          from: resendFrom,
+          to: email,
+          subject,
+          text,
+        });
+        if (error) {
+          console.error(`[email] ${label} to ${email}:`, error.message);
+        } else {
+          console.log(`[email] ${label} to ${email}: sent`, data?.id || '');
+        }
+      } catch (err) {
+        console.error(`[email] ${label} to ${email}:`, err.message);
+      }
+    };
+
     const clientPhone = (targetClient?.phone || '').replace(/\D/g, '');
     if (clientPhone) {
       await sendSms(clientPhone, clientMsg, 'client');
@@ -661,8 +693,28 @@ app.post('/api/cases/:id/notify-deposim-sent', ...authAndStaff, async (req, res)
       console.log('[sms] No client phone for case', caseId);
     }
 
+    const clientEmail = (targetClient?.email || '').trim();
+    if (clientEmail && clientEmail.includes('@')) {
+      await sendEmail(
+        clientEmail,
+        'Your DepoSim simulated deposition is ready',
+        `Your DepoSim simulated deposition is ready. Start here: ${simLink}`,
+        'client'
+      );
+    } else {
+      console.log('[email] No client email for case', caseId);
+    }
+
     for (const to of moderatorPhones) {
       await sendSms(to, moderatorMsg, 'moderator');
+    }
+
+    const moderatorEmails = (process.env.MODERATOR_EMAILS || '')
+      .split(',')
+      .map((e) => e.trim())
+      .filter((e) => e && e.includes('@'));
+    for (const to of moderatorEmails) {
+      await sendEmail(to, `DepoSim link sent – Case #${c.caseNumber} – ${name}`, moderatorMsg, 'moderator');
     }
 
     res.status(204).send();
@@ -1158,7 +1210,7 @@ app.delete('/api/invites/:id', ...authAndAdmin, async (req, res) => {
 });
 
 // Claim an invite (any authenticated user)
-app.post('/api/invites/claim', requireAuth(), async (req, res) => {
+app.post('/api/invites/claim', requireAuthApi, async (req, res) => {
   try {
     const auth = typeof req.auth === 'function' ? req.auth() : req.auth;
     const userId = auth?.userId;
