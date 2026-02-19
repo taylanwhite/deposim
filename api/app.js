@@ -384,12 +384,19 @@ function requireWriteAccess(req, res, next) {
   return res.status(403).json({ error: 'Write access required. Users have read-only access.' });
 }
 
+// requireSuper: only super users (for destructive/global actions like full case delete)
+function requireSuper(req, res, next) {
+  if (req.accessLevel === 'super') return next();
+  return res.status(403).json({ error: 'Super user access required.' });
+}
+
 // Shorthand middleware arrays (use requireAuthApi so API always returns 401/403 JSON, never 302)
 const authAndAccess = [requireAuthApi, resolveAccess];                         // any tier
 const authAndAdmin = [requireAuthApi, resolveAccess, requireAdmin];            // super + admin
 const authAndStaff = [requireAuthApi, resolveAccess, requireStaff];            // super + admin + user (read)
-const authAndOrg = [requireAuthApi, resolveAccess, requireStaff];              // alias
+const authAndOrg = [requireAuthApi, resolveAccess, requireStaff];             // alias
 const authAndWrite = [requireAuthApi, resolveAccess, requireWriteAccess];      // super + admin (write)
+const authAndSuper = [requireAuthApi, resolveAccess, requireSuper];            // super only
 const authAndClient = [requireAuthApi, resolveAccess];                         // any tier
 
 // Helper: build a where clause scoped to the user's access level
@@ -985,10 +992,21 @@ app.patch('/api/cases/:id', ...authAndWrite, async (req, res) => {
   }
 });
 
-// Delete case — org-level only
-app.delete('/api/cases/:id', ...authAndWrite, async (req, res) => {
+// Delete case — super users only. Thorough delete: case + all case_clients links + all simulations.
+// Prompts with this caseId are unlinked (SetNull). Clients are never deleted.
+app.delete('/api/cases/:id', ...authAndSuper, async (req, res) => {
   try {
-    await prisma.case.delete({ where: { id: req.params.id } });
+    const caseId = req.params.id;
+    const existing = await prisma.case.findUnique({
+      where: { id: caseId },
+      include: { caseClients: true, simulations: { select: { id: true } } },
+    });
+    if (!existing) return res.status(404).json({ error: 'Case not found' });
+
+    await prisma.$transaction(async (tx) => {
+      // Delete case: DB cascades CaseClient (removes links) and Simulation. Prompt.caseId set to null. Clients untouched.
+      await tx.case.delete({ where: { id: caseId } });
+    });
     res.status(204).send();
   } catch (err) {
     if (err.code === 'P2025') return res.status(404).json({ error: 'Case not found' });

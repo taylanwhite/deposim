@@ -7,14 +7,46 @@ import { LanguageProvider, useT, useLangPrefix } from './i18n/LanguageContext';
 
 const API = '/api';
 
+// In-memory cache for /api/client/me to avoid repeated getToken() and Clerk token endpoint calls (prevents 429 rate limits).
+// See https://github.com/clerk/javascript/issues/4894 — avoid re-running auth fetches on every getToken reference change.
+const ACCESS_CACHE_TTL_MS = 60 * 1000; // 1 minute
+let accessCache = { data: null, at: 0, signedIn: false };
+
+function getCachedAccess(signedIn) {
+  if (!signedIn) return null;
+  if (accessCache.signedIn && Date.now() - accessCache.at < ACCESS_CACHE_TTL_MS) return accessCache.data;
+  return null;
+}
+
+function setCachedAccess(signedIn, data) {
+  accessCache = { data: signedIn ? data : null, at: Date.now(), signedIn: !!signedIn };
+}
+
 /* ===== Access-level hook: calls /api/client/me to determine tier ===== */
 function useAccessLevel() {
   const { isLoaded, isSignedIn, getToken } = useAuth();
-  const [data, setData] = useState({ accessLevel: null, isAdmin: false, isSuper: false, locationIds: [], locations: [], organizations: [], language: 'en' });
+  const [data, setData] = useState(() => ({ accessLevel: null, isAdmin: false, isSuper: false, locationIds: [], locations: [], organizations: [], language: 'en' }));
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!isLoaded || !isSignedIn) { setLoading(false); return; }
+    if (!isLoaded) {
+      setLoading(true);
+      return;
+    }
+    if (!isSignedIn) {
+      setCachedAccess(false, null);
+      setData({ accessLevel: null, isAdmin: false, isSuper: false, locationIds: [], locations: [], organizations: [], language: 'en' });
+      setLoading(false);
+      return;
+    }
+
+    const cached = getCachedAccess(true);
+    if (cached) {
+      setData(cached);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     (async () => {
       try {
@@ -23,7 +55,7 @@ function useAccessLevel() {
         if (token) headers.Authorization = `Bearer ${token}`;
         const r = await fetch(`${API}/client/me`, { credentials: 'include', headers });
         const d = r.ok ? await r.json() : null;
-        setData({
+        const next = {
           accessLevel: d?.accessLevel || null,
           isAdmin: d?.isAdmin || false,
           isSuper: d?.isSuper || false,
@@ -32,11 +64,15 @@ function useAccessLevel() {
           organizations: d?.organizations || [],
           orgId: d?.orgId || null,
           language: d?.language || 'en',
-        });
+        };
+        setCachedAccess(true, next);
+        setData(next);
       } catch (_) { /* no-op */ }
       setLoading(false);
     })();
-  }, [isLoaded, isSignedIn, getToken]);
+    // Intentionally omit getToken: re-running when getToken reference changes causes repeated Clerk token requests and 429 rate limits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoaded, isSignedIn]);
 
   return { ...data, loading: loading || !isLoaded };
 }
@@ -115,6 +151,11 @@ const Icons = {
   search: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+    </svg>
+  ),
+  trash: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
     </svg>
   ),
 };
@@ -1650,7 +1691,8 @@ function SimCard({ sim: s, caseData, onClick }) {
 }
 
 /* ===== Case Detail (with simulations) ===== */
-function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, currentDetail, showToast, onCaseUpdate }) {
+function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, currentDetail, showToast, onCaseUpdate, isSuper, onDeleteCase }) {
+  const { t } = useT();
   const [sims, setSims] = useState([]);
   const [loadingSims, setLoadingSims] = useState(true);
   const [caseData, setCaseData] = useState(d);
@@ -1662,6 +1704,7 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
   const [caseClients, setCaseClients] = useState(d.caseClients || []);
   const [showAddClient, setShowAddClient] = useState(false);
   const [showClientPicker, setShowClientPicker] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => { setCaseData(d); setCaseClients(d.caseClients || []); }, [d]);
 
@@ -1734,6 +1777,24 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
     }
   };
 
+  const handleDeleteCase = async () => {
+    if (!onDeleteCase || !caseData?.id) return;
+    if (!window.confirm(t('case.deleteConfirm'))) return;
+    setDeleting(true);
+    try {
+      const r = await fetch(`${API}/cases/${caseData.id}`, { method: 'DELETE' });
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to delete case');
+      }
+      onDeleteCase();
+    } catch (e) {
+      showToast?.(e.message || t('case.deleteError'));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const sortedSims = [...sims]
     .filter(s => {
       if (!simSearch.trim()) return true;
@@ -1761,6 +1822,18 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
             <span className="sim-detail-header-name">{caseDisplayName}</span>
             <span className="sim-detail-header-case">#{caseData.caseNumber}</span>
           </div>
+          {isSuper && (
+            <button
+              type="button"
+              className="case-detail-delete-btn"
+              onClick={handleDeleteCase}
+              disabled={deleting}
+              title={t('case.delete')}
+              aria-label={t('case.delete')}
+            >
+              {Icons.trash}
+            </button>
+          )}
         </div>
         <div className="detail-body case-detail-body">
           {stageData && (
@@ -2213,6 +2286,7 @@ function CaseDetailPage() {
   const { id } = useParams();
   const nav = useNavigate();
   const prefix = useLangPrefix();
+  const { t } = useT();
   const { toast, showToast } = useAppContext();
   const [caseData, setCaseData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -2238,11 +2312,16 @@ function CaseDetailPage() {
       </div>
     );
 
+  const { access } = useAppContext();
   const goBack = () => nav(`${prefix}/cases`);
   const goDetail = (type, data) => {
     if (type === 'simulation') nav(`${prefix}/cases/${id}/sim/${data.id}`);
   };
   const handleCaseUpdate = (_caseId, updates) => setCaseData((prev) => ({ ...prev, ...updates }));
+  const handleDeleteCase = () => {
+    showToast(t('case.deleted'));
+    nav(`${prefix}/cases`, { replace: true });
+  };
 
   return (
     <CaseDetail
@@ -2255,6 +2334,8 @@ function CaseDetailPage() {
       currentDetail={{ type: 'case', data: caseData }}
       showToast={showToast}
       onCaseUpdate={handleCaseUpdate}
+      isSuper={access?.isSuper}
+      onDeleteCase={handleDeleteCase}
     />
   );
 }

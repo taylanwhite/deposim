@@ -22,6 +22,10 @@
   "case.edit": "Editar Caso",
   "case.send": "Enviar DepoSim",
   "case.sent": "El DepoSim ha sido preparado y enviado al cliente.",
+  "case.delete": "Eliminar caso",
+  "case.deleteConfirm": "¿Eliminar permanentemente este caso y todas sus simulaciones? Los registros de clientes no se eliminarán.",
+  "case.deleted": "Caso eliminado.",
+  "case.deleteError": "Error al eliminar el caso.",
 
   "sim.consent.title": "Prepárese para su Simulación",
   "sim.consent.subtitle": "Necesitamos acceso a la cámara y micrófono para analizar el lenguaje corporal durante la deposición simulada.",
