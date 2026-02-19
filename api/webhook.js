@@ -6,6 +6,7 @@
  */
 const crypto = require('crypto');
 const { analyzeDeposition } = require('./openai');
+const betterstack = require('./betterstack');
 
 /**
  * Verify ElevenLabs HMAC-SHA256 webhook signature.
@@ -154,6 +155,7 @@ async function handleElevenLabsWebhook(req, res, prisma) {
       turnScores = result.turnScores;
     } else {
       console.error('[webhook] OpenAI analysis failed:', result.error);
+      betterstack.error('[webhook] OpenAI analysis failed', { error_message: result.error });
     }
   }
 
@@ -188,11 +190,13 @@ async function handleElevenLabsWebhook(req, res, prisma) {
       data: simData,
     });
     console.log(`[webhook] Simulation updated (stub): ${simulation.id} case=${caseId} score=${score}`);
+    betterstack.info('[webhook] Simulation updated', { simulationId: simulation.id, caseId, score });
   } else {
     simulation = await prisma.simulation.create({
       data: simData,
     });
     console.log(`[webhook] Simulation saved: ${simulation.id} case=${caseId} score=${score}`);
+    betterstack.info('[webhook] Simulation saved', { simulationId: simulation.id, caseId, score });
   }
 
   // Touch case updatedAt (non-fatal; main work is simulation save)
@@ -203,6 +207,7 @@ async function handleElevenLabsWebhook(req, res, prisma) {
     });
   } catch (caseErr) {
     console.error('[webhook] Failed to touch case updatedAt:', caseErr.message, caseErr.code);
+    betterstack.warn('[webhook] Failed to touch case updatedAt', { caseId, error_message: caseErr.message, code: caseErr.code });
   }
 
   return res.json({

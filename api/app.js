@@ -21,8 +21,159 @@ const {
   getPresignedViewUrl,
 } = require('./s3-upload');
 const { Resend } = require('resend');
+const betterstack = require('./betterstack');
+const requestContext = require('./requestContext');
 
 const app = express();
+
+// ---------- Route description map for human-readable log messages ----------
+const ROUTE_DESCRIPTIONS = [
+  // Health
+  ['GET',    '/api/health',                        'Health check'],
+  // Webhooks
+  ['POST',   '/api/webhook/elevenlabs',            'ElevenLabs webhook received'],
+  ['POST',   '/api/webhook/clerk',                 'Clerk webhook received'],
+  // Client-portal
+  ['GET',    '/api/client/cases',                  'Client fetched their cases'],
+  ['GET',    '/api/client/cases/:id',              'Client viewed case details'],
+  ['GET',    '/api/client/cases/:id/simulations',  'Client listed case simulations'],
+  ['GET',    '/api/client/simulations/:simId',     'Client viewed simulation'],
+  ['GET',    '/api/client/cases/:id/stages',       'Client viewed case stages'],
+  ['GET',    '/api/client/me',                     'Client fetched their profile'],
+  ['PATCH',  '/api/client/me/language',            'Client changed language'],
+  // Cases
+  ['GET',    '/api/cases',                         'Listed cases'],
+  ['GET',    '/api/cases/:id',                     'Viewed case'],
+  ['POST',   '/api/cases',                         'Created case'],
+  ['PATCH',  '/api/cases/:id',                     'Updated case'],
+  ['DELETE', '/api/cases/:id',                     'Deleted case'],
+  ['POST',   '/api/cases/:id/record-consent',      'Recorded consent for case'],
+  ['POST',   '/api/cases/:id/notify-deposim-sent', 'Sent DepoSim notification'],
+  ['GET',    '/api/cases/:id/clients',             'Listed case clients'],
+  ['POST',   '/api/cases/:id/clients',             'Added client to case'],
+  ['DELETE', '/api/cases/:id/clients/:clientId',   'Removed client from case'],
+  ['GET',    '/api/cases/:id/stages',              'Fetched case stages'],
+  ['POST',   '/api/cases/:id/stage-summary',       'Generated stage summary'],
+  // Organizations
+  ['GET',    '/api/organizations',                 'Listed organizations'],
+  ['GET',    '/api/organizations/:id',             'Viewed organization'],
+  ['POST',   '/api/organizations',                 'Created organization'],
+  ['PATCH',  '/api/organizations/:id',             'Updated organization'],
+  ['DELETE', '/api/organizations/:id',             'Deleted organization'],
+  // Locations
+  ['GET',    '/api/locations',                     'Listed locations'],
+  ['GET',    '/api/locations/:id',                 'Viewed location'],
+  ['POST',   '/api/locations',                     'Created location'],
+  ['PATCH',  '/api/locations/:id',                 'Updated location'],
+  ['DELETE', '/api/locations/:id',                 'Deleted location'],
+  ['GET',    '/api/locations/:id/users',           'Listed location users'],
+  ['POST',   '/api/locations/:id/users',           'Assigned user to location'],
+  ['DELETE', '/api/locations/:id/users/:userId',   'Removed user from location'],
+  // Users
+  ['GET',    '/api/users',                         'Listed users'],
+  ['GET',    '/api/users/:id/locations',           'Listed user locations'],
+  ['PATCH',  '/api/users/:id',                     'Updated user'],
+  ['DELETE', '/api/users/:id',                     'Deleted user'],
+  // Invites
+  ['GET',    '/api/invites',                       'Listed invites'],
+  ['POST',   '/api/invites',                       'Created invite'],
+  ['DELETE', '/api/invites/:id',                   'Deleted invite'],
+  ['POST',   '/api/invites/claim',                 'Claimed invite'],
+  // Clients
+  ['GET',    '/api/clients',                       'Listed clients'],
+  ['GET',    '/api/clients/:id',                   'Viewed client'],
+  ['POST',   '/api/clients',                       'Created client'],
+  ['PATCH',  '/api/clients/:id',                   'Updated client'],
+  ['DELETE', '/api/clients/:id',                   'Deleted client'],
+  // Brandings
+  ['GET',    '/api/brandings',                     'Listed brandings'],
+  ['GET',    '/api/brandings/:id',                 'Viewed branding'],
+  ['POST',   '/api/brandings',                     'Created branding'],
+  ['PATCH',  '/api/brandings/:id',                 'Updated branding'],
+  ['DELETE', '/api/brandings/:id',                 'Deleted branding'],
+  // Settings
+  ['GET',    '/api/settings',                      'Fetched settings'],
+  ['PATCH',  '/api/settings',                      'Updated settings'],
+  // Prompts
+  ['GET',    '/api/prompts/default-score',         'Fetched default score prompt'],
+  ['GET',    '/api/prompts',                       'Listed prompts'],
+  ['GET',    '/api/prompts/current',               'Fetched current prompts'],
+  ['GET',    '/api/prompts/:id/history',           'Viewed prompt history'],
+  ['GET',    '/api/prompts/:id',                   'Viewed prompt'],
+  ['POST',   '/api/prompts',                       'Created prompt'],
+  ['PATCH',  '/api/prompts/:id',                   'Updated prompt'],
+  ['DELETE', '/api/prompts/:id',                   'Deleted prompt'],
+  ['POST',   '/api/prompts/translate-all',         'Translated all prompts'],
+  // Video analysis
+  ['POST',   '/api/analyze-video',                 'Analyzed video (URL)'],
+  ['POST',   '/api/analyze-video/upload',          'Analyzed video (upload)'],
+  ['GET',    '/api/video-analyses',                'Listed video analyses'],
+  ['GET',    '/api/video-analyses/:id',            'Viewed video analysis'],
+  // Simulations
+  ['GET',    '/api/simulations',                   'Listed simulations'],
+  ['GET',    '/api/simulations/:id/recording-url', 'Fetched simulation recording URL'],
+  ['GET',    '/api/simulations/:id',               'Viewed simulation'],
+  ['POST',   '/api/simulations/video/upload-init', 'Initiated simulation video upload'],
+  ['POST',   '/api/simulations/video/upload-urls', 'Generated simulation upload URLs'],
+  ['POST',   '/api/simulations/video/upload-complete', 'Completed simulation video upload'],
+  ['POST',   '/api/simulations/:id/video',         'Uploaded simulation video'],
+  ['POST',   '/api/simulations/:id/evaluate-stage','Evaluated simulation stage'],
+  // Sim
+  ['POST',   '/api/sim/signed-url',               'Generated sim signed URL'],
+  ['GET',    '/api/sim/:caseId',                   'Opened sim page'],
+  // Chat
+  ['POST',   '/api/chat',                          'Sent chat message'],
+  ['POST',   '/api/chat/prompt-coach',             'Sent prompt coach message'],
+];
+
+// Build compiled matchers (convert :param segments to regex) for fast lookup
+const compiledRoutes = ROUTE_DESCRIPTIONS.map(([method, pattern, desc]) => {
+  const re = new RegExp('^' + pattern.replace(/:[^/]+/g, '[^/]+') + '$');
+  return { method, re, desc };
+});
+
+function describeRoute(method, path) {
+  for (const r of compiledRoutes) {
+    if (r.method === method && r.re.test(path)) return r.desc;
+  }
+  return `${method} ${path}`;
+}
+
+// ---------- Request-scoped instanceID (GUID) + request/response logging ----------
+app.use((req, res, next) => {
+  req.instanceID = crypto.randomUUID();
+  res.setHeader('X-Instance-ID', req.instanceID);
+  requestContext.runWith(req, next);
+});
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api')) return next();
+  const start = Date.now();
+
+  const desc = describeRoute(req.method, req.path);
+  betterstack.debug(`→ ${desc}`, {
+    method: req.method,
+    path: req.path,
+  });
+
+  res.on('finish', () => {
+    const ms = Date.now() - start;
+    const status = res.statusCode;
+    const level = status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info';
+    const msg = `${desc} → ${status} (${ms}ms)`;
+    betterstack.send(msg, {
+      level,
+      context: {
+        method: req.method,
+        path: req.path,
+        statusCode: status,
+        durationMs: ms,
+        description: desc,
+      },
+    });
+  });
+  next();
+});
+
 const resend = process.env.RESEND_KEY ? new Resend(process.env.RESEND_KEY) : null;
 const resendFrom = process.env.RESEND_FROM || 'DepoSim <onboarding@resend.dev>';
 const prisma = new PrismaClient();
@@ -44,6 +195,7 @@ async function syncClerkProfile(userId) {
     return data;
   } catch (err) {
     console.warn('[syncClerkProfile] Could not sync profile for', userId, err.message);
+    betterstack.warn('[syncClerkProfile] Could not sync profile', { userId, error_message: err.message });
     return null;
   }
 }
@@ -87,6 +239,21 @@ async function resolveAccess(req, res, next) {
     req.userRole = user.role;
     req.userLanguage = user.language || 'en';
 
+    requestContext.setUser({
+      userId,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      role: user.role,
+      accessLevel: null, // updated below
+    });
+    betterstack.info('User identified', {
+      userId,
+      email: user.email || undefined,
+      name: [user.firstName, user.lastName].filter(Boolean).join(' ') || undefined,
+      role: user.role,
+    });
+
     if (user.role === 'super') {
       req.accessLevel = 'super';
       req.orgId = user.organizationId || null;
@@ -129,7 +296,7 @@ async function resolveAccess(req, res, next) {
 
     return res.status(403).json({ error: 'No access. Use an invite link to join a location, or contact your administrator.' });
   } catch (err) {
-    console.error('[resolveAccess] Error:', err.message);
+    betterstack.logApiError('[resolveAccess]', err);
     res.status(500).json({ error: 'Failed to resolve access' });
   }
 }
@@ -193,8 +360,7 @@ app.post('/api/webhook/elevenlabs', express.raw({ type: '*/*', limit: '10mb' }),
   try {
     await handleElevenLabsWebhook(req, res, prisma);
   } catch (err) {
-    console.error('POST /api/webhook/elevenlabs error:', err.message);
-    console.error(err.stack);
+    betterstack.logApiError('POST /api/webhook/elevenlabs', err);
     if (!res.headersSent) {
       res.status(500).json({ error: 'Internal server error', detail: process.env.NODE_ENV === 'development' ? err.message : undefined });
     }
@@ -238,6 +404,7 @@ app.post('/api/webhook/clerk', async (req, res) => {
         },
       });
       console.log(`[clerk-webhook] User ${type}: ${data.id} (${email})`);
+      betterstack.info('[clerk-webhook] User event', { type, userId: data.id, email });
 
       // Auto-link: if a Client record has this email but no clerkUserId, link it now
       if (email) {
@@ -256,6 +423,7 @@ app.post('/api/webhook/clerk', async (req, res) => {
             });
           }
           console.log(`[clerk-webhook] Auto-linked client ${c.id} (${email}) to Clerk user ${data.id}, synced ${cases.length} case(s)`);
+          betterstack.info('[clerk-webhook] Auto-linked client to Clerk user', { clientId: c.id, userId: data.id, email, casesSynced: cases.length });
         }
 
         // Auto-claim: if a pending Invite matches this email, claim it
@@ -269,13 +437,14 @@ app.post('/api/webhook/clerk', async (req, res) => {
           });
           await prisma.invite.update({ where: { id: invite.id }, data: { usedBy: data.id } });
           console.log(`[clerk-webhook] Auto-claimed invite ${invite.id} for user ${data.id} (${email})`);
+          betterstack.info('[clerk-webhook] Auto-claimed invite', { inviteId: invite.id, userId: data.id, email });
         }
       }
     }
 
     res.json({ ok: true });
   } catch (err) {
-    console.error('POST /api/webhook/clerk error:', err.message);
+    betterstack.logApiError('POST /api/webhook/clerk', err);
     res.status(500).json({ error: 'Webhook processing failed' });
   }
 });
@@ -299,7 +468,7 @@ app.get('/api/client/cases', ...authAndClient, async (req, res) => {
     const cases = caseClients.map(cc => cc.case);
     res.json(cases);
   } catch (err) {
-    console.error('GET /api/client/cases', err);
+    betterstack.logApiError('GET /api/client/cases', err);
     res.status(500).json({ error: 'Failed to list client cases' });
   }
 });
@@ -317,7 +486,7 @@ app.get('/api/client/cases/:id', ...authAndClient, async (req, res) => {
     });
     res.json(caseData);
   } catch (err) {
-    console.error('GET /api/client/cases/:id', err);
+    betterstack.logApiError('GET /api/client/cases/:id', err);
     res.status(500).json({ error: 'Failed to get case' });
   }
 });
@@ -336,7 +505,7 @@ app.get('/api/client/cases/:id/simulations', ...authAndClient, async (req, res) 
     });
     res.json(sims);
   } catch (err) {
-    console.error('GET /api/client/cases/:id/simulations', err);
+    betterstack.logApiError('GET /api/client/cases/:id/simulations', err);
     res.status(500).json({ error: 'Failed to list simulations' });
   }
 });
@@ -355,7 +524,7 @@ app.get('/api/client/simulations/:simId', ...authAndClient, async (req, res) => 
     }
     res.json(sim);
   } catch (err) {
-    console.error('GET /api/client/simulations/:simId', err);
+    betterstack.logApiError('GET /api/client/simulations/:simId', err);
     res.status(500).json({ error: 'Failed to get simulation' });
   }
 });
@@ -380,7 +549,7 @@ app.get('/api/client/cases/:id/stages', ...authAndClient, async (req, res) => {
     const currentStage = stages.find(s => !s.completed)?.stage || 5;
     res.json({ stages, currentStage });
   } catch (err) {
-    console.error('GET /api/client/cases/:id/stages', err);
+    betterstack.logApiError('GET /api/client/cases/:id/stages', err);
     res.status(500).json({ error: 'Failed to get stage data' });
   }
 });
@@ -439,7 +608,7 @@ app.get('/api/client/me', requireAuthApi, resolveAccess, async (req, res) => {
       clients,
     });
   } catch (err) {
-    console.error('GET /api/client/me', err);
+    betterstack.logApiError('GET /api/client/me', err);
     res.status(500).json({ error: 'Failed to get user info' });
   }
 });
@@ -464,7 +633,7 @@ app.patch('/api/client/me/language', requireAuthApi, resolveAccess, async (req, 
 
     res.json({ language });
   } catch (err) {
-    console.error('PATCH /api/client/me/language', err);
+    betterstack.logApiError('PATCH /api/client/me/language', err);
     res.status(500).json({ error: 'Failed to update language' });
   }
 });
@@ -489,7 +658,7 @@ app.get('/api/cases', ...authAndStaff, async (req, res) => {
     });
     res.json(cases);
   } catch (err) {
-    console.error('GET /api/cases', err);
+    betterstack.logApiError('GET /api/cases', err);
     res.status(500).json({ error: 'Failed to list cases' });
   }
 });
@@ -509,7 +678,7 @@ app.post('/api/cases/:id/record-consent', async (req, res) => {
     });
     res.json({ ok: true });
   } catch (err) {
-    console.error('POST /api/cases/:id/record-consent', err);
+    betterstack.logApiError('POST /api/cases/:id/record-consent', err);
     res.status(500).json({ error: err.message || 'Failed to record consent' });
   }
 });
@@ -524,7 +693,7 @@ app.get('/api/cases/:id', ...authAndStaff, async (req, res) => {
     if (!c) return res.status(404).json({ error: 'Case not found' });
     res.json(c);
   } catch (err) {
-    console.error('GET /api/cases/:id', err);
+    betterstack.logApiError('GET /api/cases/:id', err);
     res.status(500).json({ error: 'Failed to get case' });
   }
 });
@@ -618,7 +787,7 @@ app.post('/api/cases', ...authAndWrite, async (req, res) => {
     });
     res.status(201).json(full);
   } catch (err) {
-    console.error('POST /api/cases', err);
+    betterstack.logApiError('POST /api/cases', err);
     res.status(500).json({ error: err.message || 'Failed to create case' });
   }
 });
@@ -661,9 +830,14 @@ app.post('/api/cases/:id/notify-deposim-sent', ...authAndStaff, async (req, res)
       try {
         const r = await fetch(smsUrl);
         console.log(`[sms] ${label} to ${to}: ${r.status}`);
-        if (!r.ok) console.error(`[sms] ${label} failed:`, await r.text());
+        if (!r.ok) {
+          const errBody = await r.text();
+          console.error(`[sms] ${label} failed:`, errBody);
+          betterstack.warn(`[sms] ${label} failed`, { to, label, caseId, status: r.status, body: errBody });
+        }
       } catch (err) {
         console.error(`[sms] ${label} to ${to}:`, err.message);
+        betterstack.warn(`[sms] ${label} to ${to} error`, { to, label, caseId, error_message: err.message });
       }
     };
 
@@ -680,11 +854,13 @@ app.post('/api/cases/:id/notify-deposim-sent', ...authAndStaff, async (req, res)
         });
         if (error) {
           console.error(`[email] ${label} to ${email}:`, error.message);
+          betterstack.warn(`[email] ${label} failed`, { email, label, caseId, error_message: error.message });
         } else {
           console.log(`[email] ${label} to ${email}: sent`, data?.id || '');
         }
       } catch (err) {
         console.error(`[email] ${label} to ${email}:`, err.message);
+        betterstack.warn(`[email] ${label} to ${email} error`, { email, label, caseId, error_message: err.message });
       }
     };
 
@@ -717,7 +893,7 @@ app.post('/api/cases/:id/notify-deposim-sent', ...authAndStaff, async (req, res)
 
     res.status(204).send();
   } catch (err) {
-    console.error('POST /api/cases/:id/notify-deposim-sent', err);
+    betterstack.logApiError('POST /api/cases/:id/notify-deposim-sent', err);
     res.status(500).json({ error: 'Failed to notify' });
   }
 });
@@ -741,7 +917,7 @@ app.patch('/api/cases/:id', ...authAndWrite, async (req, res) => {
     res.json(c);
   } catch (err) {
     if (err.code === 'P2025') return res.status(404).json({ error: 'Case not found' });
-    console.error('PATCH /api/cases/:id', err);
+    betterstack.logApiError('PATCH /api/cases/:id', err);
     res.status(500).json({ error: 'Failed to update case' });
   }
 });
@@ -753,7 +929,7 @@ app.delete('/api/cases/:id', ...authAndWrite, async (req, res) => {
     res.status(204).send();
   } catch (err) {
     if (err.code === 'P2025') return res.status(404).json({ error: 'Case not found' });
-    console.error('DELETE /api/cases/:id', err);
+    betterstack.logApiError('DELETE /api/cases/:id', err);
     res.status(500).json({ error: 'Failed to delete case' });
   }
 });
@@ -770,7 +946,7 @@ app.get('/api/cases/:id/clients', ...authAndStaff, async (req, res) => {
     });
     res.json(caseClients);
   } catch (err) {
-    console.error('GET /api/cases/:id/clients', err);
+    betterstack.logApiError('GET /api/cases/:id/clients', err);
     res.status(500).json({ error: 'Failed to list case clients' });
   }
 });
@@ -819,7 +995,7 @@ app.post('/api/cases/:id/clients', ...authAndWrite, async (req, res) => {
     });
     res.status(201).json(full);
   } catch (err) {
-    console.error('POST /api/cases/:id/clients', err);
+    betterstack.logApiError('POST /api/cases/:id/clients', err);
     res.status(500).json({ error: 'Failed to add client to case' });
   }
 });
@@ -834,7 +1010,7 @@ app.delete('/api/cases/:id/clients/:clientId', ...authAndWrite, async (req, res)
     res.status(204).send();
   } catch (err) {
     if (err.code === 'P2025') return res.status(404).json({ error: 'Case-client link not found' });
-    console.error('DELETE /api/cases/:id/clients/:clientId', err);
+    betterstack.logApiError('DELETE /api/cases/:id/clients/:clientId', err);
     res.status(500).json({ error: 'Failed to remove client from case' });
   }
 });
@@ -848,7 +1024,7 @@ app.get('/api/organizations', ...authAndAdmin, async (req, res) => {
     });
     res.json(list);
   } catch (err) {
-    console.error('GET /api/organizations', err);
+    betterstack.logApiError('GET /api/organizations', err);
     res.status(500).json({ error: 'Failed to list organizations' });
   }
 });
@@ -861,7 +1037,7 @@ app.get('/api/organizations/:id', ...authAndAdmin, async (req, res) => {
     if (!o) return res.status(404).json({ error: 'Organization not found' });
     res.json(o);
   } catch (err) {
-    console.error('GET /api/organizations/:id', err);
+    betterstack.logApiError('GET /api/organizations/:id', err);
     res.status(500).json({ error: 'Failed to get organization' });
   }
 });
@@ -872,7 +1048,7 @@ app.post('/api/organizations', ...authAndAdmin, async (req, res) => {
     const o = await prisma.organization.create({ data: { name: String(name).trim() } });
     res.status(201).json(o);
   } catch (err) {
-    console.error('POST /api/organizations', err);
+    betterstack.logApiError('POST /api/organizations', err);
     res.status(500).json({ error: 'Failed to create organization' });
   }
 });
@@ -886,7 +1062,7 @@ app.patch('/api/organizations/:id', ...authAndAdmin, async (req, res) => {
     res.json(o);
   } catch (err) {
     if (err.code === 'P2025') return res.status(404).json({ error: 'Organization not found' });
-    console.error('PATCH /api/organizations/:id', err);
+    betterstack.logApiError('PATCH /api/organizations/:id', err);
     res.status(500).json({ error: 'Failed to update organization' });
   }
 });
@@ -896,7 +1072,7 @@ app.delete('/api/organizations/:id', ...authAndAdmin, async (req, res) => {
     res.status(204).send();
   } catch (err) {
     if (err.code === 'P2025') return res.status(404).json({ error: 'Organization not found' });
-    console.error('DELETE /api/organizations/:id', err);
+    betterstack.logApiError('DELETE /api/organizations/:id', err);
     res.status(500).json({ error: 'Failed to delete organization' });
   }
 });
@@ -919,7 +1095,7 @@ app.get('/api/locations', ...authAndStaff, async (req, res) => {
     });
     res.json(list);
   } catch (err) {
-    console.error('GET /api/locations', err);
+    betterstack.logApiError('GET /api/locations', err);
     res.status(500).json({ error: 'Failed to list locations' });
   }
 });
@@ -935,7 +1111,7 @@ app.get('/api/locations/:id', ...authAndStaff, async (req, res) => {
     if (!c) return res.status(404).json({ error: 'Location not found' });
     res.json(c);
   } catch (err) {
-    console.error('GET /api/locations/:id', err);
+    betterstack.logApiError('GET /api/locations/:id', err);
     res.status(500).json({ error: 'Failed to get location' });
   }
 });
@@ -951,7 +1127,7 @@ app.post('/api/locations', ...authAndAdmin, async (req, res) => {
     });
     res.status(201).json(c);
   } catch (err) {
-    console.error('POST /api/locations', err);
+    betterstack.logApiError('POST /api/locations', err);
     res.status(500).json({ error: 'Failed to create location' });
   }
 });
@@ -968,7 +1144,7 @@ app.patch('/api/locations/:id', ...authAndAdmin, async (req, res) => {
     res.json(c);
   } catch (err) {
     if (err.code === 'P2025') return res.status(404).json({ error: 'Location not found' });
-    console.error('PATCH /api/locations/:id', err);
+    betterstack.logApiError('PATCH /api/locations/:id', err);
     res.status(500).json({ error: 'Failed to update location' });
   }
 });
@@ -978,7 +1154,7 @@ app.delete('/api/locations/:id', ...authAndAdmin, async (req, res) => {
     res.status(204).send();
   } catch (err) {
     if (err.code === 'P2025') return res.status(404).json({ error: 'Location not found' });
-    console.error('DELETE /api/locations/:id', err);
+    betterstack.logApiError('DELETE /api/locations/:id', err);
     res.status(500).json({ error: 'Failed to delete location' });
   }
 });
@@ -993,7 +1169,7 @@ app.get('/api/locations/:id/users', ...authAndAdmin, async (req, res) => {
     });
     res.json(rows.map(r => ({ ...r.user, userLocationId: r.id, assignedAt: r.createdAt })));
   } catch (err) {
-    console.error('GET /api/locations/:id/users', err);
+    betterstack.logApiError('GET /api/locations/:id/users', err);
     res.status(500).json({ error: 'Failed to list location users' });
   }
 });
@@ -1014,7 +1190,7 @@ app.post('/api/locations/:id/users', ...authAndAdmin, async (req, res) => {
     });
     res.status(201).json(ul);
   } catch (err) {
-    console.error('POST /api/locations/:id/users', err);
+    betterstack.logApiError('POST /api/locations/:id/users', err);
     res.status(500).json({ error: 'Failed to assign user to location' });
   }
 });
@@ -1027,7 +1203,7 @@ app.delete('/api/locations/:id/users/:userId', ...authAndAdmin, async (req, res)
     res.status(204).send();
   } catch (err) {
     if (err.code === 'P2025') return res.status(404).json({ error: 'User-location assignment not found' });
-    console.error('DELETE /api/locations/:id/users/:userId', err);
+    betterstack.logApiError('DELETE /api/locations/:id/users/:userId', err);
     res.status(500).json({ error: 'Failed to remove user from location' });
   }
 });
@@ -1060,7 +1236,7 @@ app.get('/api/users', ...authAndAdmin, async (req, res) => {
     });
     res.json(users);
   } catch (err) {
-    console.error('GET /api/users', err);
+    betterstack.logApiError('GET /api/users', err);
     res.status(500).json({ error: 'Failed to list users' });
   }
 });
@@ -1074,7 +1250,7 @@ app.get('/api/users/:id/locations', ...authAndAdmin, async (req, res) => {
     });
     res.json(rows.map(r => ({ ...r.location, userLocationId: r.id, assignedAt: r.createdAt })));
   } catch (err) {
-    console.error('GET /api/users/:id/locations', err);
+    betterstack.logApiError('GET /api/users/:id/locations', err);
     res.status(500).json({ error: 'Failed to list user locations' });
   }
 });
@@ -1107,7 +1283,7 @@ app.patch('/api/users/:id', ...authAndAdmin, async (req, res) => {
     });
     res.json(updated);
   } catch (err) {
-    console.error('PATCH /api/users/:id', err);
+    betterstack.logApiError('PATCH /api/users/:id', err);
     res.status(500).json({ error: 'Failed to update user' });
   }
 });
@@ -1125,7 +1301,7 @@ app.delete('/api/users/:id', ...authAndAdmin, async (req, res) => {
     await prisma.userLocation.deleteMany({ where: { userId: req.params.id } });
     res.status(204).send();
   } catch (err) {
-    console.error('DELETE /api/users/:id', err);
+    betterstack.logApiError('DELETE /api/users/:id', err);
     res.status(500).json({ error: 'Failed to remove user from organization' });
   }
 });
@@ -1149,7 +1325,7 @@ app.get('/api/invites', ...authAndAdmin, async (req, res) => {
     });
     res.json(invites);
   } catch (err) {
-    console.error('GET /api/invites', err);
+    betterstack.logApiError('GET /api/invites', err);
     res.status(500).json({ error: 'Failed to list invites' });
   }
 });
@@ -1203,16 +1379,21 @@ app.post('/api/invites', ...authAndAdmin, async (req, res) => {
           `</div>`,
         ].join(''),
       }).then(({ error }) => {
-        if (error) console.error(`[email] invite to ${inviteEmail}:`, error.message);
-        else console.log(`[email] invite sent to ${inviteEmail}`);
+        if (error) {
+          console.error(`[email] invite to ${inviteEmail}:`, error.message);
+          betterstack.warn('[email] invite failed', { inviteEmail, error_message: error.message });
+        } else {
+          console.log(`[email] invite sent to ${inviteEmail}`);
+        }
       }).catch(err => {
         console.error(`[email] invite to ${inviteEmail}:`, err.message);
+        betterstack.warn('[email] invite error', { inviteEmail, error_message: err.message });
       });
     }
 
     res.status(201).json(invite);
   } catch (err) {
-    console.error('POST /api/invites', err);
+    betterstack.logApiError('POST /api/invites', err);
     res.status(500).json({ error: 'Failed to create invite' });
   }
 });
@@ -1227,7 +1408,7 @@ app.delete('/api/invites/:id', ...authAndAdmin, async (req, res) => {
     await prisma.invite.delete({ where: { id: req.params.id } });
     res.status(204).send();
   } catch (err) {
-    console.error('DELETE /api/invites/:id', err);
+    betterstack.logApiError('DELETE /api/invites/:id', err);
     res.status(500).json({ error: 'Failed to delete invite' });
   }
 });
@@ -1276,7 +1457,7 @@ app.post('/api/invites/claim', requireAuthApi, async (req, res) => {
 
     res.json({ ok: true, organizationId: invite.organizationId, role: invite.role });
   } catch (err) {
-    console.error('POST /api/invites/claim', err);
+    betterstack.logApiError('POST /api/invites/claim', err);
     res.status(500).json({ error: 'Failed to claim invite' });
   }
 });
@@ -1303,7 +1484,7 @@ app.get('/api/clients', ...authAndOrg, async (req, res) => {
     });
     res.json(list);
   } catch (err) {
-    console.error('GET /api/clients', err);
+    betterstack.logApiError('GET /api/clients', err);
     res.status(500).json({ error: 'Failed to list clients' });
   }
 });
@@ -1319,7 +1500,7 @@ app.get('/api/clients/:id', ...authAndOrg, async (req, res) => {
     }
     res.json(c);
   } catch (err) {
-    console.error('GET /api/clients/:id', err);
+    betterstack.logApiError('GET /api/clients/:id', err);
     res.status(500).json({ error: 'Failed to get client' });
   }
 });
@@ -1345,7 +1526,7 @@ app.post('/api/clients', ...authAndOrg, async (req, res) => {
     });
     res.status(201).json(c);
   } catch (err) {
-    console.error('POST /api/clients', err);
+    betterstack.logApiError('POST /api/clients', err);
     res.status(500).json({ error: 'Failed to create client' });
   }
 });
@@ -1368,7 +1549,7 @@ app.patch('/api/clients/:id', ...authAndOrg, async (req, res) => {
     res.json(c);
   } catch (err) {
     if (err.code === 'P2025') return res.status(404).json({ error: 'Client not found' });
-    console.error('PATCH /api/clients/:id', err);
+    betterstack.logApiError('PATCH /api/clients/:id', err);
     res.status(500).json({ error: 'Failed to update client' });
   }
 });
@@ -1378,7 +1559,7 @@ app.delete('/api/clients/:id', ...authAndOrg, async (req, res) => {
     res.status(204).send();
   } catch (err) {
     if (err.code === 'P2025') return res.status(404).json({ error: 'Client not found' });
-    console.error('DELETE /api/clients/:id', err);
+    betterstack.logApiError('DELETE /api/clients/:id', err);
     res.status(500).json({ error: 'Failed to delete client' });
   }
 });
@@ -1398,7 +1579,7 @@ app.get('/api/brandings', ...authAndOrg, async (req, res) => {
     });
     res.json(list);
   } catch (err) {
-    console.error('GET /api/brandings', err);
+    betterstack.logApiError('GET /api/brandings', err);
     res.status(500).json({ error: 'Failed to list brandings' });
   }
 });
@@ -1411,7 +1592,7 @@ app.get('/api/brandings/:id', ...authAndOrg, async (req, res) => {
     if (!b) return res.status(404).json({ error: 'Branding not found' });
     res.json(b);
   } catch (err) {
-    console.error('GET /api/brandings/:id', err);
+    betterstack.logApiError('GET /api/brandings/:id', err);
     res.status(500).json({ error: 'Failed to get branding' });
   }
 });
@@ -1430,7 +1611,7 @@ app.post('/api/brandings', ...authAndOrg, async (req, res) => {
     });
     res.status(201).json(b);
   } catch (err) {
-    console.error('POST /api/brandings', err);
+    betterstack.logApiError('POST /api/brandings', err);
     res.status(500).json({ error: 'Failed to create branding' });
   }
 });
@@ -1448,7 +1629,7 @@ app.patch('/api/brandings/:id', ...authAndOrg, async (req, res) => {
     res.json(b);
   } catch (err) {
     if (err.code === 'P2025') return res.status(404).json({ error: 'Branding not found' });
-    console.error('PATCH /api/brandings/:id', err);
+    betterstack.logApiError('PATCH /api/brandings/:id', err);
     res.status(500).json({ error: 'Failed to update branding' });
   }
 });
@@ -1458,7 +1639,7 @@ app.delete('/api/brandings/:id', ...authAndOrg, async (req, res) => {
     res.status(204).send();
   } catch (err) {
     if (err.code === 'P2025') return res.status(404).json({ error: 'Branding not found' });
-    console.error('DELETE /api/brandings/:id', err);
+    betterstack.logApiError('DELETE /api/brandings/:id', err);
     res.status(500).json({ error: 'Failed to delete branding' });
   }
 });
@@ -1475,7 +1656,7 @@ app.get('/api/settings', ...authAndOrg, async (req, res) => {
     }
     res.json({ theme: s.theme });
   } catch (err) {
-    console.error('GET /api/settings', err);
+    betterstack.logApiError('GET /api/settings', err);
     res.status(500).json({ error: 'Failed to get settings' });
   }
 });
@@ -1497,7 +1678,7 @@ app.patch('/api/settings', ...authAndAdmin, async (req, res) => {
     }
     res.json({ theme: s.theme });
   } catch (err) {
-    console.error('PATCH /api/settings', err);
+    betterstack.logApiError('PATCH /api/settings', err);
     res.status(500).json({ error: 'Failed to update settings' });
   }
 });
@@ -1510,7 +1691,7 @@ app.get('/api/prompts/default-score', ...authAndOrg, async (_req, res) => {
     const content = getDefaultScorePrompt();
     res.json({ content });
   } catch (err) {
-    console.error('GET /api/prompts/default-score', err);
+    betterstack.logApiError('GET /api/prompts/default-score', err);
     res.status(500).json({ error: 'Failed to get default' });
   }
 });
@@ -1538,7 +1719,7 @@ app.get('/api/prompts', ...authAndOrg, async (req, res) => {
     const list = await prisma.prompt.findMany({ where, orderBy: { createdAt: 'desc' } });
     res.json(list);
   } catch (err) {
-    console.error('GET /api/prompts', err);
+    betterstack.logApiError('GET /api/prompts', err);
     res.status(500).json({ error: 'Failed to list prompts' });
   }
 });
@@ -1558,7 +1739,7 @@ app.get('/api/prompts/current', ...authAndOrg, async (req, res) => {
     }
     res.json(grouped);
   } catch (err) {
-    console.error('GET /api/prompts/current', err);
+    betterstack.logApiError('GET /api/prompts/current', err);
     res.status(500).json({ error: 'Failed' });
   }
 });
@@ -1597,7 +1778,7 @@ app.get('/api/prompts/:id/history', ...authAndOrg, async (req, res) => {
     allVersions.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     res.json(allVersions);
   } catch (err) {
-    console.error('GET /api/prompts/:id/history', err);
+    betterstack.logApiError('GET /api/prompts/:id/history', err);
     res.status(500).json({ error: 'Failed to get history' });
   }
 });
@@ -1608,7 +1789,7 @@ app.get('/api/prompts/:id', ...authAndOrg, async (req, res) => {
     if (!p) return res.status(404).json({ error: 'Prompt not found' });
     res.json(p);
   } catch (err) {
-    console.error('GET /api/prompts/:id', err);
+    betterstack.logApiError('GET /api/prompts/:id', err);
     res.status(500).json({ error: 'Failed to get prompt' });
   }
 });
@@ -1637,7 +1818,7 @@ app.post('/api/prompts', ...authAndOrg, async (req, res) => {
     });
     res.status(201).json(p);
   } catch (err) {
-    console.error('POST /api/prompts', err);
+    betterstack.logApiError('POST /api/prompts', err);
     res.status(500).json({ error: 'Failed to create prompt' });
   }
 });
@@ -1684,7 +1865,7 @@ app.patch('/api/prompts/:id', ...authAndOrg, async (req, res) => {
     res.json(newPrompt);
   } catch (err) {
     if (err.code === 'P2025') return res.status(404).json({ error: 'Prompt not found' });
-    console.error('PATCH /api/prompts/:id', err);
+    betterstack.logApiError('PATCH /api/prompts/:id', err);
     res.status(500).json({ error: 'Failed to update prompt' });
   }
 });
@@ -1695,7 +1876,7 @@ app.delete('/api/prompts/:id', ...authAndOrg, async (req, res) => {
     res.status(204).send();
   } catch (err) {
     if (err.code === 'P2025') return res.status(404).json({ error: 'Prompt not found' });
-    console.error('DELETE /api/prompts/:id', err);
+    betterstack.logApiError('DELETE /api/prompts/:id', err);
     res.status(500).json({ error: 'Failed to delete prompt' });
   }
 });
@@ -1754,7 +1935,7 @@ app.post('/api/analyze-video', ...authAndOrg, async (req, res) => {
 
     res.status(201).json(record);
   } catch (err) {
-    console.error('POST /api/analyze-video', err);
+    betterstack.logApiError('POST /api/analyze-video', err);
     res.status(500).json({ error: err.message || 'Video analysis failed' });
   }
 });
@@ -1793,7 +1974,7 @@ app.post('/api/analyze-video/upload', ...authAndOrg, upload.single('video'), asy
 
     res.status(201).json(record);
   } catch (err) {
-    console.error('POST /api/analyze-video/upload', err);
+    betterstack.logApiError('POST /api/analyze-video/upload', err);
     const msg = err.code ? `${err.message} (code: ${err.code})` : err.message;
     res.status(500).json({ error: msg || 'Video upload analysis failed' });
   } finally {
@@ -1807,7 +1988,7 @@ app.get('/api/video-analyses', ...authAndOrg, async (req, res) => {
     const list = await prisma.videoAnalysis.findMany({ orderBy: { createdAt: 'desc' }, take: 50 });
     res.json(list);
   } catch (err) {
-    console.error('GET /api/video-analyses', err);
+    betterstack.logApiError('GET /api/video-analyses', err);
     res.status(500).json({ error: 'Failed to list analyses' });
   }
 });
@@ -1819,7 +2000,7 @@ app.get('/api/video-analyses/:id', ...authAndOrg, async (req, res) => {
     if (!a) return res.status(404).json({ error: 'Analysis not found' });
     res.json(a);
   } catch (err) {
-    console.error('GET /api/video-analyses/:id', err);
+    betterstack.logApiError('GET /api/video-analyses/:id', err);
     res.status(500).json({ error: 'Failed to get analysis' });
   }
 });
@@ -1870,7 +2051,7 @@ app.get('/api/simulations', ...authAndOrg, async (req, res) => {
 
     res.json(list);
   } catch (err) {
-    console.error('GET /api/simulations', err);
+    betterstack.logApiError('GET /api/simulations', err);
     res.status(500).json({ error: 'Failed to list simulations' });
   }
 });
@@ -1894,7 +2075,7 @@ app.get('/api/simulations/:id/recording-url', ...authAndOrg, async (req, res) =>
     const url = await getPresignedViewUrl(key);
     res.json({ url });
   } catch (err) {
-    console.error('GET /api/simulations/:id/recording-url', err);
+    betterstack.logApiError('GET /api/simulations/:id/recording-url', err);
     res.status(500).json({ error: err.message || 'Failed to get recording URL' });
   }
 });
@@ -1924,7 +2105,7 @@ app.get('/api/simulations/:id', ...authAndOrg, async (req, res) => {
     }
     res.json(s);
   } catch (err) {
-    console.error('GET /api/simulations/:id', err);
+    betterstack.logApiError('GET /api/simulations/:id', err);
     res.status(500).json({ error: 'Failed to get simulation' });
   }
 });
@@ -1981,7 +2162,7 @@ app.post('/api/simulations/video/upload-init', async (req, res) => {
 
     res.json({ ok: true, uploadId, key });
   } catch (err) {
-    console.error('POST /api/simulations/video/upload-init', err);
+    betterstack.logApiError('POST /api/simulations/video/upload-init', err);
     res.status(500).json({ error: err.message || 'Upload init failed' });
   }
 });
@@ -1997,7 +2178,7 @@ app.post('/api/simulations/video/upload-urls', async (req, res) => {
     const urls = await getPresignedUploadUrls(key, uploadId, partNumbers);
     res.json({ ok: true, urls });
   } catch (err) {
-    console.error('POST /api/simulations/video/upload-urls', err);
+    betterstack.logApiError('POST /api/simulations/video/upload-urls', err);
     res.status(500).json({ error: err.message || 'Failed to get upload URLs' });
   }
 });
@@ -2033,7 +2214,7 @@ app.post('/api/simulations/video/upload-complete', async (req, res) => {
 
     res.json({ ok: true, bodyAnalysis: result.text, bodyAnalysisModel: result.model });
   } catch (err) {
-    console.error('POST /api/simulations/video/upload-complete', err);
+    betterstack.logApiError('POST /api/simulations/video/upload-complete', err);
     res.status(500).json({ error: err.message || 'Upload complete failed' });
   } finally {
     if (tmpPath) fs.unlink(tmpPath, () => {});
@@ -2071,7 +2252,7 @@ app.post('/api/simulations/:id/video', upload.single('video'), async (req, res) 
     fs.unlink(req.file.path, () => {});
     res.json({ ok: true, bodyAnalysis: result.text, bodyAnalysisModel: result.model });
   } catch (err) {
-    console.error('POST /api/simulations/:id/video', err);
+    betterstack.logApiError('POST /api/simulations/:id/video', err);
     if (req.file) fs.unlink(req.file.path, () => {});
     res.status(500).json({ error: err.message || 'Video analysis failed' });
   }
@@ -2136,6 +2317,7 @@ app.post('/api/sim/signed-url', async (req, res) => {
       primerMensaje = fmEs?.content || '';
     } catch (e) {
       console.error('[sim] Error loading prompts:', e.message);
+      betterstack.warn('[sim] Error loading prompts', { error_message: e.message });
     }
 
     const agentId = process.env.ELEVENLABS_AGENT_ID || 'agent_4901kgr2443mem1t7s9gnrbmhaq1';
@@ -2152,6 +2334,7 @@ app.post('/api/sim/signed-url', async (req, res) => {
     if (!elevenRes.ok) {
       const errText = await elevenRes.text();
       console.error('[sim] ElevenLabs signed-url error:', elevenRes.status, errText);
+      betterstack.error('[sim] ElevenLabs signed-url error', { status: elevenRes.status, body: errText });
       return res.status(502).json({ error: 'Failed to get signed URL', detail: errText });
     }
     const { signed_url: signedUrl } = await elevenRes.json();
@@ -2181,7 +2364,7 @@ app.post('/api/sim/signed-url', async (req, res) => {
 
     res.json({ signedUrl, dynamicVariables, stage: stageNum, case: { name, caseNumber, firstName, lastName } });
   } catch (err) {
-    console.error('POST /api/sim/signed-url', err);
+    betterstack.logApiError('POST /api/sim/signed-url', err);
     res.status(500).json({ error: err.message || 'Server error' });
   }
 });
@@ -2276,7 +2459,7 @@ ${simContext}`,
     const reply = data.choices?.[0]?.message?.content || '';
     res.json({ role: 'assistant', content: reply });
   } catch (err) {
-    console.error('POST /api/chat', err);
+    betterstack.logApiError('POST /api/chat', err);
     res.status(500).json({ error: err.message || 'Chat failed' });
   }
 });
@@ -2338,7 +2521,7 @@ Be concise. When suggesting changes, provide the full revised prompt so the user
     const suggestedPrompt = match ? match[1].trim() : null;
     res.json({ role: 'assistant', content: reply, suggestedPrompt });
   } catch (err) {
-    console.error('POST /api/chat/prompt-coach', err);
+    betterstack.logApiError('POST /api/chat/prompt-coach', err);
     res.status(500).json({ error: err.message || 'Chat failed' });
   }
 });
@@ -2459,7 +2642,7 @@ app.post('/api/prompts/translate-all', ...authAndOrg, async (req, res) => {
 
     res.json({ ok: true, ...results, languageCount: Object.keys(translations).length });
   } catch (err) {
-    console.error('POST /api/prompts/translate-all', err);
+    betterstack.logApiError('POST /api/prompts/translate-all', err);
     res.status(500).json({ error: err.message || 'Translation failed' });
   }
 });
@@ -2540,7 +2723,7 @@ app.get('/api/cases/:id/stages', async (req, res) => {
 
     res.json({ stages, currentStage });
   } catch (err) {
-    console.error('GET /api/cases/:id/stages', err);
+    betterstack.logApiError('GET /api/cases/:id/stages', err);
     res.status(500).json({ error: 'Failed to get stages' });
   }
 });
@@ -2610,7 +2793,7 @@ Do NOT include commentary or coaching advice. Only confirmed facts and notable r
 
     res.json({ ok: true, summary });
   } catch (err) {
-    console.error('POST /api/cases/:id/stage-summary', err);
+    betterstack.logApiError('POST /api/cases/:id/stage-summary', err);
     res.status(500).json({ error: err.message || 'Failed to generate summary' });
   }
 });
@@ -2685,7 +2868,7 @@ Recommend retake ONLY if there are significant gaps or performance issues. A sco
 
     res.json({ retakeRecommended, reason });
   } catch (err) {
-    console.error('POST /api/simulations/:id/evaluate-stage', err);
+    betterstack.logApiError('POST /api/simulations/:id/evaluate-stage', err);
     res.status(500).json({ error: err.message || 'Evaluation failed' });
   }
 });
