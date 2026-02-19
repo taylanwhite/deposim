@@ -1280,7 +1280,13 @@ app.get('/api/users', ...authAndAdmin, async (req, res) => {
     } else if (req.accessLevel === 'super' && req.query.unassigned === 'true') {
       where.organizationId = null;
     } else if (req.accessLevel === 'super') {
-      // no filter — return all users
+      // Only users with at least one assignment (org or location), so "removed" users drop out of the list
+      where = {
+        OR: [
+          { organizationId: { not: null } },
+          { userLocations: { some: {} } },
+        ],
+      };
     } else {
       // Non-super admin: users with this org OR users on any of this org's locations
       const orgLocations = await prisma.location.findMany({ where: { organizationId: req.orgId }, select: { id: true } });
