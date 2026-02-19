@@ -1353,15 +1353,41 @@ app.patch('/api/users/:id', ...authAndAdmin, async (req, res) => {
 
 app.delete('/api/users/:id', ...authAndAdmin, async (req, res) => {
   try {
-    const user = await prisma.user.findUnique({ where: { id: req.params.id } });
-    if (!user || user.organizationId !== req.orgId) {
-      return res.status(404).json({ error: 'User not found in this organization.' });
+    const user = await prisma.user.findUnique({
+      where: { id: req.params.id },
+      include: { userLocations: { select: { locationId: true } } },
+    });
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+    if (user.role === 'super') return res.status(403).json({ error: 'Cannot remove a super admin.' });
+
+    const orgLocIds = req.orgId
+      ? (await prisma.location.findMany({ where: { organizationId: req.orgId }, select: { id: true } })).map(l => l.id)
+      : [];
+
+    let canRemove = false;
+    if (req.userRole === 'super') {
+      canRemove = true;
+    } else {
+      if (user.organizationId === req.orgId) canRemove = true;
+      if (!canRemove && user.userLocations.some(ul => orgLocIds.includes(ul.locationId))) canRemove = true;
+    }
+    if (!canRemove) return res.status(404).json({ error: 'User not found in this organization.' });
+
+    const updateData = { role: 'user' };
+    if (req.userRole === 'super' || user.organizationId === req.orgId) {
+      updateData.organizationId = null;
     }
     await prisma.user.update({
       where: { id: req.params.id },
-      data: { organizationId: null, role: 'user' },
+      data: updateData,
     });
-    await prisma.userLocation.deleteMany({ where: { userId: req.params.id } });
+    if (orgLocIds.length > 0) {
+      await prisma.userLocation.deleteMany({
+        where: { userId: req.params.id, locationId: { in: orgLocIds } },
+      });
+    } else {
+      await prisma.userLocation.deleteMany({ where: { userId: req.params.id } });
+    }
     res.status(204).send();
   } catch (err) {
     betterstack.logApiError('DELETE /api/users/:id', err);
