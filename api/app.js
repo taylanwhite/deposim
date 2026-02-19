@@ -294,6 +294,69 @@ async function resolveAccess(req, res, next) {
       return next();
     }
 
+    // No access yet: if user has (or can get) an email, check for a pending invite by email and auto-claim
+    let email = user.email;
+    if (!email) {
+      const synced = await syncClerkProfile(userId);
+      if (synced?.email) {
+        email = synced.email;
+        user = await prisma.user.findUnique({
+          where: { id: userId },
+          include: { userLocations: { select: { locationId: true } } },
+        });
+      }
+    }
+    if (email) {
+      const invite = await prisma.invite.findFirst({
+        where: { email: { equals: email, mode: 'insensitive' }, usedBy: null },
+      });
+      if (invite) {
+        const upsertData = { role: invite.role || 'user' };
+        if (invite.role === 'admin') upsertData.organizationId = invite.organizationId;
+        await prisma.user.update({
+          where: { id: userId },
+          data: upsertData,
+        });
+        if (invite.locationIds?.length) {
+          for (const locId of invite.locationIds) {
+            await prisma.userLocation.upsert({
+              where: { userId_locationId: { userId, locationId: locId } },
+              update: {},
+              create: { userId, locationId: locId },
+            });
+          }
+        }
+        await prisma.invite.update({ where: { id: invite.id }, data: { usedBy: userId } });
+        console.log(`[resolveAccess] Auto-claimed invite ${invite.id} for user ${userId} (${email})`);
+        betterstack.info('[resolveAccess] Auto-claimed invite by email', { inviteId: invite.id, userId, email });
+        // Re-fetch user with locations and resolve access
+        user = await prisma.user.findUnique({
+          where: { id: userId },
+          include: { userLocations: { select: { locationId: true } } },
+        });
+        req.userRole = user.role;
+        if (user.organizationId) {
+          if (user.userLocations.length > 0) {
+            req.accessLevel = 'user';
+            req.orgId = user.organizationId;
+            req.locationIds = user.userLocations.map(ul => ul.locationId);
+          } else {
+            const orgLocs = await prisma.location.findMany({ where: { organizationId: user.organizationId }, select: { id: true } });
+            req.accessLevel = 'user';
+            req.orgId = user.organizationId;
+            req.locationIds = orgLocs.map(l => l.id);
+          }
+          return next();
+        }
+        if (user.userLocations.length > 0) {
+          req.accessLevel = 'user';
+          req.orgId = null;
+          req.locationIds = user.userLocations.map(ul => ul.locationId);
+          return next();
+        }
+      }
+    }
+
     return res.status(403).json({ error: 'No access. Use an invite link to join a location, or contact your administrator.' });
   } catch (err) {
     betterstack.logApiError('[resolveAccess]', err);
