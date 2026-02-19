@@ -1096,6 +1096,19 @@ function DepoSimSentToast({ caseId, onDismiss }) {
   );
 }
 
+// Client form validation: optional fields; if provided, must be valid format
+function isValidClientEmail(value) {
+  const s = (value || '').trim();
+  if (!s) return true;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+}
+function isValidClientPhone(value) {
+  const s = (value || '').trim();
+  if (!s) return true;
+  const digits = s.replace(/\D/g, '');
+  return digits.length >= 10;
+}
+
 /* ===== Client Autocomplete (search, multi-select chips, inline create) ===== */
 function ClientAutocomplete({ selectedClients = [], onChange, placeholder = 'Search clients…' }) {
   const [query, setQuery] = useState('');
@@ -1108,6 +1121,7 @@ function ClientAutocomplete({ selectedClients = [], onChange, placeholder = 'Sea
   const [newPhone, setNewPhone] = useState('');
   const [newEmail, setNewEmail] = useState('');
   const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState(null);
   const wrapRef = useRef(null);
   const debounceRef = useRef(null);
 
@@ -1158,6 +1172,15 @@ function ClientAutocomplete({ selectedClients = [], onChange, placeholder = 'Sea
 
   const handleCreateNew = async () => {
     if (!newFirst.trim() || !newLast.trim()) return;
+    setCreateError(null);
+    if (!isValidClientEmail(newEmail)) {
+      setCreateError('Please enter a valid email address.');
+      return;
+    }
+    if (!isValidClientPhone(newPhone)) {
+      setCreateError('Please enter a valid phone number (at least 10 digits).');
+      return;
+    }
     setCreating(true);
     try {
       const r = await fetch(`${API}/clients`, {
@@ -1174,7 +1197,8 @@ function ClientAutocomplete({ selectedClients = [], onChange, placeholder = 'Sea
       const client = await r.json();
       selectClient(client);
       setNewFirst(''); setNewLast(''); setNewPhone(''); setNewEmail('');
-    } catch { /* ignore */ }
+      setCreateError(null);
+    } catch { setCreateError('Failed to create client.'); }
     finally { setCreating(false); }
   };
 
@@ -1212,7 +1236,7 @@ function ClientAutocomplete({ selectedClients = [], onChange, placeholder = 'Sea
             </button>
           ))}
           {!showCreate && (
-            <button type="button" className="client-autocomplete-item client-autocomplete-create-btn" onClick={() => setShowCreate(true)}>
+            <button type="button" className="client-autocomplete-item client-autocomplete-create-btn" onClick={() => { setShowCreate(true); setCreateError(null); }}>
               + Create new client
             </button>
           )}
@@ -1223,9 +1247,10 @@ function ClientAutocomplete({ selectedClients = [], onChange, placeholder = 'Sea
                 <input className="input input-sm" placeholder="Last Name *" value={newLast} onChange={e => setNewLast(e.target.value)} />
               </div>
               <div className="client-autocomplete-create-row">
-                <input className="input input-sm" type="tel" placeholder="Phone" value={newPhone} onChange={e => setNewPhone(e.target.value)} />
-                <input className="input input-sm" type="email" placeholder="Email" value={newEmail} onChange={e => setNewEmail(e.target.value)} />
+                <input className="input input-sm" type="tel" placeholder="Phone" value={newPhone} onChange={e => { setNewPhone(e.target.value); setCreateError(null); }} />
+                <input className="input input-sm" type="email" placeholder="Email" value={newEmail} onChange={e => { setNewEmail(e.target.value); setCreateError(null); }} />
               </div>
+              {createError && <p className="client-create-error" style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--error, #ed4956)' }}>{createError}</p>}
               <div className="client-autocomplete-create-actions">
                 <button type="button" className="btn secondary btn-sm" onClick={() => setShowCreate(false)}>Cancel</button>
                 <button type="button" className="btn primary btn-sm" onClick={handleCreateNew} disabled={creating || !newFirst.trim() || !newLast.trim()}>
