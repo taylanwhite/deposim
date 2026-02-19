@@ -140,7 +140,7 @@
   "team.emailPlaceholder": "Email (optional)",
   "team.creating": "Creating…",
   "team.createInvite": "Create Invite",
-  "team.searchPlaceholder": "Search locations or organizations…",
+  "team.searchPlaceholder": "Add user locations and organizations",
   "team.selectRequired": "Select at least one location or organization",
   "team.inviteCreated": "Invite created",
   "team.roleUpdated": "Role updated",

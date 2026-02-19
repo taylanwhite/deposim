@@ -1185,6 +1185,31 @@ app.post('/api/invites', ...authAndAdmin, async (req, res) => {
         ...(locationIds?.length ? { locationIds } : {}),
       },
     });
+
+    // Send invite email (fire-and-forget)
+    const inviteEmail = (email || '').trim();
+    if (resend && inviteEmail && inviteEmail.includes('@')) {
+      const inviteUrl = `${req.protocol}://${req.get('host')}/invite/${code}`;
+      resend.emails.send({
+        from: resendFrom,
+        to: inviteEmail,
+        subject: `You've been invited to join ${org.name} on DepoSim`,
+        html: [
+          `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:480px;margin:0 auto;padding:32px 0">`,
+          `<h2 style="margin:0 0 16px">You're invited to DepoSim</h2>`,
+          `<p style="color:#555;line-height:1.5">You've been invited to join <strong>${org.name}</strong> on DepoSim as ${(role || 'user') === 'admin' ? 'an Admin' : 'a User'}.</p>`,
+          `<p style="margin:24px 0"><a href="${inviteUrl}" style="display:inline-block;background:#6236ff;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600">Accept Invite</a></p>`,
+          `<p style="color:#888;font-size:13px">Or copy this link: <a href="${inviteUrl}" style="color:#6236ff">${inviteUrl}</a></p>`,
+          `</div>`,
+        ].join(''),
+      }).then(({ error }) => {
+        if (error) console.error(`[email] invite to ${inviteEmail}:`, error.message);
+        else console.log(`[email] invite sent to ${inviteEmail}`);
+      }).catch(err => {
+        console.error(`[email] invite to ${inviteEmail}:`, err.message);
+      });
+    }
+
     res.status(201).json(invite);
   } catch (err) {
     console.error('POST /api/invites', err);
