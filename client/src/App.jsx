@@ -9,16 +9,20 @@ const API = '/api';
 
 /* ===== Access-level hook: calls /api/client/me to determine tier ===== */
 function useAccessLevel() {
-  const { isLoaded, isSignedIn } = useAuth();
+  const { isLoaded, isSignedIn, getToken } = useAuth();
   const [data, setData] = useState({ accessLevel: null, isAdmin: false, isSuper: false, locationIds: [], locations: [], organizations: [], language: 'en' });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!isLoaded || !isSignedIn) { setLoading(false); return; }
     setLoading(true);
-    fetch(`${API}/client/me`, { credentials: 'include' })
-      .then(r => r.ok ? r.json() : null)
-      .then(d => {
+    (async () => {
+      try {
+        const token = await getToken();
+        const headers = {};
+        if (token) headers.Authorization = `Bearer ${token}`;
+        const r = await fetch(`${API}/client/me`, { credentials: 'include', headers });
+        const d = r.ok ? await r.json() : null;
         setData({
           accessLevel: d?.accessLevel || null,
           isAdmin: d?.isAdmin || false,
@@ -29,10 +33,10 @@ function useAccessLevel() {
           orgId: d?.orgId || null,
           language: d?.language || 'en',
         });
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, [isLoaded, isSignedIn]);
+      } catch (_) { /* no-op */ }
+      setLoading(false);
+    })();
+  }, [isLoaded, isSignedIn, getToken]);
 
   return { ...data, loading: loading || !isLoaded };
 }
