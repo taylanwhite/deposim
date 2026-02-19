@@ -648,7 +648,9 @@ app.post('/api/cases/:id/notify-deposim-sent', ...authAndStaff, async (req, res)
     }
 
     const simLink = (req.body?.simUrl || '').trim() || `${req.protocol}://${req.get('host')}/sim/${c.id}`;
-    const moderatorPhones = ['8018366183', '9175979964'];
+    // '9175979964' - jeremy
+    const moderatorPhones = ['8018366183'];
+    const moderatorEmails = ['t@vsfy.com'];
     const name = targetClient ? `${targetClient.lastName}, ${targetClient.firstName}` : 'Deponent';
 
     const clientMsg = `Your DepoSim simulated deposition is ready. Start here: ${simLink}`;
@@ -709,10 +711,6 @@ app.post('/api/cases/:id/notify-deposim-sent', ...authAndStaff, async (req, res)
       await sendSms(to, moderatorMsg, 'moderator');
     }
 
-    const moderatorEmails = (process.env.MODERATOR_EMAILS || '')
-      .split(',')
-      .map((e) => e.trim())
-      .filter((e) => e && e.includes('@'));
     for (const to of moderatorEmails) {
       await sendEmail(to, `DepoSim link sent – Case #${c.caseNumber} – ${name}`, moderatorMsg, 'moderator');
     }
