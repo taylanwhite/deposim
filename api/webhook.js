@@ -129,6 +129,13 @@ async function handleElevenLabsWebhook(req, res, prisma) {
       orderBy: { createdAt: 'desc' },
     });
   }
+  if (!existing) {
+    // Pre-created "pending" sim when staff clicked Send DepoSim (no conversationId yet) - use oldest so first link sent is used first
+    existing = await prisma.simulation.findFirst({
+      where: { caseId, conversationId: null },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
 
   // ---------- Run deposition score analysis ----------
   const transcript = data.transcript || null;
@@ -159,15 +166,17 @@ async function handleElevenLabsWebhook(req, res, prisma) {
     }
   }
 
-  // Extract stage and clientId from dynamic variables (passed through from signed-url)
+  // Extract stage, clientId, personaId from dynamic variables (passed through from signed-url)
   const stageRaw = dyn?.stage ? parseInt(dyn.stage, 10) : null;
   const stage = stageRaw >= 1 && stageRaw <= 4 ? stageRaw : null;
   const clientId = dyn?.client_id ? String(dyn.client_id) : null;
+  const personaId = dyn?.persona_id ? String(dyn.persona_id) : null;
 
   const simData = {
     caseId,
     clientId,
     conversationId,
+    ...(personaId && { personaId }),
     eventType: type || null,
     agentId: data.agent_id ? String(data.agent_id) : null,
     status: data.status ? String(data.status) : null,

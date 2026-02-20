@@ -54,6 +54,11 @@ const ROUTE_DESCRIPTIONS = [
   ['DELETE', '/api/cases/:id/clients/:clientId',   'Removed client from case'],
   ['GET',    '/api/cases/:id/stages',              'Fetched case stages'],
   ['POST',   '/api/cases/:id/stage-summary',       'Generated stage summary'],
+  ['GET',    '/api/templates',                     'Listed deposition templates'],
+  ['GET',    '/api/templates/:id',                 'Viewed deposition template'],
+  ['POST',   '/api/templates',                     'Created deposition template'],
+  ['PATCH',  '/api/templates/:id',                 'Updated deposition template'],
+  ['DELETE', '/api/templates/:id',                 'Deleted deposition template'],
   // Organizations
   ['GET',    '/api/organizations',                 'Listed organizations'],
   ['GET',    '/api/organizations/:id',             'Viewed organization'],
@@ -124,6 +129,12 @@ const ROUTE_DESCRIPTIONS = [
   // Chat
   ['POST',   '/api/chat',                          'Sent chat message'],
   ['POST',   '/api/chat/prompt-coach',             'Sent prompt coach message'],
+  // Mini Links (short links)
+  ['GET',    '/api/short-links',                   'Listed short links'],
+  ['POST',   '/api/short-links',                   'Created short link'],
+  ['DELETE', '/api/short-links/:id',               'Deleted short link'],
+  ['GET',    '/api/short-links/resolve/:slug',     'Resolved short link'],
+  ['GET',    '/s/:slug',                           'Mini link redirect'],
 ];
 
 // Build compiled matchers (convert :param segments to regex) for fast lookup
@@ -444,6 +455,20 @@ app.get('/api/health', (req, res) => {
   res.json({ ok: true, service: 'deposim-api' });
 });
 
+// ---------- Mini Link redirect (public, no auth) — must be before SPA catch-all if any ----------
+app.get('/s/:slug', async (req, res) => {
+  try {
+    const slug = (req.params.slug || '').trim().toLowerCase();
+    if (!slug) return res.status(404).send('Not found');
+    const link = await prisma.shortLink.findUnique({ where: { slug } });
+    if (!link) return res.status(404).send('Short link not found');
+    res.redirect(302, link.targetUrl);
+  } catch (err) {
+    betterstack.logApiError('GET /s/:slug', err);
+    res.status(500).send('Error');
+  }
+});
+
 // ---------- Clerk webhook: sync users to local DB ----------
 app.post('/api/webhook/clerk', async (req, res) => {
   try {
@@ -758,10 +783,23 @@ app.get('/api/cases/:id', ...authAndStaff, async (req, res) => {
   try {
     const c = await prisma.case.findFirst({
       where: scopedWhere(req, { id: req.params.id }),
-      include: { organization: true, location: true, client: true, caseClients: { include: { client: true } } },
+      include: {
+        organization: true,
+        location: true,
+        client: true,
+        caseClients: { include: { client: true } },
+        defaultPersona: true,
+      },
     });
     if (!c) return res.status(404).json({ error: 'Case not found' });
-    res.json(c);
+    let template = null;
+    await ensureDefaultTemplate(prisma);
+    if (c.templateId) {
+      template = await prisma.depositionTemplate.findUnique({ where: { id: c.templateId }, include: { personas: true } });
+    } else {
+      template = await prisma.depositionTemplate.findUnique({ where: { key: 'default' }, include: { personas: true } });
+    }
+    res.json({ ...c, template });
   } catch (err) {
     betterstack.logApiError('GET /api/cases/:id', err);
     res.status(500).json({ error: 'Failed to get case' });
@@ -773,7 +811,7 @@ app.get('/api/cases/:id', ...authAndStaff, async (req, res) => {
 // OR legacy single `clientId` / `client` object for backward compat
 app.post('/api/cases', ...authAndWrite, async (req, res) => {
   try {
-    const { organizationId, locationId, clientId, caseNumber, name, description, client, clients } = req.body;
+    const { organizationId, locationId, clientId, caseNumber, name, description, client, clients, templateId, defaultPersonaId } = req.body;
     if (!caseNumber || !description) {
       return res.status(400).json({
         error: 'Missing required fields: caseNumber, description',
@@ -838,6 +876,8 @@ app.post('/api/cases', ...authAndWrite, async (req, res) => {
         name: name != null && String(name).trim() ? String(name).trim() : null,
         caseNumber: String(caseNumber),
         description: String(description),
+        templateId: templateId != null && String(templateId).trim() ? String(templateId).trim() : null,
+        defaultPersonaId: defaultPersonaId != null && String(defaultPersonaId).trim() ? String(defaultPersonaId).trim() : null,
       },
       include: { client: true },
     });
@@ -886,7 +926,36 @@ app.post('/api/cases/:id/notify-deposim-sent', ...authAndStaff, async (req, res)
       if (cc?.client) targetClient = cc.client;
     }
 
-    const simLink = (req.body?.simUrl || '').trim() || `${req.protocol}://${req.get('host')}/sim/${c.id}`;
+    // Create a blank simulation so the client's run attaches to it (one sim per "send")
+    await prisma.simulation.create({
+      data: {
+        caseId: c.id,
+        clientId: targetClient?.id || null,
+        stage: 1,
+      },
+    });
+
+    const fullSimUrl = (req.body?.simUrl || '').trim() || `${req.protocol}://${req.get('host')}/sim/${c.id}`;
+    // Find or create a short link so we send a short URL
+    let link = await prisma.shortLink.findFirst({ where: { targetUrl: fullSimUrl } });
+    if (!link) {
+      const slug = crypto.randomBytes(4).toString('base64url').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
+      link = await prisma.shortLink.create({
+        data: {
+          slug,
+          targetUrl: fullSimUrl,
+          organizationId: c.organizationId || null,
+        },
+      });
+    }
+    let base;
+    try {
+      base = new URL(fullSimUrl).origin;
+    } catch {
+      base = `${req.protocol}://${req.get('host')}`;
+    }
+    const simLink = `${base}/s/${link.slug}`;
+
     // '9175979964' - jeremy
     const moderatorPhones = ['8018366183'];
     const moderatorEmails = ['t@vsfy.com'];
@@ -961,7 +1030,7 @@ app.post('/api/cases/:id/notify-deposim-sent', ...authAndStaff, async (req, res)
       await sendEmail(to, `DepoSim link sent – Case #${c.caseNumber} – ${name}`, moderatorMsg, 'moderator');
     }
 
-    res.status(204).send();
+    res.status(200).json({ shortUrl: simLink });
   } catch (err) {
     betterstack.logApiError('POST /api/cases/:id/notify-deposim-sent', err);
     res.status(500).json({ error: 'Failed to notify' });
@@ -971,7 +1040,7 @@ app.post('/api/cases/:id/notify-deposim-sent', ...authAndStaff, async (req, res)
 // Update case (client info via clientId or PATCH /clients/:id) — org-level only
 app.patch('/api/cases/:id', ...authAndWrite, async (req, res) => {
   try {
-    const { organizationId, locationId, clientId, caseNumber, name, description } = req.body;
+    const { organizationId, locationId, clientId, caseNumber, name, description, templateId, defaultPersonaId } = req.body;
     const c = await prisma.case.update({
       where: { id: req.params.id },
       data: {
@@ -981,6 +1050,8 @@ app.patch('/api/cases/:id', ...authAndWrite, async (req, res) => {
         ...(name !== undefined && { name: name === null || name === '' ? null : String(name).trim() }),
         ...(caseNumber != null && { caseNumber: String(caseNumber) }),
         ...(description != null && { description: String(description) }),
+        ...(templateId !== undefined && { templateId: templateId === null || templateId === '' ? null : String(templateId).trim() }),
+        ...(defaultPersonaId !== undefined && { defaultPersonaId: defaultPersonaId === null || defaultPersonaId === '' ? null : String(defaultPersonaId).trim() }),
       },
       include: { client: true },
     });
@@ -1533,6 +1604,81 @@ app.delete('/api/invites/:id', ...authAndAdmin, async (req, res) => {
 });
 
 // Claim an invite (any authenticated user)
+// ---------- Mini Links (short links for DepoSim / invite URLs) ----------
+app.get('/api/short-links', ...authAndWrite, async (req, res) => {
+  try {
+    let where = {};
+    if (req.accessLevel !== 'super') {
+      const orgId = req.orgId || null;
+      where = { OR: [{ organizationId: null }, { organizationId: orgId }] };
+    }
+    const list = await prisma.shortLink.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json(list);
+  } catch (err) {
+    betterstack.logApiError('GET /api/short-links', err);
+    res.status(500).json({ error: 'Failed to list mini links' });
+  }
+});
+
+app.post('/api/short-links', ...authAndWrite, async (req, res) => {
+  try {
+    let { slug, targetUrl, label, organizationId } = req.body;
+    targetUrl = (targetUrl || '').trim();
+    if (!targetUrl) return res.status(400).json({ error: 'targetUrl is required' });
+    slug = (slug || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '') || null;
+    if (!slug) {
+      slug = crypto.randomBytes(4).toString('base64url').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
+    }
+    const orgId = req.accessLevel === 'super' && organizationId != null ? organizationId : req.orgId || null;
+    const existing = await prisma.shortLink.findUnique({ where: { slug } });
+    if (existing) return res.status(409).json({ error: 'This short code is already in use. Try another.' });
+    const created = await prisma.shortLink.create({
+      data: {
+        slug,
+        targetUrl,
+        label: (label || '').trim() || null,
+        organizationId: orgId,
+      },
+    });
+    res.status(201).json(created);
+  } catch (err) {
+    betterstack.logApiError('POST /api/short-links', err);
+    res.status(500).json({ error: err.message || 'Failed to create mini link' });
+  }
+});
+
+app.delete('/api/short-links/:id', ...authAndWrite, async (req, res) => {
+  try {
+    const link = await prisma.shortLink.findUnique({ where: { id: req.params.id } });
+    if (!link) return res.status(404).json({ error: 'Short link not found' });
+    if (req.accessLevel !== 'super' && link.organizationId !== req.orgId) {
+      return res.status(404).json({ error: 'Short link not found' });
+    }
+    await prisma.shortLink.delete({ where: { id: req.params.id } });
+    res.status(204).send();
+  } catch (err) {
+    betterstack.logApiError('DELETE /api/short-links/:id', err);
+    res.status(500).json({ error: 'Failed to delete short link' });
+  }
+});
+
+app.get('/api/mini-links/resolve/:slug', async (req, res) => {
+  try {
+    const slug = (req.params.slug || '').trim().toLowerCase();
+    if (!slug) return res.status(404).json({ error: 'Not found' });
+    const link = await prisma.shortLink.findUnique({ where: { slug } });
+    if (!link) return res.status(404).json({ error: 'Short link not found' });
+    res.json({ url: link.targetUrl });
+  } catch (err) {
+    betterstack.logApiError('GET /api/mini-links/resolve/:slug', err);
+    res.status(500).json({ error: 'Failed to resolve' });
+  }
+});
+
+// ---------- Invites ----------
 app.post('/api/invites/claim', requireAuthApi, async (req, res) => {
   try {
     const auth = typeof req.auth === 'function' ? req.auth() : req.auth;
@@ -2400,12 +2546,21 @@ app.post('/api/sim/signed-url', async (req, res) => {
     const phone = client?.phone || '';
     const caseInfo = `Case Number: ${caseNumber}\nDeponent: ${name}\nPhone: ${phone}\nDescription: ${desc}`;
 
+    const template = await getTemplateById(prisma, caseRecord.templateId);
+    const stageNames = await getStageNamesFromTemplate(prisma, caseRecord.templateId);
+    const requestedPersonaId = req.body?.personaId || caseRecord.defaultPersonaId || (template?.personas?.[0]?.id) || null;
+    let persona = await getPersonaById(prisma, requestedPersonaId);
+    if (!persona && template?.personas?.length) {
+      persona = template.personas.find((p) => p.id === requestedPersonaId) || template.personas[0];
+    }
+    const personaId = persona?.id || requestedPersonaId || null;
+
     let depoPrompt = '';
     let firstMessage = '';
     let primerMensaje = '';
     try {
-      // Load stage-specific prompt from .txt file
-      const stagePromptText = loadStagePrompt(stageNum);
+      // Load stage prompt from template (inline prompt text)
+      const stagePromptText = await loadStagePromptFromTemplate(prisma, caseRecord.templateId, stageNum);
       if (stagePromptText) {
         depoPrompt = stagePromptText.replace('{{case_info}}', caseInfo);
 
@@ -2416,11 +2571,14 @@ app.post('/api/sim/signed-url', async (req, res) => {
             orderBy: { stage: 'asc' },
           });
           const summaryText = prevSims.length > 0
-            ? prevSims.map((s) => `[Stage ${s.stage} — ${STAGE_NAMES[s.stage] || 'Unknown'} Summary]\n${s.stageSummary}`).join('\n\n')
+            ? prevSims.map((s) => `[Stage ${s.stage} — ${stageNames[s.stage] || 'Unknown'} Summary]\n${s.stageSummary}`).join('\n\n')
             : 'No previous stage data available.';
           depoPrompt = depoPrompt.replace('{{previous_stage_summary}}', summaryText);
         } else {
           depoPrompt = depoPrompt.replace('{{previous_stage_summary}}', 'This is the first stage — no prior context.');
+        }
+        if (persona?.systemModifier) {
+          depoPrompt = depoPrompt + persona.systemModifier;
         }
       } else {
         // Fallback to DB prompt if stage file not found
@@ -2479,9 +2637,10 @@ app.post('/api/sim/signed-url', async (req, res) => {
       case_info: caseInfo,
       stage: String(stageNum),
       client_id: simClientId,
+      ...(personaId && { persona_id: personaId }),
     };
 
-    res.json({ signedUrl, dynamicVariables, stage: stageNum, case: { name, caseNumber, firstName, lastName } });
+    res.json({ signedUrl, dynamicVariables, stage: stageNum, case: { name, caseNumber, firstName, lastName }, personaId: personaId || undefined, personaName: persona?.name });
   } catch (err) {
     betterstack.logApiError('POST /api/sim/signed-url', err);
     res.status(500).json({ error: err.message || 'Server error' });
@@ -2766,14 +2925,7 @@ app.post('/api/prompts/translate-all', ...authAndOrg, async (req, res) => {
   }
 });
 
-// ---------- Stage system: helpers ----------
-const STAGE_FILES = {
-  1: 'stage-1-background.txt',
-  2: 'stage-2-accident.txt',
-  3: 'stage-3-medical.txt',
-  4: 'stage-4-treatment.txt',
-};
-
+// ---------- Stage system: data-driven templates (DB) ----------
 const STAGE_NAMES = {
   1: 'Background & Employment',
   2: 'Accident & Aftermath',
@@ -2781,16 +2933,210 @@ const STAGE_NAMES = {
   4: 'Treatment Details & Current Condition',
 };
 
-function loadStagePrompt(stageNum) {
-  const file = STAGE_FILES[stageNum];
-  if (!file) return null;
-  const promptPath = path.join(__dirname, 'prompts', file);
+async function ensureDefaultTemplate(prisma) {
+  if (!prisma.depositionTemplate) return; // e.g. client generated before DepositionTemplate model existed
+  const existingDefault = await prisma.depositionTemplate.findUnique({ where: { key: 'default' } }).catch(() => null);
+  if (existingDefault) return;
+  const templatesPath = path.join(__dirname, 'templates', 'deposition-templates.json');
   try {
-    return fs.readFileSync(promptPath, 'utf8');
-  } catch {
-    return null;
+    const raw = fs.readFileSync(templatesPath, 'utf8');
+    const data = JSON.parse(raw);
+    const defaultT = (data.templates || []).find((t) => (t.key || t.id) === 'default');
+    if (defaultT) {
+      const created = await prisma.depositionTemplate.create({
+        data: {
+          key: 'default',
+          name: defaultT.name,
+          description: defaultT.description || null,
+          stages: defaultT.stages || [],
+        },
+      });
+      const personas = Array.isArray(defaultT.personas) ? defaultT.personas : [];
+      for (const p of personas) {
+        await prisma.persona.create({
+          data: {
+            templateId: created.id,
+            name: p.name || 'Persona',
+            description: p.description != null ? String(p.description) : null,
+            systemModifier: p.systemModifier != null ? String(p.systemModifier) : '',
+          },
+        });
+      }
+      console.log('[templates] Seeded default deposition template and personas');
+    }
+  } catch (err) {
+    console.error('[templates] Seed failed:', err.message);
   }
 }
+
+async function getTemplateById(prisma, templateId) {
+  await ensureDefaultTemplate(prisma);
+  const t = templateId
+    ? await prisma.depositionTemplate.findUnique({ where: { id: String(templateId).trim() }, include: { personas: true } })
+    : await prisma.depositionTemplate.findUnique({ where: { key: 'default' }, include: { personas: true } });
+  if (t) return { id: t.id, name: t.name, description: t.description, stages: t.stages || [], personas: t.personas || [] };
+  const first = await prisma.depositionTemplate.findFirst({ include: { personas: true } });
+  return first ? { id: first.id, name: first.name, description: first.description, stages: first.stages || [], personas: first.personas || [] } : null;
+}
+
+async function getPersonaById(prisma, personaId) {
+  if (!personaId || typeof personaId !== 'string') return null;
+  const p = await prisma.persona.findUnique({ where: { id: personaId.trim() } });
+  return p;
+}
+
+async function loadStagePromptFromTemplate(prisma, templateId, stageNum) {
+  const template = await getTemplateById(prisma, templateId);
+  if (!template || !template.stages) return null;
+  const stages = Array.isArray(template.stages) ? template.stages : [];
+  const stageDef = stages.find((s) => s.stage === stageNum);
+  if (!stageDef || typeof stageDef.prompt !== 'string') return null;
+  return stageDef.prompt;
+}
+
+async function getStageNamesFromTemplate(prisma, templateId) {
+  const template = await getTemplateById(prisma, templateId);
+  if (!template || !template.stages) return STAGE_NAMES;
+  const stages = Array.isArray(template.stages) ? template.stages : [];
+  const names = {};
+  for (const s of stages) names[s.stage] = s.name || STAGE_NAMES[s.stage];
+  return { ...STAGE_NAMES, ...names };
+}
+
+// ---------- Deposition templates (list for case creation / “sell packs”) ----------
+app.get('/api/templates', async (req, res) => {
+  try {
+    await ensureDefaultTemplate(prisma);
+    const listWithPersonas = await prisma.depositionTemplate.findMany({
+      orderBy: { createdAt: 'asc' },
+      include: { personas: true },
+    });
+    res.json(listWithPersonas.map((t) => ({
+      id: t.id,
+      key: t.key,
+      name: t.name,
+      description: t.description || '',
+      organizationId: t.organizationId,
+      stages: Array.isArray(t.stages) ? t.stages : [],
+      personas: t.personas || [],
+      createdAt: t.createdAt,
+      updatedAt: t.updatedAt,
+    })));
+  } catch (err) {
+    betterstack.logApiError('GET /api/templates', err);
+    res.status(500).json({ error: 'Failed to load templates' });
+  }
+});
+
+app.post('/api/templates', ...authAndWrite, async (req, res) => {
+  try {
+    const { name, key, description, organizationId, stages, personas } = req.body;
+    if (!name || typeof name !== 'string' || !name.trim())
+      return res.status(400).json({ error: 'name is required' });
+    const templateKey = key && String(key).trim() ? String(key).trim() : crypto.randomUUID();
+    const existingKey = await prisma.depositionTemplate.findUnique({ where: { key: templateKey } });
+    if (existingKey) return res.status(409).json({ error: 'A template with this key already exists' });
+    const template = await prisma.depositionTemplate.create({
+      data: {
+        key: templateKey,
+        name: name.trim(),
+        description: description != null ? String(description).trim() || null : null,
+        organizationId: organizationId != null && String(organizationId).trim() ? String(organizationId).trim() : null,
+        stages: Array.isArray(stages) ? stages : [],
+      },
+    });
+    const personaList = Array.isArray(personas) ? personas : [];
+    for (const p of personaList) {
+      await prisma.persona.create({
+        data: {
+          templateId: template.id,
+          name: p.name || 'Persona',
+          description: p.description != null ? String(p.description) : null,
+          systemModifier: p.systemModifier != null ? String(p.systemModifier) : '',
+        },
+      });
+    }
+    const withPersonas = await prisma.depositionTemplate.findUnique({
+      where: { id: template.id },
+      include: { personas: true },
+    });
+    res.status(201).json(withPersonas);
+  } catch (err) {
+    betterstack.logApiError('POST /api/templates', err);
+    res.status(500).json({ error: err.message || 'Failed to create template' });
+  }
+});
+
+app.get('/api/templates/:id', async (req, res) => {
+  try {
+    await ensureDefaultTemplate(prisma);
+    const t = await prisma.depositionTemplate.findUnique({
+      where: { id: req.params.id },
+      include: { personas: true },
+    });
+    if (!t) return res.status(404).json({ error: 'Template not found' });
+    res.json(t);
+  } catch (err) {
+    betterstack.logApiError('GET /api/templates/:id', err);
+    res.status(500).json({ error: 'Failed to load template' });
+  }
+});
+
+app.patch('/api/templates/:id', ...authAndWrite, async (req, res) => {
+  try {
+    const { name, description, organizationId, stages, personas } = req.body;
+    const id = req.params.id;
+    const existing = await prisma.depositionTemplate.findUnique({ where: { id }, select: { key: true } });
+    if (!existing) return res.status(404).json({ error: 'Template not found' });
+    if (existing.key === 'default') return res.status(400).json({ error: 'The default template cannot be edited' });
+    const data = {};
+    if (name !== undefined) data.name = String(name).trim();
+    if (description !== undefined) data.description = description == null || description === '' ? null : String(description).trim();
+    if (organizationId !== undefined) data.organizationId = organizationId == null || organizationId === '' ? null : String(organizationId).trim();
+    if (Array.isArray(stages)) data.stages = stages;
+    const template = await prisma.depositionTemplate.update({
+      where: { id },
+      data,
+    });
+    if (Array.isArray(personas)) {
+      await prisma.persona.deleteMany({ where: { templateId: id } });
+      for (const p of personas) {
+        await prisma.persona.create({
+          data: {
+            templateId: id,
+            name: p.name || 'Persona',
+            description: p.description != null ? String(p.description) : null,
+            systemModifier: p.systemModifier != null ? String(p.systemModifier) : '',
+          },
+        });
+      }
+    }
+    const withPersonas = await prisma.depositionTemplate.findUnique({
+      where: { id },
+      include: { personas: true },
+    });
+    res.json(withPersonas);
+  } catch (err) {
+    if (err.code === 'P2025') return res.status(404).json({ error: 'Template not found' });
+    betterstack.logApiError('PATCH /api/templates/:id', err);
+    res.status(500).json({ error: err.message || 'Failed to update template' });
+  }
+});
+
+app.delete('/api/templates/:id', ...authAndWrite, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const existing = await prisma.depositionTemplate.findUnique({ where: { id }, select: { key: true } });
+    if (!existing) return res.status(404).json({ error: 'Template not found' });
+    if (existing.key === 'default') return res.status(400).json({ error: 'The default template cannot be deleted' });
+    await prisma.depositionTemplate.delete({ where: { id } });
+    res.status(204).send();
+  } catch (err) {
+    if (err.code === 'P2025') return res.status(404).json({ error: 'Template not found' });
+    betterstack.logApiError('DELETE /api/templates/:id', err);
+    res.status(500).json({ error: err.message || 'Failed to delete template' });
+  }
+});
 
 // ---------- Stage: get completion status for a case ----------
 app.get('/api/cases/:id/stages', async (req, res) => {
@@ -2809,6 +3155,7 @@ app.get('/api/cases/:id/stages', async (req, res) => {
       if (!stageMap[s.stage]) stageMap[s.stage] = s;
     }
 
+    const stageNames = await getStageNamesFromTemplate(prisma, caseRecord.templateId);
     let currentStage = 1;
     const stages = [1, 2, 3, 4].map((n) => {
       const sim = stageMap[n];
@@ -2816,7 +3163,7 @@ app.get('/api/cases/:id/stages', async (req, res) => {
         const prevCompleted = n === 1 || (stageMap[n - 1] && stageMap[n - 1].stageStatus === 'completed');
         return {
           stage: n,
-          name: STAGE_NAMES[n],
+          name: stageNames[n],
           status: prevCompleted ? 'available' : 'locked',
           simulationId: null,
           score: null,
@@ -2830,7 +3177,7 @@ app.get('/api/cases/:id/stages', async (req, res) => {
       }
       return {
         stage: n,
-        name: STAGE_NAMES[n],
+        name: stageNames[n],
         status: sim.stageStatus || 'completed',
         simulationId: sim.id,
         score: sim.score,
@@ -2869,7 +3216,8 @@ app.post('/api/cases/:id/stage-summary', async (req, res) => {
     if (!transcript) return res.status(400).json({ error: 'No transcript to summarize' });
 
     const client = sim.case?.client;
-    const stageName = STAGE_NAMES[sim.stage] || `Stage ${sim.stage}`;
+    const stageNames = await getStageNamesFromTemplate(prisma, sim.case?.templateId);
+    const stageName = stageNames[sim.stage] || `Stage ${sim.stage}`;
 
     const resp = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -2933,7 +3281,8 @@ app.post('/api/simulations/:id/evaluate-stage', async (req, res) => {
       ? sim.transcript.map((t) => `${t.role === 'agent' ? 'Q' : 'A'}: ${t.message || t.original_message || ''}`).join('\n')
       : '';
 
-    const stageName = STAGE_NAMES[sim.stage] || `Stage ${sim.stage}`;
+    const stageNames = await getStageNamesFromTemplate(prisma, sim.case?.templateId);
+    const stageName = stageNames[sim.stage] || `Stage ${sim.stage}`;
 
     const resp = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',

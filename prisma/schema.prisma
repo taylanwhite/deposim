@@ -44,6 +44,8 @@ model Organization {
   brandings  Branding[] @relation("BrandingOrganization")
   prompts    Prompt[]
   invites    Invite[]
+  shortLinks    ShortLink[]
+  depositionTemplates DepositionTemplate[]
 
   @@map("organizations")
 }
@@ -119,23 +121,58 @@ model Client {
   @@map("clients")
 }
 
-model Case {
+model Persona {
   id             String   @id @default(uuid())
-  organizationId String?  @map("organization_id")
-  locationId     String?  @map("location_id")
-  clientId       String   @map("client_id")  // required – deponent info comes from client
-  name           String?  // display name for the case (e.g. "Smith v. Doe")
-  caseNumber     String   @map("case_number")
-  description    String
+  templateId     String   @map("template_id")
+  name           String
+  description    String?  @db.Text
+  systemModifier String   @default("") @db.Text @map("system_modifier")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  template DepositionTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  cases    Case[]             @relation("CaseDefaultPersona")
+  simulations Simulation[]
+
+  @@map("personas")
+}
+
+model DepositionTemplate {
+  id             String   @id @default(uuid())
+  key            String   @unique // stable identifier (e.g. "default", "medical_malpractice_pack")
+  name           String
+  description    String?  @db.Text
+  organizationId String?  @map("organization_id")  // null = global / default pack
+  stages         Json     @default("[]")  // [{ stage: 1, name, prompt }]
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
-  location     Location?     @relation(fields: [locationId], references: [id], onDelete: SetNull)
-  client       Client        @relation(fields: [clientId], references: [id], onDelete: Restrict)
-  caseClients  CaseClient[]
-  simulations  Simulation[]
-  prompts      Prompt[]
+  personas     Persona[]
+
+  @@map("deposition_templates")
+}
+
+model Case {
+  id                String   @id @default(uuid())
+  organizationId    String?  @map("organization_id")
+  locationId        String?  @map("location_id")
+  clientId          String   @map("client_id")  // required – deponent info comes from client
+  name              String?  // display name for the case (e.g. "Smith v. Doe")
+  caseNumber        String   @map("case_number")
+  description       String
+  templateId        String?  @map("template_id")   // DepositionTemplate.id
+  defaultPersonaId  String?  @map("default_persona_id")  // optional – which counsel persona for this case
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  organization    Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  location        Location?     @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  client          Client        @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  defaultPersona   Persona?      @relation("CaseDefaultPersona", fields: [defaultPersonaId], references: [id], onDelete: SetNull)
+  caseClients     CaseClient[]
+  simulations     Simulation[]
+  prompts         Prompt[]
 
   @@map("cases")
 }
@@ -242,11 +279,13 @@ model Simulation {
   stageStatus       String?  @map("stage_status")       // 'completed' | 'retake_recommended' | 'in_progress'
   retakeRecommended Boolean  @default(false) @map("retake_recommended")
   stageSummary      String?  @map("stage_summary")      // AI-generated summary for feeding into next stage
+  personaId         String?  @map("persona_id")         // which counsel persona was used (from template)
 
   createdAt         DateTime @default(now()) @map("created_at")
 
-  case   Case    @relation(fields: [caseId], references: [id], onDelete: Cascade)
-  client Client? @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  case    Case     @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  client  Client?  @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  persona Persona? @relation(fields: [personaId], references: [id], onDelete: SetNull)
 
   @@map("simulations")
 }
@@ -261,4 +300,17 @@ model VideoAnalysis {
   createdAt     DateTime @default(now()) @map("created_at")
 
   @@map("video_analyses")
+}
+
+model ShortLink {
+  id             String   @id @default(uuid())
+  slug           String   @unique  // short code, e.g. "abc12"
+  targetUrl      String   @map("target_url")
+  label          String?  // optional display label
+  organizationId String?  @map("organization_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("short_link")
 }

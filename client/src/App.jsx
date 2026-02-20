@@ -757,6 +757,8 @@ function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterCli
   const topRef = useRef(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
   const [depoSimSentCaseId, setDepoSimSentCaseId] = useState(null);
+  const [depoSimSentShortUrl, setDepoSimSentShortUrl] = useState(null);
+  const [depoSimSending, setDepoSimSending] = useState(false);
   useEffect(() => {
     const onScroll = () => setShowScrollTop(window.scrollY > 150);
     window.addEventListener('scroll', onScroll, { passive: true });
@@ -1042,8 +1044,8 @@ function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterCli
         />
       )}
 
-      <BottomBar tab={tab} onTab={switchTab} onCenterClick={onCenterClick} centerAction={centerAction} onStartDeposim={async (id) => { setDepoSimSentCaseId(id); const simUrl = typeof window !== 'undefined' ? `${window.location.origin}/sim/${id}` : ''; try { const r = await fetch(API + `/cases/${id}/notify-deposim-sent`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ simUrl }) }); if (!r.ok) console.warn('[DepoSim] SMS notify:', r.status, await r.text()); } catch (e) { console.warn('[DepoSim] SMS notify failed:', e); } }} />
-      {depoSimSentCaseId && <DepoSimSentToast caseId={depoSimSentCaseId} onDismiss={() => setDepoSimSentCaseId(null)} />}
+      <BottomBar tab={tab} onTab={switchTab} onCenterClick={onCenterClick} centerAction={centerAction} onStartDeposim={async (id) => { setDepoSimSentCaseId(id); setDepoSimSentShortUrl(null); setDepoSimSending(true); const simUrl = typeof window !== 'undefined' ? `${window.location.origin}/sim/${id}` : ''; try { const r = await fetch(API + `/cases/${id}/notify-deposim-sent`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ simUrl }) }); if (r.ok) { const data = await r.json().catch(() => ({})); setDepoSimSentShortUrl(data.shortUrl || null); } else { setDepoSimSentCaseId(null); console.warn('[DepoSim] SMS notify:', r.status, await r.text()); } } catch (e) { setDepoSimSentCaseId(null); console.warn('[DepoSim] SMS notify failed:', e); } finally { setDepoSimSending(false); } }} />
+      {(depoSimSentCaseId || depoSimSending) && <DepoSimSentToast sending={depoSimSending} caseId={depoSimSentCaseId} shortUrl={depoSimSentShortUrl} onDismiss={() => { setDepoSimSentCaseId(null); setDepoSimSentShortUrl(null); setDepoSimSending(false); }} />}
     </div>
   );
 }
@@ -1114,22 +1116,30 @@ function AnalysisDisplay({ data }) {
   return <div className="analysis-readable">{renderValue(parsed)}</div>;
 }
 
-/* ===== DepoSim Sent Toast (bottom popup with link + Okay) ===== */
-function DepoSimSentToast({ caseId, onDismiss }) {
-  const simUrl = typeof window !== 'undefined' ? `${window.location.origin}/sim/${caseId}` : '';
+/* ===== DepoSim Sent Toast (bottom popup: Sending… then link + Okay) ===== */
+function DepoSimSentToast({ sending, caseId, shortUrl, onDismiss }) {
+  const fullUrl = typeof window !== 'undefined' && caseId ? `${window.location.origin}/sim/${caseId}` : '';
+  const displayUrl = shortUrl || fullUrl;
   const handleLinkClick = (e) => {
     e.preventDefault();
-    if (simUrl) {
-      navigator.clipboard?.writeText(simUrl).catch(() => {});
-      window.open(simUrl, '_blank');
+    if (displayUrl) {
+      navigator.clipboard?.writeText(displayUrl).catch(() => {});
+      window.open(displayUrl, '_blank');
     }
   };
+  if (sending) {
+    return (
+      <div className="deposim-sent-toast">
+        <p className="deposim-sent-toast-message">Sending DepoSim…</p>
+      </div>
+    );
+  }
   return (
     <div className="deposim-sent-toast">
       <p className="deposim-sent-toast-message">The DepoSim has been prepared and sent to the client.</p>
-      {simUrl && (
-        <a href={simUrl} className="deposim-sent-toast-link" onClick={handleLinkClick}>
-          {simUrl}
+      {displayUrl && (
+        <a href={displayUrl} className="deposim-sent-toast-link" onClick={handleLinkClick}>
+          {displayUrl}
         </a>
       )}
       <button type="button" className="deposim-sent-toast-ok" onClick={onDismiss}>Okay</button>
@@ -1364,6 +1374,7 @@ function BottomBar({ tab, onTab, onCenterClick, centerAction, onStartDeposim }) 
 
 /* ===== Create Case form ===== */
 function CreateCaseForm({ goBack, onSuccess, showToast, tab, switchTab }) {
+  const { t } = useT();
   const [caseName, setCaseName] = useState('');
   const [caseNumber, setCaseNumber] = useState('');
   const [selectedClients, setSelectedClients] = useState([]);
@@ -1373,6 +1384,9 @@ function CreateCaseForm({ goBack, onSuccess, showToast, tab, switchTab }) {
   const [locations, setLocations] = useState([]);
   const [locationsLoading, setLocationsLoading] = useState(true);
   const [locationId, setLocationId] = useState('');
+  const [templates, setTemplates] = useState([]);
+  const [templateId, setTemplateId] = useState('');
+  const [defaultPersonaId, setDefaultPersonaId] = useState('');
 
   useEffect(() => {
     setLocationsLoading(true);
@@ -1381,6 +1395,22 @@ function CreateCaseForm({ goBack, onSuccess, showToast, tab, switchTab }) {
       if (locs.length === 1) setLocationId(locs[0].id);
     }).catch(() => {}).finally(() => setLocationsLoading(false));
   }, []);
+
+  useEffect(() => {
+    fetch(API + '/templates')
+      .then(r => r.ok ? r.json() : [])
+      .then((list) => {
+        setTemplates(list);
+        if (!templateId && Array.isArray(list) && list.length > 0) {
+          const def = list.find((x) => x.key === 'default') || list[0];
+          setTemplateId(def?.id || '');
+        }
+      })
+      .catch(() => setTemplates([]));
+  }, []);
+
+  const selectedTemplate = templates.find(t => t.id === templateId) || templates[0];
+  const personas = selectedTemplate?.personas || [];
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -1407,6 +1437,8 @@ function CreateCaseForm({ goBack, onSuccess, showToast, tab, switchTab }) {
           caseNumber: caseNumber.trim(),
           description: description.trim(),
           locationId: locationId || null,
+          templateId: templateId || null,
+          defaultPersonaId: defaultPersonaId || null,
           clients: selectedClients.map(c => ({ clientId: c.id })),
         }),
       });
@@ -1453,6 +1485,26 @@ function CreateCaseForm({ goBack, onSuccess, showToast, tab, switchTab }) {
                   {locations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
                 </select>
               </label>
+            )}
+            {templates.length > 0 && (
+              <>
+                <label>
+                  <span className="label-text">Deposition template</span>
+                  <select className="input" value={templateId} onChange={e => { setTemplateId(e.target.value); setDefaultPersonaId(''); }}>
+                    {templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                  {selectedTemplate?.description && <span className="label-hint" style={{ display: 'block', fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>{selectedTemplate.description}</span>}
+                </label>
+                {personas.length > 0 && (
+                  <label>
+                    <span className="label-text">{t('createCase.defaultPersona')}</span>
+                    <select className="input" value={defaultPersonaId} onChange={e => setDefaultPersonaId(e.target.value)}>
+                      <option value="">Use template default</option>
+                      {personas.map(p => <option key={p.id} value={p.id}>{p.name} — {p.description}</option>)}
+                    </select>
+                  </label>
+                )}
+              </>
             )}
             <div className="form-section-label">Client(s) — deponent(s)</div>
             <ClientAutocomplete selectedClients={selectedClients} onChange={setSelectedClients} placeholder="Search or create client…" />
@@ -1604,6 +1656,157 @@ function CaseNameAccordion({ name, onUpdate, caseId, showToast }) {
   );
 }
 
+/* ===== Case details accordion (name + description + persona; edit toggles all) ===== */
+function CaseDetailsAccordion({ name, description, defaultPersonaId, templateId, personas, onUpdate, caseId, showToast }) {
+  const { t } = useT();
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const canEdit = !!onUpdate && !!caseId;
+
+  const [availablePersonas, setAvailablePersonas] = useState(Array.isArray(personas) ? personas : []);
+  const resolvedTemplateId = templateId || null;
+
+  const [draftName, setDraftName] = useState(name || '');
+  const [draftDesc, setDraftDesc] = useState(description || '');
+  const [draftPersonaId, setDraftPersonaId] = useState(defaultPersonaId || '');
+
+  useEffect(() => { setDraftName(name || ''); }, [name]);
+  useEffect(() => { setDraftDesc(description || ''); }, [description]);
+  useEffect(() => { setDraftPersonaId(defaultPersonaId || ''); }, [defaultPersonaId]);
+  useEffect(() => { setAvailablePersonas(Array.isArray(personas) ? personas : []); }, [personas]);
+
+  // If the case payload didn't include personas, fetch them from the template.
+  useEffect(() => {
+    if (Array.isArray(personas) && personas.length > 0) return;
+    if (availablePersonas.length > 0) return;
+    if (!resolvedTemplateId) return;
+    fetch(`${API}/templates/${resolvedTemplateId}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((tpl) => {
+        const next = Array.isArray(tpl?.personas) ? tpl.personas : [];
+        setAvailablePersonas(next);
+      })
+      .catch(() => {});
+    // Only refetch when template changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedTemplateId]);
+
+  if (!canEdit && !name && !description) return null;
+
+  const displayName = (name || '').trim() || '—';
+  const displayDesc = description || '';
+  const truncatedDesc = displayDesc.length <= DESCRIPTION_TRUNCATE_LEN
+    ? displayDesc
+    : displayDesc.slice(0, DESCRIPTION_TRUNCATE_LEN).trim() + '…';
+
+  const currentPersona = Array.isArray(availablePersonas) ? availablePersonas.find((p) => p.id === defaultPersonaId) : null;
+  const personaLabel = currentPersona ? `${currentPersona.name}${currentPersona.description ? ` — ${currentPersona.description}` : ''}` : t('createCase.defaultPersonaNone');
+
+  const handleSave = async () => {
+    if (!caseId || !onUpdate) return;
+    setSaving(true);
+    try {
+      const payload = {
+        name: draftName.trim() || null,
+        description: draftDesc.trim(),
+        defaultPersonaId: draftPersonaId || null,
+        ...(resolvedTemplateId ? { templateId: resolvedTemplateId } : {}),
+      };
+      const r = await fetch(`${API}/cases/${caseId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error('Failed');
+      onUpdate({
+        name: payload.name,
+        description: payload.description,
+        defaultPersonaId: payload.defaultPersonaId,
+        ...(payload.templateId ? { templateId: payload.templateId } : {}),
+      });
+      setEditing(false);
+      showToast?.(t('case.personaUpdated'));
+    } catch {
+      showToast?.(t('common.error', { msg: 'Failed to update case' }));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCancel = () => {
+    setDraftName(name || '');
+    setDraftDesc(description || '');
+    setDraftPersonaId(defaultPersonaId || '');
+    setEditing(false);
+  };
+
+  return (
+    <div className={`description-accordion${open ? ' open' : ''}`}>
+      <button type="button" className="description-accordion-header" onClick={() => !editing && setOpen((o) => !o)}>
+        <div className="description-accordion-content">
+          <span className="description-accordion-label">{t('case.details') || 'Case details'}</span>
+          {!editing && (
+            <span className="description-accordion-preview">
+              {open ? '' : `${displayName}${truncatedDesc ? ` — ${truncatedDesc}` : ''}`}
+            </span>
+          )}
+        </div>
+        <span className={`description-accordion-chevron${open ? ' open' : ''}`}>▼</span>
+      </button>
+      {open && (
+        <div className="description-accordion-body">
+          {editing ? (
+            <>
+              <label style={{ display: 'block', marginBottom: 10 }}>
+                <span className="label-text">{t('case.name') || 'Name'}</span>
+                <input className="input" type="text" value={draftName} onChange={(e) => setDraftName(e.target.value)} placeholder="e.g. Smith v. Doe" />
+              </label>
+              <label style={{ display: 'block', marginBottom: 10 }}>
+                <span className="label-text">{t('case.description') || 'Description'}</span>
+                <textarea className="input textarea" value={draftDesc} onChange={(e) => setDraftDesc(e.target.value)} rows={6} />
+              </label>
+              {Array.isArray(availablePersonas) && availablePersonas.length > 0 && (
+                <label style={{ display: 'block', marginBottom: 12 }}>
+                  <span className="label-text">{t('createCase.defaultPersona')}</span>
+                  <select className="input" value={draftPersonaId} onChange={(e) => setDraftPersonaId(e.target.value)} style={{ maxWidth: 360 }}>
+                    <option value="">{t('createCase.defaultPersonaNone')}</option>
+                    {availablePersonas.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}{p.description ? ` — ${p.description}` : ''}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <div className="description-accordion-actions">
+                <button type="button" className="btn secondary btn-sm" onClick={handleCancel} disabled={saving}>{t('common.cancel') || 'Cancel'}</button>
+                <button type="button" className="btn primary btn-sm" onClick={handleSave} disabled={saving}>{saving ? (t('common.loading') || 'Saving…') : (t('common.save') || 'Save')}</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="description-accordion-text" style={{ marginBottom: 10 }}>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>{displayName}</div>
+                {displayDesc ? <div style={{ whiteSpace: 'pre-wrap' }}>{displayDesc}</div> : <div style={{ color: 'var(--muted)' }}>—</div>}
+              </div>
+              {Array.isArray(availablePersonas) && availablePersonas.length > 0 && (
+                <div style={{ color: 'var(--muted)', fontSize: 13, marginBottom: 8 }}>
+                  <span style={{ fontWeight: 600, marginRight: 6 }}>{t('createCase.defaultPersona')}:</span>
+                  <span>{personaLabel}</span>
+                </div>
+              )}
+              {canEdit && (
+                <button type="button" className="btn-link description-accordion-edit" onClick={() => { setEditing(true); setOpen(true); }}>
+                  {t('case.detailsEdit')}
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ===== Sim card: Score/Body | Name | Date (gradient) | Duration ===== */
 function getBodyScore(s) {
   if (!s.bodyAnalysis) return null;
@@ -1700,6 +1903,8 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
   const [simSearch, setSimSearch] = useState('');
   const [simSearchExpanded, setSimSearchExpanded] = useState(false);
   const [depoSimSentCaseId, setDepoSimSentCaseId] = useState(null);
+  const [depoSimSentShortUrl, setDepoSimSentShortUrl] = useState(null);
+  const [depoSimSending, setDepoSimSending] = useState(false);
   const [stageData, setStageData] = useState(null);
   const [caseClients, setCaseClients] = useState(d.caseClients || []);
   const [showAddClient, setShowAddClient] = useState(false);
@@ -1755,6 +1960,8 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
   const handleStartDeposim = async (targetClient) => {
     const id = caseData.id;
     setDepoSimSentCaseId(id);
+    setDepoSimSentShortUrl(null);
+    setDepoSimSending(true);
     setShowClientPicker(false);
     const simUrl = typeof window !== 'undefined' ? `${window.location.origin}/sim/${id}` : '';
     try {
@@ -1763,9 +1970,18 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ simUrl, clientId: targetClient?.id || null }),
       });
-      if (!r.ok) console.warn('[DepoSim] SMS notify:', r.status, await r.text());
+      if (r.ok) {
+        const data = await r.json().catch(() => ({}));
+        setDepoSimSentShortUrl(data.shortUrl || null);
+      } else {
+        setDepoSimSentCaseId(null);
+        console.warn('[DepoSim] SMS notify:', r.status, await r.text());
+      }
     } catch (e) {
+      setDepoSimSentCaseId(null);
       console.warn('[DepoSim] SMS notify failed:', e);
+    } finally {
+      setDepoSimSending(false);
     }
   };
 
@@ -1874,8 +2090,16 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
             )}
           </div>
 
-          <CaseNameAccordion name={caseData.name} onUpdate={(name) => handleCaseUpdate({ name })} caseId={caseData.id} showToast={showToast} />
-          <DescriptionAccordion description={caseData.description} onUpdate={(desc) => handleCaseUpdate({ description: desc })} caseId={caseData.id} showToast={showToast} />
+          <CaseDetailsAccordion
+            name={caseData.name}
+            description={caseData.description}
+            defaultPersonaId={caseData.defaultPersonaId}
+            templateId={caseData.templateId || caseData.template?.id || null}
+            personas={caseData.template?.personas || []}
+            caseId={caseData.id}
+            showToast={showToast}
+            onUpdate={(updates) => handleCaseUpdate(updates)}
+          />
 
           <div className="call-history-section">
             <div className="cases-subheader">
@@ -1905,7 +2129,7 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
       </div>
       <BottomBar tab={tab} onTab={switchTab} onCenterClick={handleCenterAction} centerAction={{ type: 'startDeposim', caseId: caseData.id }} onStartDeposim={handleCenterAction} />
       {toast && <div className="toast">{toast}</div>}
-      {depoSimSentCaseId && <DepoSimSentToast caseId={depoSimSentCaseId} onDismiss={() => setDepoSimSentCaseId(null)} />}
+      {(depoSimSentCaseId || depoSimSending) && <DepoSimSentToast sending={depoSimSending} caseId={depoSimSentCaseId} shortUrl={depoSimSentShortUrl} onDismiss={() => { setDepoSimSentCaseId(null); setDepoSimSentShortUrl(null); setDepoSimSending(false); }} />}
       {showClientPicker && (
         <ClientPickerModal
           clients={caseClients}
@@ -2125,6 +2349,7 @@ function CasesListPage() {
   const [caseSearch, setCaseSearch] = useState('');
   const [caseSearchExpanded, setCaseSearchExpanded] = useState(false);
   const [depoSimSentCaseId, setDepoSimSentCaseId] = useState(null);
+  const [depoSimSentShortUrl, setDepoSimSentShortUrl] = useState(null);
   const [filterOrgId, setFilterOrgId] = useState('');
   const [filterLocationId, setFilterLocationId] = useState('');
 
@@ -2276,7 +2501,7 @@ function CasesListPage() {
       </div>
       <BottomBar tab="cases" centerAction={null} />
       {toast && <div className="toast">{toast}</div>}
-      {depoSimSentCaseId && <DepoSimSentToast caseId={depoSimSentCaseId} onDismiss={() => setDepoSimSentCaseId(null)} />}
+      {depoSimSentCaseId && <DepoSimSentToast sending={false} caseId={depoSimSentCaseId} shortUrl={depoSimSentShortUrl} onDismiss={() => { setDepoSimSentCaseId(null); setDepoSimSentShortUrl(null); }} />}
     </div>
   );
 }
@@ -2287,7 +2512,7 @@ function CaseDetailPage() {
   const nav = useNavigate();
   const prefix = useLangPrefix();
   const { t } = useT();
-  const { toast, showToast } = useAppContext();
+  const { toast, showToast, access } = useAppContext();
   const [caseData, setCaseData] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -2311,8 +2536,6 @@ function CaseDetailPage() {
         <p style={{ color: 'var(--muted)' }}>Case not found.</p>
       </div>
     );
-
-  const { access } = useAppContext();
   const goBack = () => nav(`${prefix}/cases`);
   const goDetail = (type, data) => {
     if (type === 'simulation') nav(`${prefix}/cases/${id}/sim/${data.id}`);
@@ -3228,6 +3451,413 @@ function InviteClaimPage() {
   );
 }
 
+/* ===== Mini Link redirect (public): /s/:slug → resolve and redirect ===== */
+function ShortLinkRedirect() {
+  const { slug } = useParams();
+  const [status, setStatus] = useState('loading'); // 'loading' | 'ok' | 'error'
+
+  useEffect(() => {
+    if (!slug) {
+      setStatus('error');
+      return;
+    }
+    fetch(`${API}/short-links/resolve/${encodeURIComponent(slug)}`)
+      .then((r) => {
+        if (!r.ok) {
+          setStatus('error');
+          return null;
+        }
+        return r.json();
+      })
+      .then((data) => {
+        if (data?.url) {
+          setStatus('ok');
+          window.location.href = data.url;
+        } else {
+          setStatus('error');
+        }
+      })
+      .catch(() => setStatus('error'));
+  }, [slug]);
+
+  if (status === 'error') {
+    return (
+      <div style={{ display: 'grid', placeItems: 'center', minHeight: '100vh', fontFamily: 'inherit' }}>
+        <p style={{ color: 'var(--muted, #888)', fontSize: 14 }}>Short link not found.</p>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: 'grid', placeItems: 'center', minHeight: '100vh', fontFamily: 'inherit' }}>
+      <p style={{ color: 'var(--muted, #888)', fontSize: 14 }}>Redirecting…</p>
+    </div>
+  );
+}
+
+/* ===== Short Links Manager (data table + create form) ===== */
+function ShortLinkManager({ showToast }) {
+  const { t } = useT();
+  const [links, setLinks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [targetUrl, setTargetUrl] = useState('');
+  const [slug, setSlug] = useState('');
+  const [label, setLabel] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [copiedId, setCopiedId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
+
+  const loadLinks = useCallback(() => {
+    setLoading(true);
+    fetch(API + '/short-links')
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setLinks)
+      .catch(() => setLinks([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => loadLinks(), [loadLinks]);
+
+  const shortLinkBase = typeof window !== 'undefined' ? `${window.location.origin}/s` : '/s';
+  const copyShortLink = (item) => {
+    const url = `${shortLinkBase}/${item.slug}`;
+    navigator.clipboard.writeText(url).then(() => {
+      setCopiedId(item.id);
+      setTimeout(() => setCopiedId(null), 2000);
+      showToast(t('shortLinks.copied'));
+    });
+  };
+
+  const handleCreate = async (e) => {
+    e.preventDefault();
+    const url = targetUrl.trim();
+    if (!url || creating) return;
+    setCreating(true);
+    try {
+      const r = await fetch(API + '/short-links', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          targetUrl: url,
+          slug: slug.trim() || undefined,
+          label: label.trim() || undefined,
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || 'Failed to create');
+      setTargetUrl('');
+      setSlug('');
+      setLabel('');
+      loadLinks();
+      showToast(t('shortLinks.created'));
+    } catch (err) {
+      showToast(t('common.error', { msg: err.message }));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm(t('shortLinks.confirmDelete'))) return;
+    setDeletingId(id);
+    try {
+      const r = await fetch(API + `/short-links/${id}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error('Failed');
+      loadLinks();
+      showToast(t('shortLinks.deleted'));
+    } catch (err) {
+      showToast(t('common.error', { msg: err.message }));
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  if (loading) return <p style={{ color: 'var(--muted)', padding: 12 }}>{t('common.loading')}</p>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <form onSubmit={handleCreate} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'flex-end' }}>
+          <label style={{ flex: '1 1 200px', minWidth: 0 }}>
+            <span className="label-text">{t('shortLinks.targetUrl')}</span>
+            <input
+              type="url"
+              className="input"
+              placeholder="https://example.com/sim/..."
+              value={targetUrl}
+              onChange={(e) => setTargetUrl(e.target.value)}
+              style={{ width: '100%' }}
+            />
+          </label>
+          <label style={{ width: 120 }}>
+            <span className="label-text">{t('shortLinks.slug')}</span>
+            <input
+              type="text"
+              className="input"
+              placeholder={t('shortLinks.slugPlaceholder')}
+              value={slug}
+              onChange={(e) => setSlug(e.target.value.replace(/[^a-z0-9_-]/gi, '').toLowerCase())}
+              style={{ width: '100%' }}
+            />
+          </label>
+          <label style={{ width: 140 }}>
+            <span className="label-text">{t('shortLinks.label')}</span>
+            <input
+              type="text"
+              className="input"
+              placeholder={t('shortLinks.labelPlaceholder')}
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              style={{ width: '100%' }}
+            />
+          </label>
+          <button type="submit" className="btn btn-primary" disabled={creating || !targetUrl.trim()}>
+            {creating ? t('shortLinks.creating') : t('shortLinks.create')}
+          </button>
+        </div>
+      </form>
+
+      <div style={{ overflowX: 'auto' }}>
+        <table className="short-links-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid rgba(128,128,128,0.3)', textAlign: 'left' }}>
+              <th style={{ padding: '8px 10px', fontWeight: 600 }}>{t('shortLinks.shortLink')}</th>
+              <th style={{ padding: '8px 10px', fontWeight: 600 }}>{t('shortLinks.targetUrl')}</th>
+              <th style={{ padding: '8px 10px', fontWeight: 600 }}>{t('shortLinks.label')}</th>
+              <th style={{ padding: '8px 10px', fontWeight: 600 }}>{t('shortLinks.createdAt')}</th>
+              <th style={{ padding: '8px 10px', fontWeight: 600, width: 120 }}>{t('shortLinks.actions')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {links.map((item) => (
+              <tr key={item.id} style={{ borderBottom: '1px solid rgba(128,128,128,0.15)' }}>
+                <td style={{ padding: '8px 10px', fontFamily: 'monospace', fontSize: 12 }}>
+                  /s/{item.slug}
+                </td>
+                <td style={{ padding: '8px 10px', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.targetUrl}>
+                  {item.targetUrl}
+                </td>
+                <td style={{ padding: '8px 10px', color: 'var(--muted)' }}>{item.label || '—'}</td>
+                <td style={{ padding: '8px 10px', color: 'var(--muted)', fontSize: 12 }}>
+                  {new Date(item.createdAt).toLocaleDateString()}
+                </td>
+                <td style={{ padding: '8px 10px' }}>
+                  <button
+                    type="button"
+                    className="btn-link"
+                    onClick={() => copyShortLink(item)}
+                    style={{ marginRight: 8 }}
+                  >
+                    {copiedId === item.id ? t('team.copied') : t('shortLinks.copy')}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-link"
+                    onClick={() => handleDelete(item.id)}
+                    disabled={deletingId === item.id}
+                    style={{ color: '#ed4956' }}
+                  >
+                    {deletingId === item.id ? '…' : t('common.delete')}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {links.length === 0 && (
+        <p style={{ color: 'var(--muted)', fontSize: 13 }}>{t('shortLinks.empty')}</p>
+      )}
+    </div>
+  );
+}
+
+/* ===== Deposition Templates Manager (data table) ===== */
+function DepositionTemplatesManager({ showToast }) {
+  const { t } = useT();
+  const [templates, setTemplates] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(null); // { id, name, description, stages, personas }
+  const [saving, setSaving] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
+
+  const loadTemplates = useCallback(() => {
+    setLoading(true);
+    fetch(API + '/templates')
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setTemplates)
+      .catch(() => setTemplates([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => loadTemplates(), [loadTemplates]);
+
+  const handleCreateFromDefault = async () => {
+    const defaultT = templates.find((x) => x.key === 'default');
+    if (!defaultT) {
+      showToast('Default template not found');
+      return;
+    }
+    setCreating(true);
+    try {
+      const name = `${defaultT.name} (copy)`;
+      const r = await fetch(API + '/templates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          description: defaultT.description || '',
+          stages: defaultT.stages || [],
+          personas: defaultT.personas || [],
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || 'Failed to create');
+      loadTemplates();
+      setEditing({ id: data.id, name: data.name, description: data.description || '', stages: JSON.stringify(data.stages || [], null, 2), personas: JSON.stringify(data.personas || [], null, 2) });
+      showToast(t('templates.created'));
+    } catch (err) {
+      showToast(t('common.error', { msg: err.message }));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editing || saving) return;
+    let stages = [];
+    let personas = [];
+    try {
+      stages = JSON.parse(editing.stages || '[]');
+      personas = JSON.parse(editing.personas || '[]');
+    } catch (e) {
+      showToast('Invalid JSON in stages or personas');
+      return;
+    }
+    setSaving(true);
+    try {
+      const r = await fetch(API + `/templates/${editing.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: editing.name.trim(),
+          description: editing.description.trim() || null,
+          stages,
+          personas,
+        }),
+      });
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to update');
+      }
+      loadTemplates();
+      setEditing(null);
+      showToast(t('templates.updated'));
+    } catch (err) {
+      showToast(t('common.error', { msg: err.message }));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (id === 'default') return;
+    if (!window.confirm(t('templates.confirmDelete'))) return;
+    setDeletingId(id);
+    try {
+      const r = await fetch(API + `/templates/${id}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error('Failed');
+      loadTemplates();
+      if (editing?.id === id) setEditing(null);
+      showToast(t('templates.deleted'));
+    } catch (err) {
+      showToast(t('common.error', { msg: err.message }));
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const openEdit = (template) => {
+    setEditing({
+      id: template.id,
+      name: template.name,
+      description: template.description || '',
+      stages: JSON.stringify(Array.isArray(template.stages) ? template.stages : [], null, 2),
+      personas: JSON.stringify(Array.isArray(template.personas) ? template.personas : [], null, 2),
+    });
+  };
+
+  if (loading) return <p style={{ color: 'var(--muted)', padding: 12 }}>{t('common.loading')}</p>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <button type="button" className="btn btn-primary" onClick={handleCreateFromDefault} disabled={creating || !templates.find((x) => x.key === 'default')}>
+          {creating ? t('common.loading') : t('templates.createFromDefault')}
+        </button>
+      </div>
+
+      <div style={{ overflowX: 'auto' }}>
+        <table className="short-links-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid rgba(128,128,128,0.3)', textAlign: 'left' }}>
+              <th style={{ padding: '8px 10px', fontWeight: 600 }}>{t('templates.name')}</th>
+              <th style={{ padding: '8px 10px', fontWeight: 600 }}>{t('templates.description')}</th>
+              <th style={{ padding: '8px 10px', fontWeight: 600 }}>{t('templates.stages')}</th>
+              <th style={{ padding: '8px 10px', fontWeight: 600 }}>{t('templates.personas')}</th>
+              <th style={{ padding: '8px 10px', fontWeight: 600, width: 140 }}>{t('shortLinks.actions')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {templates.map((row) => (
+              <tr key={row.id} style={{ borderBottom: '1px solid rgba(128,128,128,0.15)' }}>
+                <td style={{ padding: '8px 10px', fontWeight: 500 }}>{row.name}</td>
+                <td style={{ padding: '8px 10px', color: 'var(--muted)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.description}>{row.description || '—'}</td>
+                <td style={{ padding: '8px 10px' }}>{Array.isArray(row.stages) ? row.stages.length : 0}</td>
+                <td style={{ padding: '8px 10px' }}>{Array.isArray(row.personas) ? row.personas.length : 0}</td>
+                <td style={{ padding: '8px 10px' }}>
+                  <button type="button" className="btn-link" onClick={() => openEdit(row)} disabled={row.key === 'default'} style={{ marginRight: 8 }}>{t('common.edit')}</button>
+                  <button type="button" className="btn-link" onClick={() => handleDelete(row.id)} disabled={row.key === 'default' || deletingId === row.id} style={{ color: row.key === 'default' ? 'var(--muted)' : '#ed4956' }}>{deletingId === row.id ? '…' : t('common.delete')}</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {templates.length === 0 && <p style={{ color: 'var(--muted)', fontSize: 13 }}>{t('templates.empty')}</p>}
+
+      {editing && (
+        <div className="modal-overlay" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={(e) => e.target === e.currentTarget && setEditing(null)}>
+          <div className="card" style={{ maxWidth: 560, width: '90%', maxHeight: '90vh', overflow: 'auto' }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginBottom: 16 }}>{t('templates.edit')} — {editing.name}</h3>
+            <label style={{ display: 'block', marginBottom: 12 }}>
+              <span className="label-text">{t('templates.name')}</span>
+              <input className="input" value={editing.name} onChange={(e) => setEditing((o) => ({ ...o, name: e.target.value }))} style={{ width: '100%' }} />
+            </label>
+            <label style={{ display: 'block', marginBottom: 12 }}>
+              <span className="label-text">{t('templates.description')}</span>
+              <input className="input" value={editing.description} onChange={(e) => setEditing((o) => ({ ...o, description: e.target.value }))} style={{ width: '100%' }} />
+            </label>
+            <label style={{ display: 'block', marginBottom: 12 }}>
+              <span className="label-text">{t('templates.stagesJson')}</span>
+              <textarea className="input" value={editing.stages} onChange={(e) => setEditing((o) => ({ ...o, stages: e.target.value }))} rows={6} style={{ width: '100%', fontFamily: 'monospace', fontSize: 12 }} />
+            </label>
+            <label style={{ display: 'block', marginBottom: 16 }}>
+              <span className="label-text">{t('templates.personasJson')}</span>
+              <textarea className="input" value={editing.personas} onChange={(e) => setEditing((o) => ({ ...o, personas: e.target.value }))} rows={8} style={{ width: '100%', fontFamily: 'monospace', fontSize: 12 }} />
+            </label>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button type="button" className="btn secondary" onClick={() => setEditing(null)}>{t('common.cancel')}</button>
+              <button type="button" className="btn primary" onClick={handleSaveEdit} disabled={saving}>{saving ? t('common.loading') : t('common.save')}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ===== Settings Page ===== */
 function SettingsPage() {
   const { theme, handleThemeChange, handleLanguageChange, toast, showToast, access } = useAppContext();
@@ -3320,6 +3950,18 @@ function SettingsPage() {
             <div className="card">
               <h3>{t('settings.locations')}</h3>
               <LocationManager showToast={showToast} orgRefresh={orgRefresh} />
+            </div>
+          )}
+          {(access?.isAdmin || access?.isSuper) && (
+            <div className="card">
+              <h3>{t('settings.shortLinks')}</h3>
+              <ShortLinkManager showToast={showToast} />
+            </div>
+          )}
+          {(access?.isAdmin || access?.isSuper) && (
+            <div className="card">
+              <h3>{t('settings.templates')}</h3>
+              <DepositionTemplatesManager showToast={showToast} />
             </div>
           )}
           {showPrompts && (
@@ -3640,6 +4282,8 @@ export default function App() {
         </Route>
         {/* Invite claim */}
         <Route path="/invite/:code" element={<InviteClaimPage />} />
+        {/* Public: mini link redirect (short links) */}
+        <Route path="/s/:slug" element={<ShortLinkRedirect />} />
         {/* Public: deponent simulation routes (no sign-in required) */}
         <Route path="/sim/:caseId" element={<Navigate to="stage/1" replace />} />
         <Route path="/sim/:caseId/stage/:stage" element={<SimPage />} />

@@ -2,7 +2,6 @@
   "nav.cases": "Cases",
   "nav.settings": "Settings",
   "nav.newCase": "New Case",
-
   "cases.title": "Cases",
   "cases.search": "Search cases…",
   "cases.empty": "No cases yet. Tap + to create one.",
@@ -13,7 +12,6 @@
   "cases.sort.name": "Name",
   "cases.filter.allOrgs": "All Orgs",
   "cases.filter.allLocations": "All Locations",
-
   "case.simHistory": "Simulation History",
   "case.noSims": "No simulations yet. Start a DepoSim to see results here.",
   "case.description": "Description",
@@ -26,7 +24,7 @@
   "case.deleteConfirm": "Permanently delete this case and all its simulations? Client records will not be deleted.",
   "case.deleted": "Case deleted.",
   "case.deleteError": "Failed to delete case.",
-
+  "case.personaUpdated": "Default persona updated.",
   "sim.consent.title": "Prepare for Your Simulation",
   "sim.consent.subtitle": "We need camera and microphone access for body language analysis during the simulated deposition.",
   "sim.consent.enableCamera": "Enable Camera & Microphone",
@@ -39,11 +37,9 @@
   "sim.consent.cameraBlockedStep2": "Set Camera to Allow",
   "sim.consent.cameraBlockedStep3": "Reload this page",
   "sim.consent.reloadPage": "Reload Page",
-
   "sim.ready.title": "Ready",
   "sim.ready.subtitle": "Camera active. Tap below to start your simulated deposition.",
   "sim.ready.start": "Start Simulation",
-
   "sim.calling.speak": "Speak normally — the AI opposing counsel will respond.",
   "sim.calling.finished": "When finished, tap End Call below.",
   "sim.calling.conversation": "Conversation",
@@ -51,14 +47,12 @@
   "sim.calling.you": "You",
   "sim.calling.counsel": "Counsel",
   "sim.calling.endCall": "End Call & Upload",
-
   "sim.postcall.complete": "Session Complete",
   "sim.postcall.uploading": "Uploading video for body language analysis…",
   "sim.postcall.analyzing": "Upload complete. Analyzing video…",
   "sim.postcall.analysisComplete": "Body Language Analysis Complete",
   "sim.postcall.viewResults": "View your simulation results and analysis in the app.",
   "sim.postcall.backToCases": "Back to Cases — View Results",
-
   "sim.stage.continue": "Continue to {name}",
   "sim.stage.retake": "Retake {name}",
   "sim.stage.allComplete": "All Stages Complete",
@@ -66,17 +60,14 @@
   "sim.stage.retakeRecommended": "We recommend retaking this section for better preparation.",
   "sim.stage.stageComplete": "{name} — Complete",
   "sim.stage.evaluating": "Evaluating your performance…",
-
   "sim.stage.name1": "Background & Employment",
   "sim.stage.name2": "Accident & Aftermath",
   "sim.stage.name3": "Medical History",
   "sim.stage.name4": "Treatment & Condition",
-
   "sim.stage.short1": "Background",
   "sim.stage.short2": "Accident",
   "sim.stage.short3": "Medical",
   "sim.stage.short4": "Treatment",
-
   "settings.title": "Settings",
   "settings.appearance": "Appearance",
   "settings.dark": "Dark",
@@ -89,7 +80,37 @@
   "settings.teamInvites": "Team & Invites",
   "settings.locations": "Locations",
   "settings.organizations": "Organizations",
-
+  "settings.shortLinks": "Short Links",
+  "settings.templates": "Deposition templates",
+  "shortLinks.targetUrl": "Target URL",
+  "shortLinks.slug": "Short code",
+  "shortLinks.slugPlaceholder": "Auto",
+  "shortLinks.label": "Label",
+  "shortLinks.labelPlaceholder": "Optional",
+  "shortLinks.create": "Create short link",
+  "shortLinks.creating": "Creating…",
+  "shortLinks.shortLink": "Short link",
+  "shortLinks.createdAt": "Created",
+  "shortLinks.actions": "Actions",
+  "shortLinks.copy": "Copy",
+  "shortLinks.empty": "No short links yet. Create one above.",
+  "shortLinks.copied": "Short link copied",
+  "shortLinks.created": "Short link created",
+  "shortLinks.confirmDelete": "Delete this short link?",
+  "shortLinks.deleted": "Short link deleted",
+  "templates.name": "Name",
+  "templates.description": "Description",
+  "templates.stages": "Stages",
+  "templates.personas": "Personas",
+  "templates.createFromDefault": "Create from default",
+  "templates.edit": "Edit template",
+  "templates.stagesJson": "Stages (JSON)",
+  "templates.personasJson": "Personas (JSON)",
+  "templates.created": "Template created",
+  "templates.updated": "Template updated",
+  "templates.deleted": "Template deleted",
+  "templates.confirmDelete": "Delete this template?",
+  "templates.empty": "No templates. Create one from default.",
   "createCase.title": "New Case",
   "createCase.caseNumber": "Case Number",
   "createCase.description": "Case Description",
@@ -98,13 +119,13 @@
   "createCase.phone": "Phone",
   "createCase.email": "Email",
   "createCase.create": "Create Case",
-
+  "createCase.defaultPersona": "Default opposing counsel persona",
+  "createCase.defaultPersonaNone": "None",
   "simDetail.transcript": "Transcript",
   "simDetail.bodyLanguage": "Body Language",
   "simDetail.score": "Score",
   "simDetail.duration": "Duration",
   "simDetail.status": "Status",
-
   "client.title": "My Cases",
   "client.welcome": "Welcome back",
   "client.noCases": "No cases linked to your account yet.",
@@ -114,10 +135,8 @@
   "client.caseNumber": "Case #",
   "client.viewCase": "View Case",
   "client.startSim": "Start Simulation",
-
   "role.admin": "Admin",
   "role.user": "User",
-
   "org.loading": "Loading organizations…",
   "org.newPlaceholder": "New organization name",
   "org.creating": "Creating…",
@@ -139,7 +158,6 @@
   "org.roleUpdated": "Role updated",
   "org.remove": "Remove",
   "org.stats": "{users} users · {locations} locations · {cases} cases",
-
   "team.loading": "Loading team…",
   "team.emailPlaceholder": "Email (optional)",
   "team.creating": "Creating…",
@@ -161,7 +179,6 @@
   "team.copyLink": "Copy Link",
   "team.revoke": "Revoke",
   "team.empty": "No members or invites yet. Create an invite to get started.",
-
   "loc.loading": "Loading locations…",
   "loc.modifyingFor": "Modifying locations for organization",
   "loc.selectOrg": "Select organization…",
@@ -183,28 +200,23 @@
   "loc.removedUser": "User removed from location",
   "loc.noMembersAvail": "No members in your organization yet. Use the \"Team & Invites\" section above to invite members.",
   "loc.allAssigned": "All members are already assigned to this location.",
-
   "invite.loading": "Loading…",
   "invite.joining": "Joining organization…",
   "invite.success": "You're in! Redirecting…",
   "invite.failed": "Failed to claim invite.",
   "invite.networkError": "Network error.",
   "invite.goToDashboard": "Go to Dashboard",
-
   "noAccess.title": "No Access",
   "noAccess.message": "Your account is not linked to any location. Ask your administrator for an invite link, or check your email for an invitation.",
   "noAccess.signOut": "Sign Out",
-
   "search.placeholder": "Search…",
   "search.noMatches": "No matches",
-
   "chip.org": "Org",
   "chip.loc": "Loc",
   "group.locations": "Locations",
   "group.organizations": "Organizations",
   "multiSelect.locationCount": "{count} location(s)",
   "multiSelect.noMatches": "No matches found",
-
   "common.back": "Back",
   "common.loading": "Loading…",
   "common.save": "Save",
@@ -213,5 +225,9 @@
   "common.okay": "Okay",
   "common.noCase": "No case selected.",
   "common.backToApp": "Back to app",
-  "common.error": "Error: {msg}"
+  "common.error": "Error: {msg}",
+  "case.details": "Case details",
+  "case.name": "Name",
+  "common.edit": "Edit",
+  "case.detailsEdit": "Edit details"
 }
