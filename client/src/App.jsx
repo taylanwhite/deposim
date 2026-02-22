@@ -760,7 +760,7 @@ function MomentVideoPopup({ moment, simulationId, onClose }) {
 }
 
 /* ===== Simulation Detail: Transcript bubbles + Body tab ===== */
-function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterClick }) {
+function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterClick, renderBottomBar }) {
   const [simTab, setSimTab] = useState('transcript');
   const topRef = useRef(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
@@ -1052,7 +1052,7 @@ function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterCli
         />
       )}
 
-      <BottomBar tab={tab} onTab={switchTab} onCenterClick={onCenterClick} centerAction={centerAction} onStartDeposim={async (id) => { setDepoSimSentCaseId(id); setDepoSimSentShortUrl(null); setDepoSimSending(true); const simUrl = typeof window !== 'undefined' ? `${window.location.origin}/sim/${id}` : ''; try { const r = await fetch(API + `/cases/${id}/notify-deposim-sent`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ simUrl }) }); if (r.ok) { const data = await r.json().catch(() => ({})); setDepoSimSentShortUrl(data.shortUrl || null); } else { setDepoSimSentCaseId(null); console.warn('[DepoSim] SMS notify:', r.status, await r.text()); } } catch (e) { setDepoSimSentCaseId(null); console.warn('[DepoSim] SMS notify failed:', e); } finally { setDepoSimSending(false); } }} />
+      {renderBottomBar ? renderBottomBar(tab) : <BottomBar tab={tab} onTab={switchTab} onCenterClick={onCenterClick} centerAction={centerAction} onStartDeposim={async (id) => { setDepoSimSentCaseId(id); setDepoSimSentShortUrl(null); setDepoSimSending(true); const simUrl = typeof window !== 'undefined' ? `${window.location.origin}/sim/${id}` : ''; try { const r = await fetch(API + `/cases/${id}/notify-deposim-sent`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ simUrl }) }); if (r.ok) { const data = await r.json().catch(() => ({})); setDepoSimSentShortUrl(data.shortUrl || null); } else { setDepoSimSentCaseId(null); console.warn('[DepoSim] SMS notify:', r.status, await r.text()); } } catch (e) { setDepoSimSentCaseId(null); console.warn('[DepoSim] SMS notify failed:', e); } finally { setDepoSimSending(false); } }} /> }
       {(depoSimSentCaseId || depoSimSending) && <DepoSimSentToast sending={depoSimSending} caseId={depoSimSentCaseId} shortUrl={depoSimSentShortUrl} onDismiss={() => { setDepoSimSentCaseId(null); setDepoSimSentShortUrl(null); setDepoSimSending(false); }} />}
     </div>
   );
@@ -1877,6 +1877,7 @@ const STAGE_NAMES_SHORT = ['Background', 'Accident', 'Medical', 'Treatment'];
 function SimCard({ sim: s, caseData, onClick }) {
   const bodyScore = getBodyScore(s);
   const combined = getCombinedScore(s);
+  const isProcessing = combined == null;
   const gradient = getScoreGradient(combined);
   const client = caseData?.client || caseData;
   const clientFallback = client ? `${client.lastName || ''}, ${client.firstName || ''}`.trim() : '';
@@ -1885,18 +1886,24 @@ function SimCard({ sim: s, caseData, onClick }) {
   const duration = s.callDurationSecs != null ? `${Math.max(1, Math.round(s.callDurationSecs / 60))}m` : '—';
 
   return (
-    <button type="button" className="sim-post-card" onClick={onClick} style={{ background: gradient }}>
+    <button type="button" className={`sim-post-card${isProcessing ? ' sim-post-card-processing' : ''}`} onClick={onClick} style={{ background: gradient }}>
       {s.stage != null && (
         <div className="sim-post-stage-badge">
           Stage {s.stage}: {STAGE_NAMES_SHORT[s.stage - 1] || 'Unknown'}
         </div>
       )}
       <div className="sim-post-scores">
-        <span className="sim-post-score" style={{ color: '#fff' }}>
-          {s.score != null ? `${s.score}%` : '—'}
-        </span>
-        {bodyScore != null && (
-          <span className="sim-post-body">Body Language Score: {bodyScore}%</span>
+        {isProcessing ? (
+          <span className="sim-post-processing-label">Processing…</span>
+        ) : (
+          <>
+            <span className="sim-post-score" style={{ color: '#fff' }}>
+              {s.score != null ? `${s.score}%` : '—'}
+            </span>
+            {bodyScore != null && (
+              <span className="sim-post-body">Body Language Score: {bodyScore}%</span>
+            )}
+          </>
         )}
       </div>
       <div className="sim-post-name">{name}</div>
@@ -1935,6 +1942,19 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
       .catch(() => {})
       .finally(() => setLoadingSims(false));
   }, [d.id]);
+
+  // Poll for sim updates while any sim is still processing (no score yet)
+  useEffect(() => {
+    const hasProcessing = sims.some(s => getCombinedScore(s) == null);
+    if (!hasProcessing || loadingSims) return;
+    const timer = setInterval(() => {
+      fetch(`${API}/simulations?caseId=${d.id}`)
+        .then(r => r.ok ? r.json() : [])
+        .then(setSims)
+        .catch(() => {});
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [sims, loadingSims, d.id]);
 
   useEffect(() => {
     fetch(`${API}/cases/${d.id}/stages`)
@@ -2173,12 +2193,10 @@ function StageProgressDonuts({ stages, currentStage, onStageClick }) {
         const status = stage?.status || (n === 1 ? 'available' : 'locked');
         const isCurrent = n === currentStage;
         const isCompleted = status === 'completed';
-        const isRetake = stage?.retakeRecommended;
         const isLocked = status === 'locked';
 
         let stateClass = 'stage-donut-locked';
-        if (isCompleted && isRetake) stateClass = 'stage-donut-retake';
-        else if (isCompleted) stateClass = 'stage-donut-completed';
+        if (isCompleted) stateClass = 'stage-donut-completed';
         else if (isCurrent || status === 'available') stateClass = 'stage-donut-active';
 
         return (
@@ -2191,7 +2209,7 @@ function StageProgressDonuts({ stages, currentStage, onStageClick }) {
               onClick={() => onStageClick?.(n)}
               title={stageNames[n - 1]}
             >
-              {isCompleted && !isRetake ? (
+              {isCompleted ? (
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="stage-donut-check">
                   <polyline points="20 6 9 17 4 12" />
                 </svg>
@@ -4982,6 +5000,43 @@ function SettingsPage() {
   );
 }
 
+/* ===== Client portal bottom bar (Cases | + | Settings) — same as staff but client routes ===== */
+function ClientBottomBar({ tab, showCenter = true, onCenterClick }) {
+  const prefix = useLangPrefix();
+  const nav = useNavigate();
+  const { t } = useT();
+  const handleTab = (tabName) => {
+    if (tabName === 'cases') nav(`${prefix}/client`);
+    if (tabName === 'settings') nav(`${prefix}/client/settings`);
+  };
+  return (
+    <nav className="bottom-bar bottom-bar-centered">
+      <button className={`tab-btn${tab === 'cases' ? ' active' : ''}`} onClick={() => handleTab('cases')}>
+        {Icons.cases}
+        <span>{t('nav.cases')}</span>
+      </button>
+      {showCenter ? (
+        <button
+          type="button"
+          className="tab-btn tab-btn-plus"
+          onClick={onCenterClick || undefined}
+          disabled={!onCenterClick}
+          title={onCenterClick ? t('client.startSim') : t('nav.cases')}
+          aria-label={onCenterClick ? t('client.startSim') : t('nav.cases')}
+        >
+          {Icons.plus}
+        </button>
+      ) : (
+        <span className="tab-btn-plus-placeholder" aria-hidden />
+      )}
+      <button className={`tab-btn${tab === 'settings' ? ' active' : ''}`} onClick={() => handleTab('settings')}>
+        {Icons.settings}
+        <span>{t('nav.settings')}</span>
+      </button>
+    </nav>
+  );
+}
+
 /* ===== Client Portal: Cases List ===== */
 function ClientCasesPage() {
   const { t } = useT();
@@ -4989,14 +5044,22 @@ function ClientCasesPage() {
   const prefix = useLangPrefix();
   const [cases, setCases] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [caseSort, setCaseSort] = useState('newest');
 
   useEffect(() => {
-    fetch(`${API}/client/cases`)
+    fetch(`${API}/client/cases`, { credentials: 'include' })
       .then(r => r.ok ? r.json() : [])
       .then(setCases)
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
+
+  const sortedCases = [...cases].sort((a, b) => {
+    if (caseSort === 'newest') return new Date(b.createdAt) - new Date(a.createdAt);
+    if (caseSort === 'oldest') return new Date(a.createdAt) - new Date(b.createdAt);
+    if (caseSort === 'lastName') return (a.name || a.client?.lastName || '').localeCompare(b.name || b.client?.lastName || '');
+    return 0;
+  });
 
   if (loading) return (
     <div className="app-shell" style={{ display: 'grid', placeItems: 'center' }}>
@@ -5016,17 +5079,36 @@ function ClientCasesPage() {
             </div>
             <h1 className="feed-header-title">{t('client.title')}</h1>
             <div className="feed-header-right">
-              <UserButton />
+              <Link to={`${prefix}/client/settings`} className="header-link" style={{ fontSize: 14, fontWeight: 600 }}>{t('nav.settings')}</Link>
             </div>
           </div>
-          {cases.length === 0 ? (
+          <div className="cases-subheader">
+            <div className="cases-search-wrap" />
+            <div className="cases-subheader-row" style={{ flexWrap: 'wrap' }}>
+              <span className="cases-count">
+                {t('cases.count', { count: sortedCases.length, s: sortedCases.length !== 1 ? 's' : '' })}
+              </span>
+              <div className="sort-pills">
+                {[
+                  ['newest', t('cases.sort.recent')],
+                  ['oldest', t('cases.sort.oldest')],
+                  ['lastName', t('cases.sort.name')],
+                ].map(([k, l]) => (
+                  <button key={k} className={`sort-pill${caseSort === k ? ' active' : ''}`} onClick={() => setCaseSort(k)}>
+                    {l}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          {sortedCases.length === 0 ? (
             <div className="client-empty-state">
               <p className="client-empty-msg">{t('client.noCases')}</p>
               <p className="client-empty-hint">{t('client.noCasesHint')}</p>
             </div>
           ) : (
             <div className="tile-grid">
-              {cases.map(c => {
+              {sortedCases.map(c => {
                 const score = c.simulations?.[0]?.score ?? null;
                 const gradient = getScoreGradient(score);
                 return (
@@ -5041,6 +5123,7 @@ function ClientCasesPage() {
           )}
         </div>
       </div>
+      <ClientBottomBar tab="cases" showCenter={false} />
     </div>
   );
 }
@@ -5057,15 +5140,29 @@ function ClientCaseDetailPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const opts = { credentials: 'include' };
     Promise.all([
-      fetch(`${API}/client/cases/${id}`).then(r => r.ok ? r.json() : null),
-      fetch(`${API}/client/cases/${id}/simulations`).then(r => r.ok ? r.json() : []),
-      fetch(`${API}/client/cases/${id}/stages`).then(r => r.ok ? r.json() : null),
+      fetch(`${API}/client/cases/${id}`, opts).then(r => r.ok ? r.json() : null),
+      fetch(`${API}/client/cases/${id}/simulations`, opts).then(r => r.ok ? r.json() : []),
+      fetch(`${API}/client/cases/${id}/stages`, opts).then(r => r.ok ? r.json() : null),
     ])
       .then(([c, s, st]) => { setCaseData(c); setSims(s); setStageData(st); })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [id]);
+
+  // Poll for sim updates while any sim is still processing
+  useEffect(() => {
+    const hasProcessing = sims.some(s => getCombinedScore(s) == null);
+    if (!hasProcessing || loading) return;
+    const timer = setInterval(() => {
+      fetch(`${API}/client/cases/${id}/simulations`, { credentials: 'include' })
+        .then(r => r.ok ? r.json() : [])
+        .then(setSims)
+        .catch(() => {});
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [sims, loading, id]);
 
   if (loading) return (
     <div className="app-shell" style={{ display: 'grid', placeItems: 'center' }}>
@@ -5096,15 +5193,6 @@ function ClientCaseDetailPage() {
             <StageProgressDonuts stages={stageData.stages} currentStage={stageData.currentStage} />
           )}
 
-          <div className="client-action-bar">
-            <button
-              className="primary-btn"
-              onClick={() => nav(`${prefix}/sim/${id}/stage/${currentStageNum}`)}
-            >
-              {t('client.startSim')}
-            </button>
-          </div>
-
           <div className="call-history-section">
             <h3 className="call-history-title">{t('client.simHistory')}</h3>
             {sims.length === 0 && <p className="call-history-empty">{t('client.noSims')}</p>}
@@ -5121,6 +5209,7 @@ function ClientCaseDetailPage() {
           </div>
         </div>
       </div>
+      <ClientBottomBar tab="cases" onCenterClick={() => nav(`${prefix}/sim/${id}/stage/${currentStageNum}`)} />
     </div>
   );
 }
@@ -5135,7 +5224,7 @@ function ClientSimDetailPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`${API}/client/simulations/${simId}`)
+    fetch(`${API}/client/simulations/${simId}`, { credentials: 'include' })
       .then(r => r.ok ? r.json() : null)
       .then(setSim)
       .catch(() => {})
@@ -5159,18 +5248,132 @@ function ClientSimDetailPage() {
       tab="cases"
       switchTab={() => {}}
       goBack={() => nav(`${prefix}/client/cases/${id}`)}
+      renderBottomBar={(t) => <ClientBottomBar tab={t} onCenterClick={() => nav(`${prefix}/sim/${id}/stage/1`)} />}
     />
   );
 }
 
-/* ===== Client Portal Layout (auth gate for clients) ===== */
-function ClientLayout() {
+/* ===== Client enter: set 90-day cookie via API then redirect (no API redirect needed) ===== */
+function ClientEnterPage() {
+  const [searchParams] = useSearchParams();
+  const [status, setStatus] = useState('loading'); // 'loading' | 'ok' | 'error'
+
+  useEffect(() => {
+    const token = searchParams.get('token');
+    const redirect = searchParams.get('redirect') || '/client';
+    const redirectPath = redirect.replace(/^https?:\/\/[^/]+/i, '') || '/client';
+    const path = redirectPath.startsWith('/') ? redirectPath : `/${redirectPath}`;
+
+    if (!token) {
+      setStatus('error');
+      return;
+    }
+    const url = `${API}/client/enter?token=${encodeURIComponent(token)}&redirect=${encodeURIComponent(path)}&from=app`;
+    fetch(url, { method: 'GET', credentials: 'include' })
+      .then((r) => {
+        if (r.ok) {
+          setStatus('ok');
+          window.location.replace(path);
+        } else {
+          setStatus('error');
+        }
+      })
+      .catch(() => setStatus('error'));
+  }, [searchParams]);
+
+  if (status === 'error') {
+    return (
+      <div className="app-shell" style={{ display: 'grid', placeItems: 'center', minHeight: '100vh' }}>
+        <div style={{ textAlign: 'center', padding: 32 }}>
+          <p style={{ color: 'var(--muted)' }}>Invalid or expired link. Please use the link that was texted to you.</p>
+        </div>
+      </div>
+    );
+  }
   return (
-    <>
-      <SignedIn><Outlet /></SignedIn>
-      <SignedOut><RedirectToSignIn /></SignedOut>
-    </>
+    <div className="app-shell" style={{ display: 'grid', placeItems: 'center', minHeight: '100vh' }}>
+      <p style={{ color: 'var(--muted)' }}>Loading…</p>
+    </div>
   );
+}
+
+/* ===== No session message (EN / ES / PT) when client has no 90-day cookie ===== */
+const CLIENT_NO_SESSION = {
+  en: 'Please click the link that was texted to you to access your simulations.',
+  es: 'Haga clic en el enlace que se le envió por mensaje de texto para acceder a sus simulaciones.',
+  pt: 'Clique no link que foi enviado por mensagem de texto para acessar suas simulações.',
+};
+
+function ClientNoSessionPage() {
+  const lang = typeof navigator !== 'undefined' && navigator.language
+    ? (navigator.language.startsWith('es') ? 'es' : navigator.language.startsWith('pt') ? 'pt' : 'en')
+    : 'en';
+  const message = CLIENT_NO_SESSION[lang];
+  return (
+    <div className="app-shell" style={{ display: 'grid', placeItems: 'center', minHeight: '100vh' }}>
+      <div style={{ textAlign: 'center', maxWidth: 420, padding: 32 }}>
+        <a href="https://deposim.com" target="_blank" rel="noopener noreferrer">
+          <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" style={{ height: 36, marginBottom: 24 }} />
+        </a>
+        <p style={{ fontSize: 16, lineHeight: 1.6, color: 'var(--text, #111)' }}>{message}</p>
+      </div>
+    </div>
+  );
+}
+
+/* ===== Client Portal: Settings (Log out only) ===== */
+function ClientSettingsPage() {
+  const nav = useNavigate();
+  const prefix = useLangPrefix();
+  const { t } = useT();
+
+  const handleLogout = () => {
+    fetch(`${API}/client/logout`, { method: 'GET', credentials: 'include' })
+      .then(() => nav(`${prefix}/client`));
+  };
+
+  return (
+    <div className="app-shell">
+      <div className="detail-screen">
+        <div className="detail-header case-detail-header">
+          <button className="back-btn" onClick={() => nav(`${prefix}/client`)}>{Icons.back}</button>
+          <div className="case-detail-header-title">
+            <span className="sim-detail-header-name">{t('settings.title')}</span>
+          </div>
+        </div>
+        <div className="detail-body case-detail-body" style={{ padding: 24 }}>
+          <button type="button" className="btn" style={{ padding: '12px 24px', fontSize: 16 }} onClick={handleLogout}>
+            {t('client.logOut')}
+          </button>
+        </div>
+      </div>
+      <ClientBottomBar tab="settings" showCenter={false} />
+    </div>
+  );
+}
+
+/* ===== Client Portal Layout: 90-day cookie session (no Clerk) ===== */
+function ClientLayout() {
+  const [session, setSession] = useState('loading'); // 'loading' | true | null
+
+  useEffect(() => {
+    fetch(`${API}/client/me`, { credentials: 'include', method: 'GET' })
+      .then((r) => {
+        if (r.ok) setSession(true);
+        else setSession(null);
+      })
+      .catch(() => setSession(null));
+  }, []);
+
+  if (session === 'loading') {
+    return (
+      <div className="app-shell" style={{ display: 'grid', placeItems: 'center', minHeight: '100vh' }}>
+        <p style={{ color: 'var(--muted)' }}>Loading…</p>
+      </div>
+    );
+  }
+  if (!session) return <ClientNoSessionPage />;
+  return <Outlet />;
 }
 
 /* ===== Spanish Routes Wrapper ===== */
@@ -5186,9 +5389,10 @@ function SpanishRoutes() {
           <Route path="cases/:id/sim/:simId" element={<SimulationDetailPage />} />
           <Route path="settings" element={<SettingsPage />} />
         </Route>
-        {/* Client portal (auth required, no org) */}
+        <Route path="client/enter" element={<ClientEnterPage />} />
         <Route element={<ClientLayout />}>
           <Route path="client" element={<ClientCasesPage />} />
+          <Route path="client/settings" element={<ClientSettingsPage />} />
           <Route path="client/cases/:id" element={<ClientCaseDetailPage />} />
           <Route path="client/cases/:id/sim/:simId" element={<ClientSimDetailPage />} />
         </Route>
@@ -5278,11 +5482,14 @@ export default function App() {
           <Route path="/cases/:id/sim/:simId" element={<SimulationDetailPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
-        {/* Client portal (auth required, no org) */}
-        <Route element={<ClientLayout />}>
-          <Route path="/client" element={<ClientCasesPage />} />
-          <Route path="/client/cases/:id" element={<ClientCaseDetailPage />} />
-          <Route path="/client/cases/:id/sim/:simId" element={<ClientSimDetailPage />} />
+        {/* Client enter: set cookie then redirect (public, no session) */}
+        <Route path="/client/enter" element={<ClientEnterPage />} />
+        {/* Client portal (90-day cookie session) */}
+        <Route path="/client" element={<ClientLayout />}>
+          <Route index element={<ClientCasesPage />} />
+          <Route path="settings" element={<ClientSettingsPage />} />
+          <Route path="cases/:id" element={<ClientCaseDetailPage />} />
+          <Route path="cases/:id/sim/:simId" element={<ClientSimDetailPage />} />
         </Route>
         {/* Invite claim */}
         <Route path="/invite/:code" element={<InviteClaimPage />} />

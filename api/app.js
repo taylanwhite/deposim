@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -413,6 +414,57 @@ const authAndWrite = [requireAuthApi, resolveAccess, requireWriteAccess];      /
 const authAndSuper = [requireAuthApi, resolveAccess, requireSuper];            // super only
 const authAndClient = [requireAuthApi, resolveAccess];                         // any tier
 
+// ---------- Client 90-day session cookie (no Clerk for clients) ----------
+const CLIENT_SESSION_COOKIE = 'deposim_client_sid';
+const CLIENT_SESSION_DAYS = 90;
+const CLIENT_SESSION_SECRET = process.env.CLIENT_SESSION_SECRET || process.env.CLERK_SECRET_KEY || 'deposim-client-session-fallback';
+
+function signClientToken(clientId) {
+  const payload = Buffer.from(clientId, 'utf8').toString('base64url');
+  const sig = crypto.createHmac('sha256', CLIENT_SESSION_SECRET).update(payload).digest('base64url');
+  return `${payload}.${sig}`;
+}
+
+function verifyClientToken(token) {
+  if (!token || typeof token !== 'string') return null;
+  const dot = token.indexOf('.');
+  if (dot <= 0) return null;
+  const payload = token.slice(0, dot);
+  const sig = token.slice(dot + 1);
+  const expected = crypto.createHmac('sha256', CLIENT_SESSION_SECRET).update(payload).digest('base64url');
+  if (sig !== expected) return null;
+  try {
+    return Buffer.from(payload, 'base64url').toString('utf8');
+  } catch {
+    return null;
+  }
+}
+
+function requireClientSession(req, res, next) {
+  const raw = req.cookies?.[CLIENT_SESSION_COOKIE] || req.signedCookies?.[CLIENT_SESSION_COOKIE];
+  const clientId = verifyClientToken(raw);
+  if (!clientId) return res.status(401).json({ error: 'Not authenticated' });
+  req.clientId = clientId;
+  req.clientIds = [clientId];
+  req.accessLevel = 'client';
+  next();
+}
+
+// For /api/client/me and PATCH language: accept either 90-day cookie (client) or Clerk (staff)
+function resolveClientOrStaff(req, res, next) {
+  const raw = req.cookies?.[CLIENT_SESSION_COOKIE] || req.signedCookies?.[CLIENT_SESSION_COOKIE];
+  const clientId = verifyClientToken(raw);
+  if (clientId) {
+    req.clientId = clientId;
+    req.clientIds = [clientId];
+    req.accessLevel = 'client';
+    return next();
+  }
+  const auth = typeof req.auth === 'function' ? req.auth() : req.auth;
+  if (!auth?.userId) return res.status(401).json({ error: 'Not authenticated' });
+  resolveAccess(req, res, next);
+}
+
 // Helper: build a where clause scoped to the user's access level
 function scopedWhere(req, extraWhere = {}) {
   if (req.accessLevel === 'super') return { ...extraWhere };
@@ -436,7 +488,8 @@ const upload = multer({
   },
 });
 
-app.use(cors());
+app.use(cors({ origin: true, credentials: true }));
+app.use(cookieParser());
 app.use(clerkMiddleware());
 
 // ElevenLabs webhook needs raw body for HMAC verification — register BEFORE express.json()
@@ -456,6 +509,53 @@ app.use(express.json());
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, service: 'deposim-api' });
+});
+
+// ---------- Client 90-day session: set cookie (no Clerk) ----------
+// When from=app: frontend called us to set the cookie; respond with 200 so frontend can redirect.
+// When no from=app: direct browser visit (e.g. old link); redirect to APP_URL so user lands on SPA.
+const APP_URL = (process.env.APP_URL || '').replace(/\/$/, '');
+
+app.get('/api/client/enter', async (req, res) => {
+  try {
+    const token = (req.query.token || '').trim();
+    let redirectPath = (req.query.redirect || '/client').trim().replace(/^https?:\/\/[^/]+/i, '') || '/client';
+    if (!redirectPath.startsWith('/')) redirectPath = `/${redirectPath}`;
+    const fromApp = req.query.from === 'app';
+    const clientId = verifyClientToken(token);
+    if (!clientId) {
+      if (fromApp) return res.status(400).json({ error: 'Invalid or expired link' });
+      return res.status(400).send('Invalid or expired link. Please use the link that was texted to you.');
+    }
+    const client = await prisma.client.findUnique({ where: { id: clientId }, select: { id: true } });
+    if (!client) {
+      if (fromApp) return res.status(400).json({ error: 'Invalid link' });
+      return res.status(400).send('Invalid link.');
+    }
+    const signed = signClientToken(clientId);
+    const maxAge = CLIENT_SESSION_DAYS * 24 * 60 * 60;
+    const isProd = process.env.NODE_ENV === 'production';
+    res.cookie(CLIENT_SESSION_COOKIE, signed, {
+      maxAge: maxAge * 1000,
+      httpOnly: true,
+      secure: isProd,
+      sameSite: 'lax',
+      path: '/',
+    });
+    if (fromApp) {
+      return res.json({ ok: true });
+    }
+    const redirectTo = APP_URL ? `${APP_URL}${redirectPath}` : redirectPath;
+    res.redirect(302, redirectTo);
+  } catch (err) {
+    betterstack.logApiError('GET /api/client/enter', err);
+    res.status(500).send('Error');
+  }
+});
+
+app.get('/api/client/logout', (_req, res) => {
+  res.clearCookie(CLIENT_SESSION_COOKIE, { path: '/', httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax' });
+  res.status(204).end();
 });
 
 // ---------- Mini Link redirect (public, no auth) — must be before SPA catch-all if any ----------
@@ -562,8 +662,8 @@ app.post('/api/webhook/clerk', async (req, res) => {
 
 // ---------- Client Portal API (auth + client-scoped) ----------
 
-// Client: list my cases (only cases linked via CaseClient)
-app.get('/api/client/cases', ...authAndClient, async (req, res) => {
+// Client: list my cases (only cases linked via CaseClient) — 90-day cookie auth
+app.get('/api/client/cases', requireClientSession, async (req, res) => {
   try {
     const caseClients = await prisma.caseClient.findMany({
       where: { clientId: { in: req.clientIds } },
@@ -585,7 +685,7 @@ app.get('/api/client/cases', ...authAndClient, async (req, res) => {
 });
 
 // Client: get a single case (only if linked)
-app.get('/api/client/cases/:id', ...authAndClient, async (req, res) => {
+app.get('/api/client/cases/:id', requireClientSession, async (req, res) => {
   try {
     const link = await prisma.caseClient.findFirst({
       where: { caseId: req.params.id, clientId: { in: req.clientIds } },
@@ -603,9 +703,8 @@ app.get('/api/client/cases/:id', ...authAndClient, async (req, res) => {
 });
 
 // Client: list simulations for a case (ONLY sims the client personally ran)
-app.get('/api/client/cases/:id/simulations', ...authAndClient, async (req, res) => {
+app.get('/api/client/cases/:id/simulations', requireClientSession, async (req, res) => {
   try {
-    if (req.accessLevel !== 'client') return res.status(403).json({ error: 'Client access only' });
     const link = await prisma.caseClient.findFirst({
       where: { caseId: req.params.id, clientId: { in: req.clientIds } },
     });
@@ -622,9 +721,8 @@ app.get('/api/client/cases/:id/simulations', ...authAndClient, async (req, res) 
 });
 
 // Client: get a single simulation (only if they personally ran it)
-app.get('/api/client/simulations/:simId', ...authAndClient, async (req, res) => {
+app.get('/api/client/simulations/:simId', requireClientSession, async (req, res) => {
   try {
-    if (req.accessLevel !== 'client') return res.status(403).json({ error: 'Client access only' });
     const sim = await prisma.simulation.findUnique({
       where: { id: req.params.simId },
       include: { case: true },
@@ -641,9 +739,8 @@ app.get('/api/client/simulations/:simId', ...authAndClient, async (req, res) => 
 });
 
 // Client: get stage completion status for a case (only sims they ran)
-app.get('/api/client/cases/:id/stages', ...authAndClient, async (req, res) => {
+app.get('/api/client/cases/:id/stages', requireClientSession, async (req, res) => {
   try {
-    if (req.accessLevel !== 'client') return res.status(403).json({ error: 'Client access only' });
     const link = await prisma.caseClient.findFirst({
       where: { caseId: req.params.id, clientId: { in: req.clientIds } },
     });
@@ -654,10 +751,12 @@ app.get('/api/client/cases/:id/stages', ...authAndClient, async (req, res) => {
     });
     const stages = [1, 2, 3, 4].map(n => {
       const stageSims = sims.filter(s => s.stage === n);
-      const completed = stageSims.some(s => s.stageStatus === 'completed');
-      return { stage: n, completed, simCount: stageSims.length };
+      const completed = stageSims.length > 0;
+      const prevCompleted = n === 1 || sims.some(s => s.stage === n - 1);
+      const status = completed ? 'completed' : (prevCompleted ? 'available' : 'locked');
+      return { stage: n, status, completed, simCount: stageSims.length, simulationId: stageSims[0]?.id ?? null, score: stageSims[0]?.score ?? null };
     });
-    const currentStage = stages.find(s => !s.completed)?.stage || 5;
+    const currentStage = stages.find(s => !s.completed)?.stage ?? 5;
     res.json({ stages, currentStage });
   } catch (err) {
     betterstack.logApiError('GET /api/client/cases/:id/stages', err);
@@ -665,19 +764,33 @@ app.get('/api/client/cases/:id/stages', ...authAndClient, async (req, res) => {
   }
 });
 
-// Auth status: returns accessLevel, role, locations for the current user
-app.get('/api/client/me', requireAuthApi, resolveAccess, async (req, res) => {
+// Auth status: cookie (client) or Clerk (staff). Returns accessLevel, language, etc.
+app.get('/api/client/me', resolveClientOrStaff, async (req, res) => {
   try {
+    if (req.accessLevel === 'client') {
+      const client = await prisma.client.findUnique({
+        where: { id: req.clientId },
+        select: { id: true, firstName: true, lastName: true, email: true, locationId: true, language: true },
+      });
+      if (!client) return res.status(401).json({ error: 'Not authenticated' });
+      const language = client.language || 'en';
+      return res.json({
+        accessLevel: 'client',
+        language,
+        locationIds: [],
+        locations: [],
+        organizations: [],
+        isClient: true,
+        clients: [client],
+      });
+    }
+
     const auth = typeof req.auth === 'function' ? req.auth() : req.auth;
     const userId = auth?.userId;
-    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
-
     const clients = await prisma.client.findMany({
       where: { clerkUserId: userId },
       select: { id: true, firstName: true, lastName: true, email: true, locationId: true, language: true },
     });
-
-    // Resolve location objects based on access level
     let locations = [];
     const locationIds = req.locationIds || [];
     if (req.accessLevel === 'super') {
@@ -691,7 +804,6 @@ app.get('/api/client/me', requireAuthApi, resolveAccess, async (req, res) => {
         select: { id: true, name: true, organizationId: true, organization: { select: { id: true, name: true } } },
       });
     }
-
     let organizations = [];
     if (req.accessLevel === 'super') {
       organizations = await prisma.organization.findMany({ select: { id: true, name: true }, orderBy: { name: 'asc' } });
@@ -699,7 +811,6 @@ app.get('/api/client/me', requireAuthApi, resolveAccess, async (req, res) => {
       const org = await prisma.organization.findUnique({ where: { id: req.orgId }, select: { id: true, name: true } });
       if (org) organizations = [org];
     }
-
     const language = req.accessLevel === 'client'
       ? (clients[0]?.language || 'en')
       : (req.userLanguage || 'en');
@@ -724,22 +835,18 @@ app.get('/api/client/me', requireAuthApi, resolveAccess, async (req, res) => {
   }
 });
 
-app.patch('/api/client/me/language', requireAuthApi, resolveAccess, async (req, res) => {
+app.patch('/api/client/me/language', resolveClientOrStaff, async (req, res) => {
   try {
-    const auth = typeof req.auth === 'function' ? req.auth() : req.auth;
-    const userId = auth?.userId;
     const { language } = req.body;
-    if (!language || !['en', 'es'].includes(language)) {
-      return res.status(400).json({ error: 'Invalid language. Use "en" or "es".' });
+    if (!language || !['en', 'es', 'pt'].includes(language)) {
+      return res.status(400).json({ error: 'Invalid language. Use "en", "es", or "pt".' });
     }
 
     if (req.accessLevel === 'client') {
-      const clients = await prisma.client.findMany({ where: { clerkUserId: userId } });
-      for (const c of clients) {
-        await prisma.client.update({ where: { id: c.id }, data: { language } });
-      }
+      await prisma.client.update({ where: { id: req.clientId }, data: { language } });
     } else {
-      await prisma.user.update({ where: { id: userId }, data: { language } });
+      const auth = typeof req.auth === 'function' ? req.auth() : req.auth;
+      await prisma.user.update({ where: { id: auth.userId }, data: { language } });
     }
 
     res.json({ language });
@@ -979,24 +1086,28 @@ app.post('/api/cases/:id/notify-deposim-sent', ...authAndStaff, async (req, res)
       },
     });
 
-    const fullSimUrl = (req.body?.simUrl || '').trim() || `${req.protocol}://${req.get('host')}/sim/${c.id}`;
-    // Find or create a short link so we send a short URL
-    let link = await prisma.shortLink.findFirst({ where: { targetUrl: fullSimUrl } });
+    let base;
+    try {
+      base = `${req.protocol}://${req.get('host')}`;
+    } catch {
+      base = `${req.protocol}://${req.get('host')}`;
+    }
+    const simPath = `/sim/${c.id}`;
+    const frontendOrigin = APP_URL || base;
+    // When we have a target client, short link points to frontend /client/enter so the frontend sets the cookie then redirects (no API redirect)
+    const targetUrl = targetClient
+      ? `${frontendOrigin}/client/enter?token=${encodeURIComponent(signClientToken(targetClient.id))}&redirect=${encodeURIComponent(simPath)}`
+      : (req.body?.simUrl || '').trim() || `${base}${simPath}`;
+    let link = await prisma.shortLink.findFirst({ where: { targetUrl } });
     if (!link) {
       const slug = crypto.randomBytes(4).toString('base64url').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
       link = await prisma.shortLink.create({
         data: {
           slug,
-          targetUrl: fullSimUrl,
+          targetUrl,
           organizationId: c.organizationId || null,
         },
       });
-    }
-    let base;
-    try {
-      base = new URL(fullSimUrl).origin;
-    } catch {
-      base = `${req.protocol}://${req.get('host')}`;
     }
     const simLink = `${base}/s/${link.slug}`;
 
@@ -2721,12 +2832,18 @@ app.post('/api/sim/signed-url', async (req, res) => {
         depoPrompt = sysPrompt?.content || 'No system prompt configured.';
       }
 
-      const [fmEn, fmEs] = await Promise.all([
-        prisma.prompt.findFirst({ where: { type: 'first_message', isActive: true, OR: [{ language: 'en' }, { language: null }] }, orderBy: { updatedAt: 'desc' } }),
-        prisma.prompt.findFirst({ where: { type: 'first_message', isActive: true, language: 'es' }, orderBy: { updatedAt: 'desc' } }),
-      ]);
-      firstMessage = fmEn?.content || 'Hello, I will be conducting your deposition practice today.';
-      primerMensaje = fmEs?.content || '';
+      const templateFirstMessage = await loadStageFirstMessageFromTemplate(prisma, caseRecord.templateId, stageNum, personaId);
+      if (templateFirstMessage) {
+        firstMessage = templateFirstMessage;
+      }
+      if (!firstMessage) {
+        const [fmEn, fmEs] = await Promise.all([
+          prisma.prompt.findFirst({ where: { type: 'first_message', isActive: true, OR: [{ language: 'en' }, { language: null }] }, orderBy: { updatedAt: 'desc' } }),
+          prisma.prompt.findFirst({ where: { type: 'first_message', isActive: true, language: 'es' }, orderBy: { updatedAt: 'desc' } }),
+        ]);
+        firstMessage = fmEn?.content || 'Hello, I will be conducting your deposition practice today.';
+        primerMensaje = fmEs?.content || '';
+      }
     } catch (e) {
       console.error('[sim] Error loading prompts:', e.message);
       betterstack.warn('[sim] Error loading prompts', { error_message: e.message });
@@ -3070,35 +3187,58 @@ const STAGE_NAMES = {
 
 async function ensureDefaultTemplate(prisma) {
   if (!prisma.depositionTemplate) return; // e.g. client generated before DepositionTemplate model existed
-  const existingDefault = await prisma.depositionTemplate.findUnique({ where: { key: 'default' } }).catch(() => null);
-  if (existingDefault) return;
   const templatesPath = path.join(__dirname, 'templates', 'deposition-templates.json');
+  let defaultT;
   try {
     const raw = fs.readFileSync(templatesPath, 'utf8');
     const data = JSON.parse(raw);
-    const defaultT = (data.templates || []).find((t) => (t.key || t.id) === 'default');
-    if (defaultT) {
-      const created = await prisma.depositionTemplate.create({
-        data: {
-          key: 'default',
-          name: defaultT.name,
-          description: defaultT.description || null,
-          stages: defaultT.stages || [],
-        },
-      });
-      const personas = Array.isArray(defaultT.personas) ? defaultT.personas : [];
-      for (const p of personas) {
-        await prisma.persona.create({
-          data: {
-            templateId: created.id,
-            name: p.name || 'Persona',
-            description: p.description != null ? String(p.description) : null,
-            systemModifier: p.systemModifier != null ? String(p.systemModifier) : '',
-          },
+    defaultT = (data.templates || []).find((t) => (t.key || t.id) === 'default');
+  } catch (err) {
+    console.error('[templates] Read failed:', err.message);
+    return;
+  }
+  const existingDefault = await prisma.depositionTemplate.findUnique({ where: { key: 'default' } }).catch(() => null);
+  if (existingDefault) {
+    if (defaultT && Array.isArray(defaultT.stages) && defaultT.stages.length > 0) {
+      const dbStages = Array.isArray(existingDefault.stages) ? existingDefault.stages : [];
+      const needsPatch = dbStages.some((s) => s.stage != null && (s.first_message == null || s.first_message === ''));
+      if (needsPatch) {
+        const merged = dbStages.map((s) => {
+          const fromFile = defaultT.stages.find((f) => f.stage === s.stage);
+          return fromFile && typeof fromFile.first_message === 'string'
+            ? { ...s, first_message: fromFile.first_message, first_message_by_persona: fromFile.first_message_by_persona }
+            : s;
+        });
+        await prisma.depositionTemplate.update({
+          where: { id: existingDefault.id },
+          data: { stages: merged },
         });
       }
-      console.log('[templates] Seeded default deposition template and personas');
     }
+    return;
+  }
+  if (!defaultT) return;
+  try {
+    const created = await prisma.depositionTemplate.create({
+      data: {
+        key: 'default',
+        name: defaultT.name,
+        description: defaultT.description || null,
+        stages: defaultT.stages || [],
+      },
+    });
+    const personas = Array.isArray(defaultT.personas) ? defaultT.personas : [];
+    for (const p of personas) {
+      await prisma.persona.create({
+        data: {
+          templateId: created.id,
+          name: p.name || 'Persona',
+          description: p.description != null ? String(p.description) : null,
+          systemModifier: p.systemModifier != null ? String(p.systemModifier) : '',
+        },
+      });
+    }
+    console.log('[templates] Seeded default deposition template and personas');
   } catch (err) {
     console.error('[templates] Seed failed:', err.message);
   }
@@ -3127,6 +3267,23 @@ async function loadStagePromptFromTemplate(prisma, templateId, stageNum) {
   const stageDef = stages.find((s) => s.stage === stageNum);
   if (!stageDef || typeof stageDef.prompt !== 'string') return null;
   return stageDef.prompt;
+}
+
+/** Get first_message for a stage from template; optionally per-persona (first_message_by_persona[personaId]). */
+async function loadStageFirstMessageFromTemplate(prisma, templateId, stageNum, personaId) {
+  const template = await getTemplateById(prisma, templateId);
+  if (!template || !template.stages) return null;
+  const stages = Array.isArray(template.stages) ? template.stages : [];
+  const stageDef = stages.find((s) => s.stage === stageNum);
+  if (!stageDef) return null;
+  const byPersona = stageDef.first_message_by_persona && typeof stageDef.first_message_by_persona === 'object';
+  if (byPersona && personaId && stageDef.first_message_by_persona[personaId]) {
+    return String(stageDef.first_message_by_persona[personaId]);
+  }
+  if (typeof stageDef.first_message === 'string' && stageDef.first_message.trim()) {
+    return stageDef.first_message.trim();
+  }
+  return null;
 }
 
 async function getStageNamesFromTemplate(prisma, templateId) {
@@ -3301,25 +3458,19 @@ app.get('/api/cases/:id/stages', async (req, res) => {
           status: prevCompleted ? 'available' : 'locked',
           simulationId: null,
           score: null,
-          retakeRecommended: false,
         };
       }
-      if (sim.stageStatus === 'completed') {
-        if (n + 1 <= 4 && !stageMap[n + 1]) currentStage = n + 1;
-      } else {
-        currentStage = n;
-      }
+      if (n + 1 <= 4 && !stageMap[n + 1]) currentStage = n + 1;
       return {
         stage: n,
         name: stageNames[n],
-        status: sim.stageStatus || 'completed',
+        status: 'completed',
         simulationId: sim.id,
         score: sim.score,
-        retakeRecommended: sim.retakeRecommended,
       };
     });
 
-    if (stageMap[4]?.stageStatus === 'completed') currentStage = 4;
+    if (stageMap[4]) currentStage = 4;
 
     res.json({ stages, currentStage });
   } catch (err) {
@@ -3426,79 +3577,21 @@ app.get('/api/sim/:id/results', async (req, res) => {
   }
 });
 
-// ---------- Stage: evaluate whether retake is recommended ----------
+// ---------- Stage: mark simulation stage as completed (done = passed) ----------
 app.post('/api/simulations/:id/evaluate-stage', async (req, res) => {
   try {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) return res.status(500).json({ error: 'OPENAI_API_KEY not set' });
-
-    const sim = await prisma.simulation.findUnique({
-      where: { id: req.params.id },
-      include: { case: { include: { client: true } } },
-    });
+    const sim = await prisma.simulation.findUnique({ where: { id: req.params.id } });
     if (!sim) return res.status(404).json({ error: 'Simulation not found' });
-
-    const transcript = Array.isArray(sim.transcript)
-      ? sim.transcript.map((t) => `${t.role === 'agent' ? 'Q' : 'A'}: ${t.message || t.original_message || ''}`).join('\n')
-      : '';
-
-    const stageNames = await getStageNamesFromTemplate(prisma, sim.case?.templateId);
-    const stageName = stageNames[sim.stage] || `Stage ${sim.stage}`;
-
-    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [
-          {
-            role: 'system',
-            content: `You evaluate whether a deposition simulation stage should be retaken. Consider:
-1. Did the deponent answer enough questions to cover the stage topics?
-2. Were there too many "I don't know" or "I don't remember" responses?
-3. Was coverage of required topics sufficient?
-4. Did the deponent show major issues (excessive volunteering, guessing, emotional responses)?
-5. Was the session too short to meaningfully cover the material?
-
-Return ONLY a JSON object: { "retakeRecommended": boolean, "reason": "brief explanation" }
-Recommend retake ONLY if there are significant gaps or performance issues. A score under 40 or very short session (< 5 min of substantive Q&A) should generally trigger a retake recommendation.`,
-          },
-          {
-            role: 'user',
-            content: `Stage: ${stageName}\nScore: ${sim.score != null ? sim.score : 'N/A'}\nDuration: ${sim.callDurationSecs ? Math.floor(sim.callDurationSecs / 60) + 'm' : 'N/A'}\n\nTranscript:\n${transcript || '(No transcript available)'}`,
-          },
-        ],
-        response_format: { type: 'json_object' },
-        temperature: 0.3,
-      }),
-      signal: AbortSignal.timeout(30_000),
-    });
-
-    const data = await resp.json();
-    if (data.error) return res.status(502).json({ error: 'OpenAI: ' + (data.error.message || JSON.stringify(data.error)) });
-
-    let result;
-    try {
-      result = JSON.parse(data.choices?.[0]?.message?.content || '{}');
-    } catch {
-      result = { retakeRecommended: false, reason: 'Could not parse evaluation.' };
-    }
-
-    const retakeRecommended = Boolean(result.retakeRecommended);
-    const reason = String(result.reason || '');
 
     await prisma.simulation.update({
       where: { id: sim.id },
-      data: {
-        retakeRecommended,
-        stageStatus: 'completed',
-      },
+      data: { stageStatus: 'completed' },
     });
 
-    res.json({ retakeRecommended, reason });
+    res.json({ ok: true });
   } catch (err) {
     betterstack.logApiError('POST /api/simulations/:id/evaluate-stage', err);
-    res.status(500).json({ error: err.message || 'Evaluation failed' });
+    res.status(500).json({ error: err.message || 'Failed to mark stage completed' });
   }
 });
 
