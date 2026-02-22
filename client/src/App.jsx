@@ -2080,7 +2080,8 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
       return 0;
     });
 
-  const caseDisplayName = caseData.name || (caseData.client ? `${caseData.client.lastName || ''}, ${caseData.client.firstName || ''}`.trim() : '—');
+  const primaryClient = caseData.client || caseClients?.[0]?.client;
+  const caseDisplayName = primaryClient ? `${primaryClient.lastName || ''}, ${primaryClient.firstName || ''}`.trim() || caseData.name || '—' : caseData.name || '—';
   const alreadyLinkedIds = new Set(caseClients.map(cc => cc.clientId));
   return (
     <div className="app-shell">
@@ -5217,7 +5218,8 @@ function ClientCaseDetailPage() {
     </div>
   );
 
-  const caseDisplayName = caseData.name || (caseData.client ? `${caseData.client.lastName || ''}, ${caseData.client.firstName || ''}`.trim() : '—');
+  const primaryClient = caseData.client || caseData.caseClients?.[0]?.client;
+  const caseDisplayName = primaryClient ? `${primaryClient.lastName || ''}, ${primaryClient.firstName || ''}`.trim() || caseData.name || '—' : caseData.name || '—';
   const currentStageNum = stageData?.currentStage ?? 1;
 
   return (

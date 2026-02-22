@@ -318,6 +318,11 @@ function SimPage() {
 
   const startCall = async () => {
     if (!config?.signedUrl || !config?.dynamicVariables) return;
+    const dv = config.dynamicVariables;
+    if (!dv.depo_prompt || !dv.first_message) {
+      console.error('[DepoSim] Voice agent requires depo_prompt and first_message; they were not provided.');
+      return;
+    }
     try {
       // Release camera's audio tracks so the SDK can claim the mic exclusively
       const stream = cameraStreamRef.current;

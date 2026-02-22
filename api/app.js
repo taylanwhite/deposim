@@ -2889,14 +2889,15 @@ app.post('/api/sim/signed-url', async (req, res) => {
       if (linkedClient) simClientId = linkedClient.id;
     }
 
+    // Voice agent requires these dynamic variables to be overridden; otherwise it uses dashboard placeholders and will not work.
     const dynamicVariables = {
-      depo_prompt: depoPrompt,
-      first_message: firstMessage,
-      primer_mensaje: primerMensaje,
-      case_id: caseId,
-      case_info: caseInfo,
+      depo_prompt: String(depoPrompt || '').trim(),
+      first_message: String(firstMessage || '').trim(),
+      primer_mensaje: String(primerMensaje || '').trim(),
+      case_id: String(caseId || ''),
+      case_info: String(caseInfo || ''),
       stage: String(stageNum),
-      client_id: simClientId,
+      client_id: simClientId ? String(simClientId) : '',
       ...(personaId && { persona_id: personaId }),
     };
 

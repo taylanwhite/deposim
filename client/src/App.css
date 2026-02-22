@@ -2475,15 +2475,21 @@
   margin-top: 4px;
 }
 
-/* Call History: Instagram grid of square posts, centered when partial row */
-.call-history-section { margin-top: 24px; }
-.call-history-title { font-size: 16px; font-weight: 700; margin-bottom: 12px; }
+/* Call History: sim cards grid */
+.call-history-section {
+  margin-top: 16px;
+  padding: 0;
+}
+.call-history-title { font-size: 16px; font-weight: 700; margin-bottom: 10px; }
 .call-history-empty { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
 .sim-grid {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-start;
   gap: 14px;
+  margin: 0;
+  margin-bottom: 8px;
+  padding: 0;
 }
 .sim-grid .sim-post-card {
   flex: 0 0 calc((100% - 28px) / 3);
