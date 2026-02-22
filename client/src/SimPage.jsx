@@ -474,7 +474,9 @@ function SimPage() {
   }
 
   if (phase === 'calling') {
-    const canPrev = stageNum > 1;
+    const prevStageInfo = stageData?.stages?.find((s) => s.stage === stageNum - 1);
+    const prevStageAttempted = prevStageInfo && (prevStageInfo.completed === true || prevStageInfo.status === 'completed');
+    const canPrev = stageNum > 1 && !prevStageAttempted;
     const canNext = stageNum < totalStages;
     return (
       <div

@@ -166,6 +166,11 @@ const Icons = {
       <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
     </svg>
   ),
+  menu: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+    </svg>
+  ),
 };
 
 /* Spring grass green for scores */
@@ -1462,7 +1467,6 @@ function CreateCaseForm({ goBack, onSuccess, showToast, tab, switchTab, orgId })
       if (!r.ok) throw new Error(data.error || 'Failed to create case');
       showToast(`Case #${caseNumber} created`);
       onSuccess(data);
-      goBack();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -1690,6 +1694,9 @@ function CaseDetailsAccordion({ name, description, defaultPersonaId, templateId,
   useEffect(() => { setDraftDesc(description || ''); }, [description]);
   useEffect(() => { setDraftPersonaId(defaultPersonaId || ''); }, [defaultPersonaId]);
   useEffect(() => { setAvailablePersonas(Array.isArray(personas) ? personas : []); }, [personas]);
+  useEffect(() => {
+    if (availablePersonas.length > 0 && !draftPersonaId) setDraftPersonaId(availablePersonas[0].id);
+  }, [availablePersonas, draftPersonaId]);
 
   // If the case payload didn't include personas, fetch them from the template.
   useEffect(() => {
@@ -1784,8 +1791,7 @@ function CaseDetailsAccordion({ name, description, defaultPersonaId, templateId,
               {Array.isArray(availablePersonas) && availablePersonas.length > 0 && (
                 <label style={{ display: 'block', marginBottom: 12 }}>
                   <span className="label-text">{t('createCase.defaultPersona')}</span>
-                  <select className="input" value={draftPersonaId} onChange={(e) => setDraftPersonaId(e.target.value)} style={{ maxWidth: 360 }}>
-                    <option value="">{t('createCase.defaultPersonaNone')}</option>
+                  <select className="input" value={draftPersonaId || availablePersonas[0]?.id || ''} onChange={(e) => setDraftPersonaId(e.target.value)} style={{ maxWidth: 360 }}>
                     {availablePersonas.map((p) => (
                       <option key={p.id} value={p.id}>{p.name}{p.description ? ` — ${p.description}` : ''}</option>
                     ))}
@@ -1875,8 +1881,10 @@ function getScoreGradient(percent) {
 function SimCard({ sim: s, caseData, onClick }) {
   const bodyScore = getBodyScore(s);
   const combined = getCombinedScore(s);
-  const isProcessing = combined == null;
-  const gradient = getScoreGradient(combined);
+  const hasStarted = s.callDurationSecs != null || (s.conversationId != null && s.conversationId !== '');
+  const isPending = combined == null && !hasStarted;
+  const isProcessing = combined == null && hasStarted;
+  const gradient = getScoreGradient(isPending ? null : combined);
   const client = caseData?.client || caseData;
   const clientName = client ? `${client.lastName || ''}, ${client.firstName || ''}`.trim() : (caseData?.name || s.callSummaryTitle || '—');
   const dateStr = new Date(s.createdAt).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
@@ -1885,32 +1893,40 @@ function SimCard({ sim: s, caseData, onClick }) {
 
   return (
     <button type="button" className={`sim-post-card${isProcessing ? ' sim-post-card-processing' : ''}`} onClick={onClick} style={{ background: gradient }}>
-      <div className="sim-post-scores">
-        {isProcessing ? (
-          <span className="sim-post-processing-label">Processing…</span>
-        ) : (
-          <>
-            <span className="sim-post-score" style={{ color: '#fff' }}>
-              {combined != null ? `${combined}%` : (s.score != null ? `${s.score}%` : '—')}
-            </span>
-            <span className="sim-post-body">
-              Body Language Score: {bodyScore != null ? `${bodyScore}%` : '—'}
-            </span>
-          </>
+      <div className="sim-post-card-inner">
+        {!isPending && (
+          <div className="sim-post-scores">
+            {isProcessing ? (
+              <span className="sim-post-processing-label">Processing…</span>
+            ) : (
+              <>
+                <span className="sim-post-score" style={{ color: '#fff' }}>
+                  {combined != null ? `${combined}%` : (s.score != null ? `${s.score}%` : '—')}
+                </span>
+                <span className="sim-post-body">
+                  Body Language Score: {bodyScore != null ? `${bodyScore}%` : '—'}
+                </span>
+              </>
+            )}
+          </div>
         )}
-      </div>
-      <div className="sim-post-name">{clientName}</div>
-      <div className="sim-post-meta">
-        <span className="sim-post-date">{dateStr}</span>
-        <span className="sim-post-duration">{duration !== '—' ? ` · ${duration}` : ''}</span>
-      </div>
-      <div className="sim-card-stage-bar" aria-hidden>
-        {[1, 2, 3, 4].map((n, i) => (
-          <span key={n} className="sim-card-stage-bar-inner">
-            {i > 0 && <span className={`sim-card-stage-connector${n <= simStage ? ' sim-card-stage-connector-done' : ''}`} />}
-            <span className={`sim-card-stage-dot${n <= simStage ? ' sim-card-stage-dot-done' : ''}`}>{n <= simStage ? '✓' : n}</span>
-          </span>
-        ))}
+        <div className="sim-post-name">{clientName}</div>
+        {!isPending && (
+          <div className="sim-post-meta">
+            <span className="sim-post-date">{dateStr}</span>
+            <span className="sim-post-duration">{duration !== '—' ? ` · ${duration}` : ''}</span>
+          </div>
+        )}
+        {!isPending && (
+          <div className="sim-card-stage-bar" aria-hidden>
+            {[1, 2, 3, 4].map((n, i) => (
+              <span key={n} className="sim-card-stage-bar-inner">
+                {i > 0 && <span className={`sim-card-stage-connector${n <= simStage ? ' sim-card-stage-connector-done' : ''}`} />}
+                <span className={`sim-card-stage-dot${n <= simStage ? ' sim-card-stage-dot-done' : ''}`}>{n <= simStage ? '✓' : n}</span>
+              </span>
+            ))}
+          </div>
+        )}
       </div>
     </button>
   );
@@ -1933,6 +1949,7 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
   const [showAddClient, setShowAddClient] = useState(false);
   const [showClientPicker, setShowClientPicker] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [caseMenuOpen, setCaseMenuOpen] = useState(false);
 
   useEffect(() => { setCaseData(d); setCaseClients(d.caseClients || []); }, [d]);
 
@@ -1946,7 +1963,7 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
 
   // Poll for sim updates while any sim is still processing (no score yet)
   useEffect(() => {
-    const hasProcessing = sims.some(s => getCombinedScore(s) == null);
+    const hasProcessing = sims.some(s => getCombinedScore(s) == null && (s.callDurationSecs != null || (s.conversationId != null && s.conversationId !== '')));
     if (!hasProcessing || loadingSims) return;
     const timer = setInterval(() => {
       fetch(`${API}/simulations?caseId=${d.id}`)
@@ -2075,16 +2092,34 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
             <span className="sim-detail-header-case">#{caseData.caseNumber}</span>
           </div>
           {isSuper && (
-            <button
-              type="button"
-              className="case-detail-delete-btn"
-              onClick={handleDeleteCase}
-              disabled={deleting}
-              title={t('case.delete')}
-              aria-label={t('case.delete')}
-            >
-              {Icons.trash}
-            </button>
+            <div className="case-detail-menu-wrap">
+              <button
+                type="button"
+                className="case-detail-delete-btn case-detail-menu-btn"
+                onClick={() => setCaseMenuOpen((o) => !o)}
+                disabled={deleting}
+                title="Menu"
+                aria-label="Menu"
+                aria-expanded={caseMenuOpen}
+              >
+                {Icons.menu}
+              </button>
+              {caseMenuOpen && (
+                <>
+                  <div className="case-detail-menu-backdrop" onClick={() => setCaseMenuOpen(false)} aria-hidden />
+                  <div className="case-detail-menu-dropdown">
+                    <button
+                      type="button"
+                      className="case-detail-menu-item case-detail-menu-item-danger"
+                      onClick={() => { setCaseMenuOpen(false); handleDeleteCase(); }}
+                      disabled={deleting}
+                    >
+                      {t('case.delete')}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           )}
         </div>
         <div className="detail-body case-detail-body">
@@ -2863,14 +2898,6 @@ function CasesListPage() {
             </div>
           )}
           <div className="cases-subheader">
-            <div className={`cases-search-wrap${caseSearchExpanded ? ' expanded' : ''}`}>
-              <button type="button" className="cases-search-toggle" onClick={() => setCaseSearchExpanded((x) => !x)} aria-label="Search">
-                {Icons.search}
-              </button>
-              {caseSearchExpanded && (
-                <input type="search" className="cases-search-input" placeholder={t('cases.search')} value={caseSearch} onChange={(e) => setCaseSearch(e.target.value)} autoFocus />
-              )}
-            </div>
             <div className="cases-subheader-row" style={{ flexWrap: 'wrap' }}>
               <span className="cases-count">
                 {t('cases.count', { count: sortedCases.length, s: sortedCases.length !== 1 ? 's' : '' })}
@@ -2895,17 +2922,31 @@ function CasesListPage() {
                 />
               )}
             </div>
+            <div className={`cases-search-wrap${caseSearchExpanded ? ' expanded' : ''}`}>
+              <button type="button" className="cases-search-toggle" onClick={() => setCaseSearchExpanded((x) => !x)} aria-label="Search">
+                {Icons.search}
+              </button>
+              {caseSearchExpanded && (
+                <input type="search" className="cases-search-input" placeholder={t('cases.search')} value={caseSearch} onChange={(e) => setCaseSearch(e.target.value)} autoFocus />
+              )}
+            </div>
           </div>
           <div className="tile-grid">
             {sortedCases.map((c) => {
               const score = caseScores[c.id] ?? 0;
               const gradient = getScoreGradient(score);
               const isAuto = (c.description || '').toLowerCase().includes('car') || (c.description || '').toLowerCase().includes('vehicle') || (c.description || '').toLowerCase().includes('rear end');
+              const primaryClient = c.client || c.caseClients?.[0]?.client;
+              const clientName = primaryClient ? `${primaryClient.lastName || ''}, ${primaryClient.firstName || ''}`.trim() || '—' : '—';
+              const simCount = c._count?.simulations ?? 0;
               return (
                 <div key={c.id} className="tile tile-score-bg" style={{ background: gradient }} onClick={() => nav(`${prefix}/cases/${c.id}`)}>
-                  <div className="tile-icon">{isAuto ? Icons.car : Icons.walking}</div>
-                  <div className="tile-label">#{c.caseNumber}</div>
-                  <div className="tile-sublabel">{c.name || (c.client ? `${c.client.lastName || ''}, ${c.client.firstName || ''}`.trim() : '—')}</div>
+                  <div className="tile-inner">
+                    <div className="tile-icon">{isAuto ? Icons.car : Icons.walking}</div>
+                    <div className="tile-label">#{c.caseNumber}</div>
+                    <div className="tile-sublabel">{clientName}</div>
+                    <div className="tile-sims">Sims: {simCount}</div>
+                  </div>
                 </div>
               );
             })}
@@ -3033,7 +3074,7 @@ function CreateCasePage() {
   return (
     <CreateCaseForm
       goBack={() => nav(`${prefix}/cases${orgId ? `?org=${orgId}` : ''}`)}
-      onSuccess={() => nav(`${prefix}/cases${orgId ? `?org=${orgId}` : ''}`)}
+      onSuccess={(data) => data?.id ? nav(`${prefix}/cases/${data.id}`) : nav(`${prefix}/cases${orgId ? `?org=${orgId}` : ''}`)}
       showToast={showToast}
       tab="cases"
       switchTab={(t) => nav(`${prefix}/${t === 'settings' ? 'settings' : 'cases'}`)}
@@ -5079,9 +5120,7 @@ function ClientCasesPage() {
               </a>
             </div>
             <h1 className="feed-header-title">{t('client.title')}</h1>
-            <div className="feed-header-right">
-              <Link to={`${prefix}/client/settings`} className="header-link" style={{ fontSize: 14, fontWeight: 600 }}>{t('nav.settings')}</Link>
-            </div>
+            <div className="feed-header-right" />
           </div>
           <div className="cases-subheader">
             <div className="cases-search-wrap" />
@@ -5114,9 +5153,11 @@ function ClientCasesPage() {
                 const gradient = getScoreGradient(score);
                 return (
                   <div key={c.id} className="tile tile-score-bg" style={{ background: gradient }} onClick={() => nav(`${prefix}/client/cases/${c.id}`)}>
-                    <div className="tile-icon">{Icons.cases}</div>
-                    <div className="tile-label">#{c.caseNumber}</div>
-                    <div className="tile-sublabel">{c.name || (c.client ? `${c.client.lastName || ''}, ${c.client.firstName || ''}`.trim() : '—')}</div>
+                    <div className="tile-inner">
+                      <div className="tile-icon">{Icons.cases}</div>
+                      <div className="tile-label">#{c.caseNumber}</div>
+                      <div className="tile-sublabel">{c.name || (c.client ? `${c.client.lastName || ''}, ${c.client.firstName || ''}`.trim() : '—')}</div>
+                    </div>
                   </div>
                 );
               })}
@@ -5154,7 +5195,7 @@ function ClientCaseDetailPage() {
 
   // Poll for sim updates while any sim is still processing
   useEffect(() => {
-    const hasProcessing = sims.some(s => getCombinedScore(s) == null);
+    const hasProcessing = sims.some(s => getCombinedScore(s) == null && (s.callDurationSecs != null || (s.conversationId != null && s.conversationId !== '')));
     if (!hasProcessing || loading) return;
     const timer = setInterval(() => {
       fetch(`${API}/client/cases/${id}/simulations`, { credentials: 'include' })
@@ -5266,7 +5307,7 @@ function ClientEnterPage() {
     const path = redirectPath.startsWith('/') ? redirectPath : `/${redirectPath}`;
 
     if (!token) {
-      setStatus('error');
+      setStatus('no-token');
       return;
     }
     const url = `${API}/client/enter?token=${encodeURIComponent(token)}&redirect=${encodeURIComponent(path)}&from=app`;
@@ -5287,6 +5328,22 @@ function ClientEnterPage() {
       <div className="app-shell" style={{ display: 'grid', placeItems: 'center', minHeight: '100vh' }}>
         <div style={{ textAlign: 'center', padding: 32 }}>
           <p style={{ color: 'var(--muted)' }}>Invalid or expired link. Please use the link that was texted to you.</p>
+        </div>
+      </div>
+    );
+  }
+  if (status === 'no-token') {
+    const lang = typeof navigator !== 'undefined' && navigator.language
+      ? (navigator.language.startsWith('es') ? 'es' : navigator.language.startsWith('pt') ? 'pt' : 'en')
+      : 'en';
+    const message = CLIENT_NO_SESSION[lang];
+    return (
+      <div className="app-shell" style={{ display: 'grid', placeItems: 'center', minHeight: '100vh' }}>
+        <div style={{ textAlign: 'center', maxWidth: 420, padding: 32 }}>
+          <a href="https://deposim.com" target="_blank" rel="noopener noreferrer">
+            <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" style={{ height: 36, marginBottom: 24 }} />
+          </a>
+          <p style={{ fontSize: 16, lineHeight: 1.6, color: 'var(--text, #111)' }}>{message}</p>
         </div>
       </div>
     );
@@ -5327,11 +5384,21 @@ function ClientSettingsPage() {
   const nav = useNavigate();
   const prefix = useLangPrefix();
   const { t } = useT();
+  const [client, setClient] = useState(null);
+
+  useEffect(() => {
+    fetch(`${API}/client/me`, { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setClient(d?.clients?.[0] || null))
+      .catch(() => {});
+  }, []);
 
   const handleLogout = () => {
     fetch(`${API}/client/logout`, { method: 'GET', credentials: 'include' })
-      .then(() => nav(`${prefix}/client`));
+      .then(() => window.location.replace(`${prefix}/client/enter`));
   };
+
+  const clientName = client ? `${client.lastName || ''}, ${client.firstName || ''}`.trim() : '';
 
   return (
     <div className="app-shell">
@@ -5342,10 +5409,13 @@ function ClientSettingsPage() {
             <span className="sim-detail-header-name">{t('settings.title')}</span>
           </div>
         </div>
-        <div className="detail-body case-detail-body" style={{ padding: 24 }}>
-          <button type="button" className="btn" style={{ padding: '12px 24px', fontSize: 16 }} onClick={handleLogout}>
-            {t('client.logOut')}
-          </button>
+        <div className="detail-body case-detail-body client-settings-body">
+          {clientName && <p className="client-settings-name">{clientName}</p>}
+          <div className="client-settings-logout-wrap">
+            <button type="button" className="btn" style={{ padding: '12px 24px', fontSize: 16 }} onClick={handleLogout}>
+              {t('client.logOut')}
+            </button>
+          </div>
         </div>
       </div>
       <ClientBottomBar tab="settings" showCenter={false} />

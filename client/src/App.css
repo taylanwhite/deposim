@@ -232,7 +232,6 @@
   text-align: center;
   padding: 14px;
   overflow: hidden;
-  transition: border-color 0.2s, box-shadow 0.2s;
 }
 
 /* Cases screen: half-height tiles, text vertically centered */
@@ -243,11 +242,21 @@
 .tile-grid .tile .tile-icon {
   display: none;
 }
-.tile:hover {
-  border-color: rgba(98, 54, 255, 0.6);
-  box-shadow: 0 0 0 1px rgba(98, 54, 255, 0.15);
+.tile:hover .tile-inner {
+  transform: scale(1.05);
 }
 .tile:active { opacity: 0.9; }
+.tile-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 100%;
+  transition: transform 0.25s ease;
+}
+.tile-grid .tile .tile-inner { gap: 4px; }
 
 .tile-icon {
   font-size: 28px;
@@ -276,6 +285,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.tile-sims {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+  width: 100%;
+}
 
 /* ===== Cases list (clean, simple) ===== */
 .cases-subheader {
@@ -285,6 +300,9 @@
   align-items: center;
   gap: 10px;
   padding: 12px 0 8px;
+}
+.cases-subheader .cases-search-wrap {
+  margin-left: auto;
 }
 .cases-search-wrap {
   display: flex;
@@ -490,6 +508,51 @@
   width: 20px;
   height: 20px;
 }
+.case-detail-menu-wrap {
+  position: relative;
+  justify-self: end;
+}
+.case-detail-menu-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.06);
+}
+.case-detail-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+}
+.case-detail-menu-dropdown {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  margin-top: 4px;
+  min-width: 160px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  z-index: 11;
+  overflow: hidden;
+}
+.case-detail-menu-item {
+  display: block;
+  width: 100%;
+  padding: 10px 14px;
+  text-align: left;
+  border: none;
+  background: none;
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.case-detail-menu-item:hover:not(:disabled) {
+  background: var(--hover-bg, rgba(0, 0, 0, 0.05));
+}
+.case-detail-menu-item-danger:hover:not(:disabled) {
+  color: #e74c3c;
+  background: rgba(231, 76, 60, 0.08);
+}
 .back-btn {
   background: none;
   border: none;
@@ -553,6 +616,19 @@
 
 /* Case detail: compact hero + small CTA */
 .case-detail-body { padding-bottom: 80px; }
+.client-settings-body { padding: 24px; }
+.client-settings-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 20px;
+  text-align: center;
+}
+.client-settings-logout-wrap {
+  display: flex;
+  justify-content: center;
+  margin-top: 16px;
+}
 .case-detail-actions {
   margin-top: 16px;
 }
@@ -2360,9 +2436,10 @@
   padding: 14px 16px;
   margin-bottom: 10px;
   cursor: pointer;
-  transition: border-color 0.15s;
+  overflow: hidden;
 }
-.sim-card:hover { border-color: var(--accent); }
+.sim-card:hover .sim-card-inner { transform: scale(1.05); }
+.sim-card-inner { transition: transform 0.25s ease; }
 .sim-card-top {
   display: flex;
   align-items: center;
@@ -2406,15 +2483,15 @@
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-start;
-  gap: 8px;
+  gap: 14px;
 }
 .sim-grid .sim-post-card {
-  flex: 0 0 calc((100% - 16px) / 3);
+  flex: 0 0 calc((100% - 28px) / 3);
   min-width: 0;
 }
 @media (max-width: 768px) {
   .sim-grid .sim-post-card {
-    flex: 0 0 calc((100% - 8px) / 2);
+    flex: 0 0 calc((100% - 14px) / 2);
   }
 }
 
@@ -2426,7 +2503,7 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 12px;
+  padding: 14px;
   color: #fff;
   border: 2px solid rgba(255, 255, 255, 0.2);
   border-radius: 12px;
@@ -2434,12 +2511,20 @@
   text-align: center;
   font: inherit;
   -webkit-tap-highlight-color: transparent;
-  transition: opacity 0.2s, box-shadow 0.2s, border-color 0.2s;
+  transition: opacity 0.2s ease, transform 0.25s ease;
+  overflow: hidden;
 }
-.sim-post-card:hover {
-  opacity: 0.95;
-  box-shadow: 0 4px 12px rgba(22, 152, 28, 0.35);
-  border-color: rgba(255, 255, 255, 0.4);
+.sim-post-card:hover .sim-post-card-inner {
+  transform: scale(1.05);
+}
+.sim-post-card-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  transition: transform 0.25s ease;
 }
 .sim-post-card-processing {
   animation: sim-card-pulse 2s ease-in-out infinite;

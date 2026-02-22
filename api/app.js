@@ -561,7 +561,7 @@ app.get('/api/client/logout', (_req, res) => {
 // ---------- Mini Link redirect (public, no auth) — must be before SPA catch-all if any ----------
 app.get('/api/short-links/resolve/:slug', async (req, res) => {
   try {
-    const slug = (req.params.slug || '').trim().toLowerCase();
+    const slug = (req.params.slug || '').trim();
     if (!slug) return res.status(404).json({ error: 'Not found' });
     const link = await prisma.shortLink.findUnique({ where: { slug } });
     if (!link) return res.status(404).json({ error: 'Short link not found' });
@@ -574,7 +574,7 @@ app.get('/api/short-links/resolve/:slug', async (req, res) => {
 
 app.get('/s/:slug', async (req, res) => {
   try {
-    const slug = (req.params.slug || '').trim().toLowerCase();
+    const slug = (req.params.slug || '').trim();
     if (!slug) return res.status(404).send('Not found');
     const link = await prisma.shortLink.findUnique({ where: { slug } });
     if (!link) return res.status(404).send('Short link not found');
@@ -893,6 +893,7 @@ app.get('/api/cases', ...authAndStaff, async (req, res) => {
         location: true,
         client: true,
         caseClients: { include: { client: true } },
+        _count: { select: { simulations: true } },
       },
     });
     res.json(cases);
@@ -1086,21 +1087,24 @@ app.post('/api/cases/:id/notify-deposim-sent', ...authAndStaff, async (req, res)
       },
     });
 
+    const frontendOrigin = (APP_URL || '').trim() || (req.protocol === 'https' ? `https://${req.get('host')}` : `https://${req.get('host')}`);
     let base;
     try {
-      base = `${req.protocol}://${req.get('host')}`;
+      base = (APP_URL || '').trim() || `${req.protocol}://${req.get('host')}`;
     } catch {
-      base = `${req.protocol}://${req.get('host')}`;
+      base = (APP_URL || '').trim() || `${req.protocol}://${req.get('host')}`;
     }
+    if (!base.startsWith('https')) base = base.replace(/^http/, 'https');
     const simPath = `/sim/${c.id}`;
-    const frontendOrigin = APP_URL || base;
     // When we have a target client, short link points to frontend /client/enter so the frontend sets the cookie then redirects (no API redirect)
     const targetUrl = targetClient
       ? `${frontendOrigin}/client/enter?token=${encodeURIComponent(signClientToken(targetClient.id))}&redirect=${encodeURIComponent(simPath)}`
       : (req.body?.simUrl || '').trim() || `${base}${simPath}`;
     let link = await prisma.shortLink.findFirst({ where: { targetUrl } });
     if (!link) {
-      const slug = crypto.randomBytes(4).toString('base64url').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
+      const alnum = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+      let slug = '';
+      for (let i = 0; i < 8; i++) slug += alnum[crypto.randomInt(0, alnum.length)];
       link = await prisma.shortLink.create({
         data: {
           slug,
@@ -1116,8 +1120,9 @@ app.post('/api/cases/:id/notify-deposim-sent', ...authAndStaff, async (req, res)
       : ['8018366183', '9175979964'];
     const moderatorEmails = ['t@vsfy.com'];
     const name = targetClient ? `${targetClient.lastName}, ${targetClient.firstName}` : 'Deponent';
+    const clientFirstName = targetClient?.firstName || 'your';
 
-    const clientMsg = `Your DepoSim simulated deposition is ready. Start here: ${simLink}`;
+    const clientMsg = `Your DepoSim simulated deposition is ready. Start here:\n\n${simLink}\n\n`;
     const moderatorMsg = `DepoSim link sent to client #${c.caseNumber} – ${name}. ${simLink}`;
 
     const sendSms = async (to, msg, label) => {
@@ -1170,8 +1175,8 @@ app.post('/api/cases/:id/notify-deposim-sent', ...authAndStaff, async (req, res)
     if (clientEmail && clientEmail.includes('@')) {
       await sendEmail(
         clientEmail,
-        'Your DepoSim simulated deposition is ready',
-        `Your DepoSim simulated deposition is ready. Start here: ${simLink}`,
+        `DepoSim: ${clientFirstName}, your simulated deposition is ready`,
+        `DepoSim: ${clientFirstName}, your simulated deposition is ready.\n\nStart here:\n\n${simLink}\n\n`,
         'client'
       );
     } else {
@@ -1874,9 +1879,12 @@ app.post('/api/short-links', ...authAndWrite, async (req, res) => {
     let { slug, targetUrl, label, organizationId } = req.body;
     targetUrl = (targetUrl || '').trim();
     if (!targetUrl) return res.status(400).json({ error: 'targetUrl is required' });
-    slug = (slug || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '') || null;
+    slug = (slug || '').trim().replace(/[^a-zA-Z0-9_-]/g, '') || null;
     if (!slug) {
-      slug = crypto.randomBytes(4).toString('base64url').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
+      const alnum = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+      let gen = '';
+      for (let i = 0; i < 8; i++) gen += alnum[crypto.randomInt(0, alnum.length)];
+      slug = gen;
     }
     const orgId = req.accessLevel === 'super' && organizationId != null ? organizationId : req.orgId || null;
     const existing = await prisma.shortLink.findUnique({ where: { slug } });
@@ -1913,7 +1921,7 @@ app.delete('/api/short-links/:id', ...authAndWrite, async (req, res) => {
 
 app.get('/api/mini-links/resolve/:slug', async (req, res) => {
   try {
-    const slug = (req.params.slug || '').trim().toLowerCase();
+    const slug = (req.params.slug || '').trim();
     if (!slug) return res.status(404).json({ error: 'Not found' });
     const link = await prisma.shortLink.findUnique({ where: { slug } });
     if (!link) return res.status(404).json({ error: 'Short link not found' });
