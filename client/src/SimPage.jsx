@@ -27,7 +27,6 @@ function SimPage() {
   const [messages, setMessages] = useState([]);
   const [stageData, setStageData] = useState(null);
   const [userRole, setUserRole] = useState(null);
-  const effectiveStage = stageData?.currentStage ?? stageNum;
   const totalStages = stageData?.stages?.length ?? 4;
   const messagesEndRef = useRef(null);
 
@@ -39,6 +38,8 @@ function SimPage() {
   const conversationRef = useRef(null);
   const redirectToStageRef = useRef(null);
   const touchStartX = useRef(null);
+  const prevStageNum = useRef(stageNum);
+  const sessionActive = useRef(false);
 
   const requestCamera = useCallback(async () => {
     setCameraError(null);
@@ -62,6 +63,7 @@ function SimPage() {
     }
   }, [caseId]);
 
+  // FIX #1: Use stageNum from URL directly — never override with currentStage
   useEffect(() => {
     if (!caseId) return;
     setConfig(null);
@@ -69,7 +71,7 @@ function SimPage() {
     fetch(API + '/sim/signed-url', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ caseId, stage: effectiveStage }),
+      body: JSON.stringify({ caseId, stage: stageNum }),
     })
       .then((r) => r.json())
       .then((d) => {
@@ -77,7 +79,7 @@ function SimPage() {
         setConfig(d);
       })
       .catch((err) => setConfigError(err.message));
-  }, [caseId, effectiveStage]);
+  }, [caseId, stageNum]);
 
   useEffect(() => {
     if (!caseId) return;
@@ -97,7 +99,23 @@ function SimPage() {
       .catch(() => setUserRole('staff'));
   }, []);
 
-  // Re-request camera when landing on a new stage with consent already given
+  // FIX #3: Reset state when stageParam changes (navigating between stages)
+  useEffect(() => {
+    if (prevStageNum.current === stageNum) return;
+    prevStageNum.current = stageNum;
+    setMessages([]);
+    setConfig(null);
+    sessionActive.current = false;
+    recordedChunks.current = [];
+    const hasConsent = typeof sessionStorage !== 'undefined' && caseId && sessionStorage.getItem(CONSENT_KEY(caseId));
+    if (hasConsent) {
+      setPhase('ready');
+      if (!cameraStreamRef.current) requestCamera();
+    } else {
+      setPhase('consent');
+    }
+  }, [stageNum, caseId, requestCamera]);
+
   useEffect(() => {
     if (phase === 'ready' && !cameraStream && caseId && typeof sessionStorage !== 'undefined' && sessionStorage.getItem(CONSENT_KEY(caseId))) {
       requestCamera();
@@ -126,18 +144,22 @@ function SimPage() {
   const handleConnect = useCallback(
     (props) => {
       if (props?.conversationId) conversationIdRef.current = props.conversationId;
+      sessionActive.current = true;
       setPhase('calling');
       setMessages([]);
       recordedChunks.current = [];
-      if (videoRef.current) videoRef.current.srcObject = cameraStream;
-      if (cameraStream) {
+      if (videoRef.current && cameraStreamRef.current) {
+        videoRef.current.srcObject = cameraStreamRef.current;
+      }
+      const stream = cameraStreamRef.current;
+      if (stream) {
         try {
           const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
             ? 'video/webm;codecs=vp9'
             : MediaRecorder.isTypeSupported('video/webm')
               ? 'video/webm'
               : 'video/mp4';
-          mediaRecorder.current = new MediaRecorder(cameraStream, { mimeType });
+          mediaRecorder.current = new MediaRecorder(stream, { mimeType });
           mediaRecorder.current.ondataavailable = (e) => {
             if (e.data && e.data.size > 0) recordedChunks.current.push(e.data);
           };
@@ -147,7 +169,7 @@ function SimPage() {
         }
       }
     },
-    [cameraStream],
+    [],
   );
 
   const stopCamera = useCallback(() => {
@@ -162,29 +184,9 @@ function SimPage() {
     }
   }, []);
 
-  const handleDisconnect = useCallback(() => {
-    if (mediaRecorder.current && mediaRecorder.current.state !== 'inactive') {
-      mediaRecorder.current.stop();
-    }
-    stopCamera();
-    setPhase('saving');
-
-    // Fire-and-forget upload
-    const chunks = recordedChunks.current;
-    const convId = conversationIdRef.current || conversationRef.current?.getId?.() || '';
-    if (chunks.length > 0 && (convId || caseId)) {
-      const blob = new Blob(chunks, {
-        type: mediaRecorder.current?.mimeType || 'video/webm',
-      });
-      uploadRecordingToS3(blob, {
-        conversationId: convId || undefined,
-        caseId,
-      }).catch((err) => console.warn('[DepoSim] Upload error:', err));
-    }
-
-    // Fire-and-forget: poll for sim then trigger server-side evaluation
+  const fireAndForgetEvaluation = useCallback(() => {
     const capturedCaseId = caseId;
-    const capturedStage = effectiveStage;
+    const capturedStage = stageNum;
     (async () => {
       try {
         let simId = null;
@@ -212,7 +214,30 @@ function SimPage() {
         }
       } catch { /* background evaluation - safe to ignore */ }
     })();
-  }, [stopCamera, caseId, effectiveStage]);
+  }, [caseId, stageNum]);
+
+  const handleDisconnect = useCallback(() => {
+    sessionActive.current = false;
+    if (mediaRecorder.current && mediaRecorder.current.state !== 'inactive') {
+      mediaRecorder.current.stop();
+    }
+    stopCamera();
+
+    const chunks = recordedChunks.current;
+    const convId = conversationIdRef.current || conversationRef.current?.getId?.() || '';
+    if (chunks.length > 0 && (convId || caseId)) {
+      const blob = new Blob(chunks, {
+        type: mediaRecorder.current?.mimeType || 'video/webm',
+      });
+      uploadRecordingToS3(blob, {
+        conversationId: convId || undefined,
+        caseId,
+      }).catch((err) => console.warn('[DepoSim] Upload error:', err));
+    }
+
+    fireAndForgetEvaluation();
+    setPhase('saving');
+  }, [stopCamera, caseId, fireAndForgetEvaluation]);
 
   useEffect(() => {
     if ((phase === 'ready' || phase === 'calling') && cameraStream && videoRef.current) {
@@ -281,6 +306,7 @@ function SimPage() {
     onAgentChatResponsePart: handleAgentChatPart,
     onError: (err) => {
       console.error('[DepoSim] Conversation error:', err);
+      sessionActive.current = false;
       setPhase('saving');
     },
   });
@@ -293,9 +319,14 @@ function SimPage() {
   const startCall = async () => {
     if (!config?.signedUrl || !config?.dynamicVariables) return;
     try {
+      // Release camera's audio tracks so the SDK can claim the mic exclusively
+      const stream = cameraStreamRef.current;
+      if (stream) {
+        stream.getAudioTracks().forEach((t) => t.stop());
+      }
+
       conversationIdRef.current = null;
-      await navigator.mediaDevices.getUserMedia({ audio: true });
-      const id = await conversation.startSession({
+      await conversation.startSession({
         signedUrl: config.signedUrl,
         connectionType: 'websocket',
         overrides: {
@@ -310,27 +341,35 @@ function SimPage() {
         },
         dynamicVariables: config.dynamicVariables,
       });
-      conversationIdRef.current = id || null;
     } catch (err) {
       console.error('[DepoSim] Start session failed:', err);
       setPhase('ready');
     }
   };
 
-  const endCall = () => {
+  // FIX #4: endCall sets phase directly, doesn't rely solely on onDisconnect
+  const endCall = useCallback(() => {
+    if (mediaRecorder.current && mediaRecorder.current.state !== 'inactive') {
+      try { mediaRecorder.current.stop(); } catch (_) {}
+    }
     stopCamera();
-    conversation.endSession?.();
-  };
+    if (sessionActive.current) {
+      sessionActive.current = false;
+      try { conversation.endSession?.(); } catch (_) {}
+    } else {
+      setPhase('saving');
+    }
+  }, [stopCamera, conversation]);
 
   const goToPrevStage = () => {
-    if (effectiveStage <= 1) return;
-    redirectToStageRef.current = effectiveStage - 1;
+    if (stageNum <= 1) return;
+    redirectToStageRef.current = stageNum - 1;
     endCall();
   };
 
   const goToNextStage = () => {
-    if (effectiveStage >= totalStages) return;
-    redirectToStageRef.current = effectiveStage + 1;
+    if (stageNum >= totalStages) return;
+    redirectToStageRef.current = stageNum + 1;
     endCall();
   };
 
@@ -377,7 +416,6 @@ function SimPage() {
     );
   }
 
-  // Consent phase — mic/cam enable splash
   if (phase === 'consent') {
     return (
       <div className="sim-page sim-page-dark">
@@ -417,7 +455,6 @@ function SimPage() {
     );
   }
 
-  // Ready phase — video/audio test
   if (phase === 'ready') {
     return (
       <div className="sim-page">
@@ -436,10 +473,9 @@ function SimPage() {
     );
   }
 
-  // Calling phase — sim screen: white header (logo) | full-width video | thread | bottom nav (prev | Back to Case | next)
   if (phase === 'calling') {
-    const canPrev = effectiveStage > 1;
-    const canNext = effectiveStage < totalStages;
+    const canPrev = stageNum > 1;
+    const canNext = stageNum < totalStages;
     return (
       <div
         className="sim-page sim-calling sim-calling-white"
@@ -499,7 +535,7 @@ function SimPage() {
     );
   }
 
-  // Saving phase — brief transition before redirect to case page
+  // Saving phase
   return (
     <div className="sim-page sim-page-dark">
       <div className="sim-saving">
