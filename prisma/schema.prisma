@@ -149,7 +149,7 @@ model Persona {
 
   template DepositionTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
   cases    Case[]             @relation("CaseDefaultPersona")
-  simulations Simulation[]
+  simulationStages SimulationStage[]
 
   @@map("personas")
 }
@@ -272,39 +272,50 @@ model Prompt {
 }
 
 model Simulation {
+  id            String   @id @default(uuid())
+  caseId        String   @map("case_id")
+  clientId      String?  @map("client_id")
+  selectedStage Int      @default(1) @map("selected_stage")
+  score         Int?     @map("score") // combined final score (avg of all completed stages)
+  scoreReason   String?  @map("score_reason") @db.Text
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  case    Case              @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  client  Client?           @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  stages  SimulationStage[]
+
+  @@map("simulations")
+}
+
+model SimulationStage {
   id                String   @id @default(uuid())
-  caseId            String   @map("case_id")
-  clientId          String?  @map("client_id")  // which client ran this simulation
+  simulationId      String   @map("simulation_id")
+  stage             Int      // 1-4
   conversationId    String?  @map("conversation_id")
-  eventType         String?  @map("event_type")
-  agentId           String?  @map("agent_id")
-  status            String?
-  score             Int?     @map("score")
+  status            String?  // 'completed' | 'in_progress' | 'available' | 'locked'
+  score             Int?     @map("score")         // transcript analysis score 0-100
   scoreReason       String?  @map("score_reason")
   fullAnalysis      String?  @map("full_analysis")
-  turnScores        Json?    @map("turn_scores")  // Per Q/A pair: [{ question, response, score, score_reason, improvement }]
+  turnScores        Json?    @map("turn_scores")
   transcript        Json?
   callDurationSecs  Int?     @map("call_duration_secs")
   transcriptSummary String?  @map("transcript_summary")
   callSummaryTitle  String?  @map("call_summary_title")
   bodyAnalysis      String?  @map("body_analysis")
   bodyAnalysisModel String?  @map("body_analysis_model")
-  recordingS3Key    String?  @map("recording_s3_key")  // S3 key for body-language recording (archival)
-
-  // Stage system (1-4)
-  stage             Int?     @map("stage")              // 1-4, null for legacy simulations
-  stageStatus       String?  @map("stage_status")       // 'completed' | 'retake_recommended' | 'in_progress'
+  bodyScore         Int?     @map("body_score")    // derived body-language score 0-100
+  recordingS3Key    String?  @map("recording_s3_key")
+  stageSummary      String?  @map("stage_summary")
   retakeRecommended Boolean  @default(false) @map("retake_recommended")
-  stageSummary      String?  @map("stage_summary")      // AI-generated summary for feeding into next stage
-  personaId         String?  @map("persona_id")         // which counsel persona was used (from template)
-
+  personaId         String?  @map("persona_id")
   createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
 
-  case    Case     @relation(fields: [caseId], references: [id], onDelete: Cascade)
-  client  Client?  @relation(fields: [clientId], references: [id], onDelete: SetNull)
-  persona Persona? @relation(fields: [personaId], references: [id], onDelete: SetNull)
+  simulation Simulation @relation(fields: [simulationId], references: [id], onDelete: Cascade)
+  persona    Persona?   @relation(fields: [personaId], references: [id], onDelete: SetNull)
 
-  @@map("simulations")
+  @@unique([simulationId, stage])
+  @@map("simulation_stages")
 }
 
 model VideoAnalysis {

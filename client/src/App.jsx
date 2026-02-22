@@ -171,6 +171,11 @@ const Icons = {
       <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
     </svg>
   ),
+  copy: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+    </svg>
+  ),
 };
 
 /* Spring grass green for scores */
@@ -699,42 +704,46 @@ function PromptManager({ showToast }) {
   );
 }
 
-/* ===== Parse timestamp "M:SS" or "0:45" to seconds ===== */
+/* ===== Parse timestamp "M:SS", "H:MM:SS", or seconds number → seconds ===== */
 function parseTimestamp(ts) {
-  if (!ts || typeof ts !== 'string') return 0;
-  const m = ts.trim().match(/^(\d+):(\d+)$/);
-  if (!m) return 0;
-  return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  if (ts == null) return 0;
+  if (typeof ts === 'number' && !isNaN(ts)) return Math.max(0, Math.floor(ts));
+  const str = String(ts).trim();
+  if (!str) return 0;
+  const hms = str.match(/^(\d+):(\d+):(\d+)$/);
+  if (hms) return parseInt(hms[1], 10) * 3600 + parseInt(hms[2], 10) * 60 + parseInt(hms[3], 10);
+  const ms = str.match(/^(\d+):(\d+)$/);
+  if (ms) return parseInt(ms[1], 10) * 60 + parseInt(ms[2], 10);
+  const sec = parseInt(str, 10);
+  return isNaN(sec) ? 0 : Math.max(0, sec);
 }
 
-/* ===== Moment popup with video player (seeks to timestamp) ===== */
-function MomentVideoPopup({ moment, simulationId, onClose }) {
+/* ===== Moment popup — native controls, seek once on load ===== */
+function MomentVideoPopup({ moment, simulationId, stage, onClose }) {
   const videoRef = useRef(null);
+  const hasSeeked = useRef(false);
   const [videoUrl, setVideoUrl] = useState(null);
   const [loading, setLoading] = useState(!!simulationId);
   const [error, setError] = useState(null);
-  const seekSeconds = parseTimestamp(moment?.timestamp);
+  const seekSec = parseTimestamp(moment?.timestamp);
 
   useEffect(() => {
     if (!simulationId) return;
     setLoading(true);
     setError(null);
-    fetch(`${API}/simulations/${simulationId}/recording-url`)
+    fetch(`${API}/simulations/${simulationId}/recording-url?stage=${encodeURIComponent(stage || 1)}`)
       .then((r) => r.json())
-      .then((d) => {
-        if (d.url) setVideoUrl(d.url);
-        else setError(d.error || 'No recording');
-      })
-      .catch((err) => setError(err.message))
+      .then((d) => { if (d.url) setVideoUrl(d.url); else setError(d.error || 'No recording'); })
+      .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
-  }, [simulationId]);
+  }, [simulationId, stage]);
 
-  const handleLoadedMetadata = useCallback(() => {
+  const handleCanPlay = useCallback(() => {
     const v = videoRef.current;
-    if (v && seekSeconds > 0 && !isNaN(v.duration)) {
-      v.currentTime = Math.min(seekSeconds, v.duration);
-    }
-  }, [seekSeconds]);
+    if (!v || hasSeeked.current || seekSec <= 0) return;
+    v.currentTime = seekSec;
+    hasSeeked.current = true;
+  }, [seekSec]);
 
   return (
     <div className="sim-body-popup-overlay" onClick={onClose}>
@@ -747,15 +756,21 @@ function MomentVideoPopup({ moment, simulationId, onClose }) {
           {loading && <p className="sim-moment-loading">Loading video…</p>}
           {error && <p className="sim-moment-error">{error}</p>}
           {videoUrl && !error && (
-            <video
-              ref={videoRef}
-              src={videoUrl}
-              controls
-              playsInline
-              className="sim-moment-video"
-              onLoadedMetadata={handleLoadedMetadata}
-              onLoadedData={handleLoadedMetadata}
-            />
+            <>
+              <video
+                key={`${simulationId}-${moment?.timestamp ?? ''}`}
+                ref={videoRef}
+                src={videoUrl}
+                controls
+                playsInline
+                preload="auto"
+                className="sim-moment-video"
+                onCanPlay={handleCanPlay}
+              />
+              <a href={videoUrl} target="_blank" rel="noopener noreferrer" className="btn btn-sm secondary sim-moment-open-link">
+                Open full recording
+              </a>
+            </>
           )}
           <p className="sim-moment-desc">{moment?.moment || ''}</p>
         </div>
@@ -765,8 +780,9 @@ function MomentVideoPopup({ moment, simulationId, onClose }) {
 }
 
 /* ===== Simulation Detail: Transcript bubbles + Body tab ===== */
-function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterClick, renderBottomBar }) {
+function SimulationDetail({ d: initialSim, tab, switchTab, goBack, centerAction, onCenterClick, renderBottomBar }) {
   const [simTab, setSimTab] = useState('transcript');
+  const [d, setD] = useState(initialSim);
   const topRef = useRef(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
   const [depoSimSentCaseId, setDepoSimSentCaseId] = useState(null);
@@ -784,6 +800,10 @@ function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterCli
   const [showScoreSummary, setShowScoreSummary] = useState(false);
 
   useEffect(() => {
+    setD(initialSim);
+  }, [initialSim]);
+
+  useEffect(() => {
     if (expandedTurn == null) return;
     const onDocClick = (e) => {
       if (!e.target.closest('.sim-turn-score-inline')) setExpandedTurn(null);
@@ -792,7 +812,41 @@ function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterCli
     return () => document.removeEventListener('click', onDocClick);
   }, [expandedTurn]);
 
-  const scoreColor = d.score >= 75 ? SCORE_GREEN : d.score >= 50 ? '#ffab00' : '#ed4956';
+  const handleStageClick = useCallback(async (stageNum) => {
+    if (!d?.id) return;
+    const stage = Math.max(1, Math.min(4, parseInt(stageNum, 10) || 1));
+    try {
+      let detailResp = await fetch(`${API}/simulations/${d.id}?stage=${stage}`, { credentials: 'include' });
+      if (!detailResp.ok) detailResp = await fetch(`${API}/client/simulations/${d.id}?stage=${stage}`, { credentials: 'include' });
+      if (detailResp.ok) {
+        const next = await detailResp.json();
+        setD(next);
+      }
+      let persistResp = await fetch(`${API}/simulations/${d.id}/selected-stage`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ stage }),
+      });
+      if (!persistResp.ok) {
+        persistResp = await fetch(`${API}/client/simulations/${d.id}/selected-stage`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ stage }),
+        });
+      }
+    } catch (_) {}
+  }, [d?.id]);
+
+  const transcriptScore = d.score;
+  const bodyScore = getBodyScore(d);
+  const totalScore = (transcriptScore != null && bodyScore != null)
+    ? Math.round((transcriptScore + bodyScore) / 2)
+    : (transcriptScore ?? bodyScore ?? null);
+  const scoreColor = (totalScore ?? 0) >= 75 ? SCORE_GREEN : (totalScore ?? 0) >= 50 ? '#ffab00' : '#ed4956';
+  const transcriptScoreColor = (transcriptScore ?? 0) >= 75 ? SCORE_GREEN : (transcriptScore ?? 0) >= 50 ? '#ffab00' : '#ed4956';
+  const bodyScoreColor = (bodyScore ?? 0) >= 75 ? SCORE_GREEN : (bodyScore ?? 0) >= 50 ? '#ffab00' : '#ed4956';
   const transcript = Array.isArray(d.transcript) ? d.transcript : [];
   const turnScores = Array.isArray(d.turnScores) ? d.turnScores : [];
 
@@ -828,7 +882,7 @@ function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterCli
           </div>
         </div>
         <div className="detail-body sim-detail-body">
-          {/* Summary strip */}
+          {/* Summary strip: Total Score, Transcript Score, Body Language Score */}
           <div className="sim-detail-summary" ref={topRef}>
             <div className="sim-detail-summary-stack">
               <button
@@ -838,8 +892,19 @@ function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterCli
                 onClick={() => setShowScoreSummary(true)}
                 title="View score summary"
               >
-                <span className="sim-detail-pct">{d.score != null ? `${d.score}%` : '—'}</span>
+                <span className="sim-detail-pct">{totalScore != null ? `${totalScore}%` : '—'}</span>
               </button>
+              <span className="sim-detail-label">Total Score</span>
+              <div className="sim-detail-sub-scores">
+                <div className="sim-detail-sub-score">
+                  <span className="sim-detail-sub-score-value" style={{ color: transcriptScoreColor }}>{transcriptScore != null ? `${transcriptScore}%` : '—'}</span>
+                  <span className="sim-detail-sub-score-label">Transcript</span>
+                </div>
+                <div className="sim-detail-sub-score">
+                  <span className="sim-detail-sub-score-value" style={{ color: bodyScoreColor }}>{bodyScore != null ? `${bodyScore}%` : '—'}</span>
+                  <span className="sim-detail-sub-score-label">Body Language</span>
+                </div>
+              </div>
               <div className="sim-detail-summary-meta">
                 <div className="sim-detail-meta">
                   {new Date(d.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
@@ -851,6 +916,14 @@ function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterCli
             </div>
           </div>
 
+          {Array.isArray(d?.stages) && d.stages.length > 0 && (
+            <StageProgressDonuts
+              stages={d.stages}
+              currentStage={d.selectedStage || d.currentStage || 1}
+              onStageClick={handleStageClick}
+            />
+          )}
+
           {showScoreSummary && (
             <div className="sim-score-summary-overlay" onClick={() => setShowScoreSummary(false)}>
               <div className="sim-score-summary-modal" onClick={e => e.stopPropagation()}>
@@ -860,7 +933,7 @@ function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterCli
                 </div>
                 <div className="sim-score-summary-body">
                   <div className="sim-score-summary-ring" style={{ '--score-color': scoreColor }}>
-                    <span>{d.score != null ? `${d.score}%` : '—'}</span>
+                    <span>{totalScore != null ? `${totalScore}%` : '—'}</span>
                   </div>
                   {d.scoreReason && (
                     <div className="sim-score-summary-reason">
@@ -875,16 +948,33 @@ function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterCli
             </div>
           )}
 
-          {/* Instagram-style tabs */}
-          <div className="sim-detail-tabs">
+          {!d.stageStatus && !d.conversationId && transcript.length === 0 && !d.bodyAnalysis ? (
+            <div className="sim-stage-not-performed">
+              <p>This stage has not been simulated yet.</p>
+            </div>
+          ) : (<>
+          {/* Transcript / Body Language tabs with underline */}
+          <div className="sim-detail-tabs sim-detail-tabs-compact">
             <button className={`sim-detail-tab${simTab === 'transcript' ? ' active' : ''}`} onClick={() => setSimTab('transcript')}>
-              {Icons.transcript}
               <span>Transcript</span>
             </button>
             <button className={`sim-detail-tab${simTab === 'body' ? ' active' : ''}`} onClick={() => setSimTab('body')}>
-              {Icons.body}
               <span>Body Language</span>
             </button>
+          </div>
+
+          {/* Tab-specific score */}
+          <div className="sim-detail-tab-score">
+            {simTab === 'transcript' && (
+              <span style={{ color: transcriptScoreColor, fontWeight: 700, fontSize: 15 }}>
+                Transcript Score: {transcriptScore != null ? `${transcriptScore}%` : '—'}
+              </span>
+            )}
+            {simTab === 'body' && (
+              <span style={{ color: bodyScoreColor, fontWeight: 700, fontSize: 15 }}>
+                Body Language Score: {bodyScore != null ? `${bodyScore}%` : '—'}
+              </span>
+            )}
           </div>
 
           {simTab === 'transcript' && (
@@ -1028,6 +1118,7 @@ function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterCli
               )}
             </div>
           )}
+          </>)}
         </div>
       </div>
 
@@ -1053,12 +1144,13 @@ function SimulationDetail({ d, tab, switchTab, goBack, centerAction, onCenterCli
         <MomentVideoPopup
           moment={popupMoment}
           simulationId={d.id}
+          stage={d.selectedStage || d.currentStage || 1}
           onClose={() => setPopupMoment(null)}
         />
       )}
 
-      {renderBottomBar ? renderBottomBar(tab) : <BottomBar tab={tab} onTab={switchTab} onCenterClick={onCenterClick} centerAction={centerAction} onStartDeposim={async (id) => { setDepoSimSentCaseId(id); setDepoSimSentShortUrl(null); setDepoSimSending(true); const simUrl = typeof window !== 'undefined' ? `${window.location.origin}/sim/${id}` : ''; try { const r = await fetch(API + `/cases/${id}/notify-deposim-sent`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ simUrl }) }); if (r.ok) { const data = await r.json().catch(() => ({})); setDepoSimSentShortUrl(data.shortUrl || null); } else { setDepoSimSentCaseId(null); console.warn('[DepoSim] SMS notify:', r.status, await r.text()); } } catch (e) { setDepoSimSentCaseId(null); console.warn('[DepoSim] SMS notify failed:', e); } finally { setDepoSimSending(false); } }} /> }
-      {(depoSimSentCaseId || depoSimSending) && <DepoSimSentToast sending={depoSimSending} caseId={depoSimSentCaseId} shortUrl={depoSimSentShortUrl} onDismiss={() => { setDepoSimSentCaseId(null); setDepoSimSentShortUrl(null); setDepoSimSending(false); }} />}
+      {renderBottomBar ? renderBottomBar(tab, { selectedStage: d?.selectedStage ?? d?.currentStage ?? 1 }) : <BottomBar tab={tab} onTab={switchTab} onCenterClick={onCenterClick} centerAction={centerAction} onStartDeposim={async (id) => { const stage = d?.selectedStage || d?.currentStage || 1; setDepoSimSentCaseId(id); setDepoSimSentShortUrl(null); setDepoSimSending(true); const simUrl = typeof window !== 'undefined' ? `${window.location.origin}/sim/${id}/stage/${stage}` : ''; try { const r = await fetch(API + `/cases/${id}/notify-deposim-sent`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ simUrl, stage }) }); if (r.ok) { const data = await r.json().catch(() => ({})); setDepoSimSentShortUrl(data.shortUrl || null); } else { setDepoSimSentCaseId(null); console.warn('[DepoSim] SMS notify:', r.status, await r.text()); } } catch (e) { setDepoSimSentCaseId(null); console.warn('[DepoSim] SMS notify failed:', e); } finally { setDepoSimSending(false); } }} /> }
+      {(depoSimSentCaseId || depoSimSending) && <DepoSimSentToast sending={depoSimSending} caseId={depoSimSentCaseId} shortUrl={depoSimSentShortUrl} stage={d?.selectedStage || d?.currentStage || 1} onDismiss={() => { setDepoSimSentCaseId(null); setDepoSimSentShortUrl(null); setDepoSimSending(false); }} />}
     </div>
   );
 }
@@ -1129,16 +1221,18 @@ function AnalysisDisplay({ data }) {
   return <div className="analysis-readable">{renderValue(parsed)}</div>;
 }
 
-/* ===== DepoSim Sent Toast (bottom popup: Sending… then link + Okay) ===== */
-function DepoSimSentToast({ sending, caseId, shortUrl, onDismiss }) {
-  const fullUrl = typeof window !== 'undefined' && caseId ? `${window.location.origin}/sim/${caseId}` : '';
+/* ===== DepoSim Sent Toast (bottom popup: Sending… then link + copy + Okay) ===== */
+function DepoSimSentToast({ sending, caseId, shortUrl, stage = 1, onDismiss }) {
+  const fullUrl = typeof window !== 'undefined' && caseId ? `${window.location.origin}/sim/${caseId}/stage/${stage}` : '';
   const displayUrl = shortUrl || fullUrl;
   const handleLinkClick = (e) => {
     e.preventDefault();
-    if (displayUrl) {
-      navigator.clipboard?.writeText(displayUrl).catch(() => {});
-      window.open(displayUrl, '_blank');
-    }
+    if (displayUrl) window.open(displayUrl, '_self');
+  };
+  const handleCopy = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (displayUrl) navigator.clipboard?.writeText(displayUrl).catch(() => {});
   };
   if (sending) {
     return (
@@ -1151,9 +1245,18 @@ function DepoSimSentToast({ sending, caseId, shortUrl, onDismiss }) {
     <div className="deposim-sent-toast">
       <p className="deposim-sent-toast-message">The DepoSim has been prepared and sent to the client.</p>
       {displayUrl && (
-        <a href={displayUrl} className="deposim-sent-toast-link" onClick={handleLinkClick}>
-          {displayUrl}
-        </a>
+        <div className="deposim-sent-toast-link-row">
+          <div className="deposim-sent-toast-link-outer">
+            <div className="deposim-sent-toast-link-wrap">
+              <a href={displayUrl} className="deposim-sent-toast-link" onClick={handleLinkClick}>
+                {displayUrl}
+              </a>
+            </div>
+          </div>
+          <button type="button" className="deposim-sent-toast-copy" onClick={handleCopy} title="Copy link" aria-label="Copy link">
+            {Icons.copy}
+          </button>
+        </div>
       )}
       <button type="button" className="deposim-sent-toast-ok" onClick={onDismiss}>Okay</button>
     </div>
@@ -1830,6 +1933,7 @@ function CaseDetailsAccordion({ name, description, defaultPersonaId, templateId,
 
 /* ===== Sim card: Score/Body | Name | Date (gradient) | Duration ===== */
 function getBodyScore(s) {
+  if (s.bodyScore != null) return s.bodyScore;
   if (!s.bodyAnalysis) return null;
   try {
     let raw = typeof s.bodyAnalysis === 'string' ? s.bodyAnalysis : JSON.stringify(s.bodyAnalysis);
@@ -1842,9 +1946,10 @@ function getBodyScore(s) {
   } catch { return null; }
 }
 
-/** Combined score from voice + body (average when both exist). 0-100. */
+/** Combined score: server now computes this as Simulation.score (avg of all completed stages). */
 function getCombinedScore(s) {
-  const voice = s.score != null ? s.score : null;
+  if (s.score != null) return s.score;
+  const voice = s.stageScore != null ? s.stageScore : null;
   const body = getBodyScore(s);
   if (voice != null && body != null) return Math.round((voice + body) / 2);
   if (voice != null) return voice;
@@ -1889,7 +1994,6 @@ function SimCard({ sim: s, caseData, onClick }) {
   const clientName = client ? `${client.lastName || ''}, ${client.firstName || ''}`.trim() : (caseData?.name || s.callSummaryTitle || '—');
   const dateStr = new Date(s.createdAt).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
   const duration = s.callDurationSecs != null ? `${Math.max(1, Math.round(s.callDurationSecs / 60))}m` : '—';
-  const simStage = s.stage != null ? Math.max(1, Math.min(4, s.stage)) : 1;
 
   return (
     <button type="button" className={`sim-post-card${isProcessing ? ' sim-post-card-processing' : ''}`} onClick={onClick} style={{ background: gradient }}>
@@ -1904,7 +2008,7 @@ function SimCard({ sim: s, caseData, onClick }) {
                   {combined != null ? `${combined}%` : (s.score != null ? `${s.score}%` : '—')}
                 </span>
                 <span className="sim-post-body">
-                  Body Language Score: {bodyScore != null ? `${bodyScore}%` : '—'}
+                  Transcript: {s.score != null ? `${s.score}%` : '—'} · Body: {bodyScore != null ? `${bodyScore}%` : '—'}
                 </span>
               </>
             )}
@@ -1915,16 +2019,6 @@ function SimCard({ sim: s, caseData, onClick }) {
           <div className="sim-post-meta">
             <span className="sim-post-date">{dateStr}</span>
             <span className="sim-post-duration">{duration !== '—' ? ` · ${duration}` : ''}</span>
-          </div>
-        )}
-        {!isPending && (
-          <div className="sim-card-stage-bar" aria-hidden>
-            {[1, 2, 3, 4].map((n, i) => (
-              <span key={n} className="sim-card-stage-bar-inner">
-                {i > 0 && <span className={`sim-card-stage-connector${n <= simStage ? ' sim-card-stage-connector-done' : ''}`} />}
-                <span className={`sim-card-stage-dot${n <= simStage ? ' sim-card-stage-dot-done' : ''}`}>{n <= simStage ? '✓' : n}</span>
-              </span>
-            ))}
           </div>
         )}
       </div>
@@ -1944,7 +2038,7 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
   const [depoSimSentCaseId, setDepoSimSentCaseId] = useState(null);
   const [depoSimSentShortUrl, setDepoSimSentShortUrl] = useState(null);
   const [depoSimSending, setDepoSimSending] = useState(false);
-  const [stageData, setStageData] = useState(null);
+  const [depoSimSentStage, setDepoSimSentStage] = useState(1);
   const [caseClients, setCaseClients] = useState(d.caseClients || []);
   const [showAddClient, setShowAddClient] = useState(false);
   const [showClientPicker, setShowClientPicker] = useState(false);
@@ -1973,13 +2067,6 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
     }, 5000);
     return () => clearInterval(timer);
   }, [sims, loadingSims, d.id]);
-
-  useEffect(() => {
-    fetch(`${API}/cases/${d.id}/stages`)
-      .then(r => r.ok ? r.json() : null)
-      .then(setStageData)
-      .catch(() => {});
-  }, [d.id]);
 
   const handleCaseUpdate = (updates) => {
     setCaseData(prev => ({ ...prev, ...updates }));
@@ -2011,17 +2098,35 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
   };
 
   const handleStartDeposim = async (targetClient) => {
+    if (depoSimSending) return;
     const id = caseData.id;
     setDepoSimSentCaseId(id);
     setDepoSimSentShortUrl(null);
     setDepoSimSending(true);
     setShowClientPicker(false);
-    const simUrl = typeof window !== 'undefined' ? `${window.location.origin}/sim/${id}` : '';
+    // Respect selected stage from UI (e.g. from most recent sim) before falling back to API
+    let stage = sims?.[0]?.selectedStage ?? null;
+    if (stage == null) {
+      try {
+        const stagesResp = await fetch(`${API}/cases/${id}/stages`);
+        if (stagesResp.ok) {
+          const stagesData = await stagesResp.json();
+          stage = stagesData.selectedStage || stagesData.currentStage || 1;
+        } else {
+          stage = 1;
+        }
+      } catch {
+        stage = 1;
+      }
+    }
+    stage = Math.max(1, Math.min(4, stage));
+    setDepoSimSentStage(stage);
+    const simUrl = typeof window !== 'undefined' ? `${window.location.origin}/sim/${id}/stage/${stage}` : '';
     try {
       const r = await fetch(API + `/cases/${id}/notify-deposim-sent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ simUrl, clientId: targetClient?.id || null }),
+        body: JSON.stringify({ simUrl, stage, clientId: targetClient?.id || null }),
       });
       if (r.ok) {
         const data = await r.json().catch(() => ({}));
@@ -2124,13 +2229,6 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
           )}
         </div>
         <div className="detail-body case-detail-body">
-          {stageData && (
-            <StageProgressDonuts
-              stages={stageData.stages}
-              currentStage={stageData.currentStage}
-            />
-          )}
-
           <div className="case-clients-section">
             <div className="case-clients-header">
               <span className="case-clients-label">Clients</span>
@@ -2201,7 +2299,7 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
       </div>
       <BottomBar tab={tab} onTab={switchTab} onCenterClick={handleCenterAction} centerAction={{ type: 'startDeposim', caseId: caseData.id }} onStartDeposim={handleCenterAction} />
       {toast && <div className="toast">{toast}</div>}
-      {(depoSimSentCaseId || depoSimSending) && <DepoSimSentToast sending={depoSimSending} caseId={depoSimSentCaseId} shortUrl={depoSimSentShortUrl} onDismiss={() => { setDepoSimSentCaseId(null); setDepoSimSentShortUrl(null); setDepoSimSending(false); }} />}
+      {(depoSimSentCaseId || depoSimSending) && <DepoSimSentToast sending={depoSimSending} caseId={depoSimSentCaseId} shortUrl={depoSimSentShortUrl} stage={depoSimSentStage} onDismiss={() => { setDepoSimSentCaseId(null); setDepoSimSentShortUrl(null); setDepoSimSending(false); }} />}
       {showClientPicker && (
         <ClientPickerModal
           clients={caseClients}
@@ -2233,8 +2331,9 @@ function StageProgressDonuts({ stages, currentStage, onStageClick }) {
         const isLocked = status === 'locked';
 
         let stateClass = 'stage-donut-locked';
-        if (isCompleted) stateClass = 'stage-donut-completed';
-        else if (isCurrent || status === 'available') stateClass = 'stage-donut-active';
+        if (isCurrent) stateClass = 'stage-donut-selected';
+        else if (isCompleted) stateClass = 'stage-donut-completed';
+        else if (status === 'available') stateClass = 'stage-donut-active';
 
         return (
           <div key={n} className="stage-donut-wrap">
@@ -2242,11 +2341,11 @@ function StageProgressDonuts({ stages, currentStage, onStageClick }) {
             <button
               type="button"
               className={`stage-donut ${stateClass}`}
-              disabled={isLocked && !onStageClick}
+              disabled={!onStageClick}
               onClick={() => onStageClick?.(n)}
               title={stageNames[n - 1]}
             >
-              {isCompleted ? (
+              {isCompleted && !isCurrent ? (
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="stage-donut-check">
                   <polyline points="20 6 9 17 4 12" />
                 </svg>
@@ -2254,7 +2353,7 @@ function StageProgressDonuts({ stages, currentStage, onStageClick }) {
                 <span className="stage-donut-num">{n}</span>
               )}
             </button>
-            <span className="stage-label">{t(`sim.stage.short${n}`)}</span>
+            <span className={`stage-label${isCurrent ? ' stage-label-selected' : ''}`}>{t(`sim.stage.short${n}`)}</span>
           </div>
         );
       })}
@@ -2821,7 +2920,7 @@ function CasesListPage() {
         for (const s of sims) {
           if (!s.caseId) continue;
           if (byCase[s.caseId] != null) continue;
-          byCase[s.caseId] = getCombinedScore(s) ?? s.score ?? 0;
+          byCase[s.caseId] = getCombinedScore(s) ?? s.score ?? null;
         }
         setCaseScores(byCase);
       })
@@ -2934,7 +3033,7 @@ function CasesListPage() {
           </div>
           <div className="tile-grid">
             {sortedCases.map((c) => {
-              const score = caseScores[c.id] ?? 0;
+              const score = caseScores[c.id] ?? null;
               const gradient = getScoreGradient(score);
               const isAuto = (c.description || '').toLowerCase().includes('car') || (c.description || '').toLowerCase().includes('vehicle') || (c.description || '').toLowerCase().includes('rear end');
               const primaryClient = c.client || c.caseClients?.[0]?.client;
@@ -5179,7 +5278,6 @@ function ClientCaseDetailPage() {
   const { t } = useT();
   const [caseData, setCaseData] = useState(null);
   const [sims, setSims] = useState([]);
-  const [stageData, setStageData] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -5187,9 +5285,8 @@ function ClientCaseDetailPage() {
     Promise.all([
       fetch(`${API}/client/cases/${id}`, opts).then(r => r.ok ? r.json() : null),
       fetch(`${API}/client/cases/${id}/simulations`, opts).then(r => r.ok ? r.json() : []),
-      fetch(`${API}/client/cases/${id}/stages`, opts).then(r => r.ok ? r.json() : null),
     ])
-      .then(([c, s, st]) => { setCaseData(c); setSims(s); setStageData(st); })
+      .then(([c, s]) => { setCaseData(c); setSims(s); })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [id]);
@@ -5220,7 +5317,7 @@ function ClientCaseDetailPage() {
 
   const primaryClient = caseData.client || caseData.caseClients?.[0]?.client;
   const caseDisplayName = primaryClient ? `${primaryClient.lastName || ''}, ${primaryClient.firstName || ''}`.trim() || caseData.name || '—' : caseData.name || '—';
-  const currentStageNum = stageData?.currentStage ?? 1;
+  const launchStage = sims?.[0]?.selectedStage || sims?.[0]?.currentStage || 1;
 
   return (
     <div className="app-shell">
@@ -5233,10 +5330,6 @@ function ClientCaseDetailPage() {
           </div>
         </div>
         <div className="detail-body case-detail-body">
-          {stageData && (
-            <StageProgressDonuts stages={stageData.stages} currentStage={stageData.currentStage} />
-          )}
-
           <div className="call-history-section">
             <h3 className="call-history-title">{t('client.simHistory')}</h3>
             {sims.length === 0 && <p className="call-history-empty">{t('client.noSims')}</p>}
@@ -5253,7 +5346,7 @@ function ClientCaseDetailPage() {
           </div>
         </div>
       </div>
-      <ClientBottomBar tab="cases" onCenterClick={() => nav(`${prefix}/sim/${id}/stage/${currentStageNum}`)} />
+      <ClientBottomBar tab="cases" onCenterClick={() => nav(`${prefix}/sim/${id}/stage/${launchStage}`)} />
     </div>
   );
 }
@@ -5292,7 +5385,7 @@ function ClientSimDetailPage() {
       tab="cases"
       switchTab={() => {}}
       goBack={() => nav(`${prefix}/client/cases/${id}`)}
-      renderBottomBar={(t) => <ClientBottomBar tab={t} onCenterClick={() => nav(`${prefix}/sim/${id}/stage/1`)} />}
+      renderBottomBar={(t, ctx) => <ClientBottomBar tab={t} onCenterClick={() => nav(`${prefix}/sim/${id}/stage/${ctx?.selectedStage ?? sim?.selectedStage ?? 1}`)} />}
     />
   );
 }

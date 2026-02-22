@@ -1,6 +1,6 @@
 /**
  * ElevenLabs webhook handler.
- * Port of post.php — HMAC verify, extract case_id, OpenAI analysis, save Simulation via Prisma.
+ * HMAC verify, extract case_id, OpenAI analysis, upsert SimulationStage via Prisma.
  *
  * Env: ELEVENLABS_WEBHOOK_SECRET, OPENAI_API_KEY
  */
@@ -31,7 +31,6 @@ function verifySignature(rawBody, signatureHeader, secret, maxSkewSeconds = 300)
   const ts = parseInt(t, 10);
   const now = Math.floor(Date.now() / 1000);
 
-  // Replay protection
   if (Math.abs(now - ts) > maxSkewSeconds) return false;
 
   const signedPayload = `${t}.${rawBody}`;
@@ -40,9 +39,6 @@ function verifySignature(rawBody, signatureHeader, secret, maxSkewSeconds = 300)
   return crypto.timingSafeEqual(Buffer.from(calc, 'hex'), Buffer.from(v0, 'hex'));
 }
 
-/**
- * Extract dynamic variables from the ElevenLabs payload.
- */
 function extractDynamicVariables(data) {
   if (data.dynamic_variables && typeof data.dynamic_variables === 'object') {
     return data.dynamic_variables;
@@ -57,19 +53,49 @@ function extractDynamicVariables(data) {
   return null;
 }
 
+function clampStage(stage) {
+  return Math.max(1, Math.min(4, parseInt(stage, 10) || 1));
+}
+
+function computeBodyScoreFromAnalysis(bodyAnalysisText) {
+  if (!bodyAnalysisText) return null;
+  try {
+    let raw = typeof bodyAnalysisText === 'string' ? bodyAnalysisText : JSON.stringify(bodyAnalysisText);
+    raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    const d = JSON.parse(raw);
+    const cats = ['overall_demeanor', 'key_body_signals', 'stress_signals', 'credible_assessment'];
+    const scores = cats.filter((k) => d[k] && typeof d[k].score === 'number').map((k) => d[k].score);
+    if (scores.length === 0) return null;
+    return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
+  } catch { return null; }
+}
+
+async function computeSimScore(prisma, simulationId) {
+  const rows = await prisma.simulationStage.findMany({ where: { simulationId } });
+  const stageScores = [];
+  for (const row of rows) {
+    if (row.status !== 'completed') continue;
+    const voice = row.score ?? null;
+    const body = row.bodyScore ?? null;
+    if (voice != null && body != null) stageScores.push(Math.round((voice + body) / 2));
+    else if (voice != null) stageScores.push(voice);
+    else if (body != null) stageScores.push(body);
+  }
+  const combined = stageScores.length > 0
+    ? Math.round(stageScores.reduce((a, b) => a + b, 0) / stageScores.length)
+    : null;
+  await prisma.simulation.update({ where: { id: simulationId }, data: { score: combined } });
+  return combined;
+}
+
 /**
  * Express route handler for POST /api/webhook/elevenlabs
- *
- * IMPORTANT: This needs raw body access. The route must use express.raw() middleware
- * instead of express.json() so we can verify the HMAC on the raw bytes.
  */
 async function handleElevenLabsWebhook(req, res, prisma) {
   const secret = process.env.ELEVENLABS_WEBHOOK_SECRET || '';
 
-  // Raw body comes as Buffer when using express.raw()
   const rawBody = typeof req.body === 'string' ? req.body : req.body.toString('utf8');
 
-  // ---------- Signature ----------
   const signatureHeader = req.headers['elevenlabs-signature'] || '';
   if (!signatureHeader) {
     return res.status(401).json({ error: 'Missing ElevenLabs-Signature header' });
@@ -79,7 +105,6 @@ async function handleElevenLabsWebhook(req, res, prisma) {
     return res.status(401).json({ error: 'Invalid signature' });
   }
 
-  // ---------- Parse JSON ----------
   let event;
   try {
     event = JSON.parse(rawBody);
@@ -94,7 +119,6 @@ async function handleElevenLabsWebhook(req, res, prisma) {
     return res.status(400).json({ error: 'Missing data object' });
   }
 
-  // ---------- Extract dynamic vars + case_id ----------
   const dyn = extractDynamicVariables(data);
   const caseId = dyn?.case_id ? String(dyn.case_id) : '';
 
@@ -102,40 +126,12 @@ async function handleElevenLabsWebhook(req, res, prisma) {
     return res.status(400).json({ error: 'Missing/invalid case_id' });
   }
 
-  // Verify case exists
   const caseRecord = await prisma.case.findUnique({ where: { id: caseId } });
   if (!caseRecord) {
     return res.status(404).json({ error: 'Case not found', case_id: caseId });
   }
 
   const conversationId = data.conversation_id ? String(data.conversation_id) : null;
-
-  // ---------- Idempotency: update existing if conversation_id already stored (e.g. stub from video upload) ----------
-  let existing = null;
-  if (conversationId) {
-    existing = await prisma.simulation.findFirst({
-      where: { conversationId },
-    });
-  }
-  if (!existing && conversationId) {
-    // Stub may have been created by video upload before conversationId was known - find recent case stub
-    const cutoff = new Date(Date.now() - 5 * 60 * 1000);
-    existing = await prisma.simulation.findFirst({
-      where: {
-        caseId,
-        createdAt: { gte: cutoff },
-        fullAnalysis: null,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-  }
-  if (!existing) {
-    // Pre-created "pending" sim when staff clicked Send DepoSim (no conversationId yet) - use oldest so first link sent is used first
-    existing = await prisma.simulation.findFirst({
-      where: { caseId, conversationId: null },
-      orderBy: { createdAt: 'asc' },
-    });
-  }
 
   // ---------- Run deposition score analysis ----------
   const transcript = data.transcript || null;
@@ -166,49 +162,77 @@ async function handleElevenLabsWebhook(req, res, prisma) {
     }
   }
 
-  // Extract stage, clientId, personaId from dynamic variables (passed through from signed-url)
-  const stageRaw = dyn?.stage ? parseInt(dyn.stage, 10) : null;
-  const stage = stageRaw >= 1 && stageRaw <= 4 ? stageRaw : null;
+  const stage = clampStage(dyn?.stage);
+  const simulationId = dyn?.simulation_id ? String(dyn.simulation_id) : null;
   const clientId = dyn?.client_id ? String(dyn.client_id) : null;
   const personaId = dyn?.persona_id ? String(dyn.persona_id) : null;
 
-  const simData = {
-    caseId,
-    clientId,
-    conversationId,
-    ...(personaId && { personaId }),
-    eventType: type || null,
-    agentId: data.agent_id ? String(data.agent_id) : null,
-    status: data.status ? String(data.status) : null,
-    score,
-    scoreReason,
-    fullAnalysis,
-    turnScores: turnScores && Array.isArray(turnScores) ? turnScores : undefined,
-    transcript: transcript || undefined,
-    callDurationSecs: meta.call_duration_secs != null ? parseInt(meta.call_duration_secs, 10) || null : null,
-    transcriptSummary: analysis.transcript_summary ? String(analysis.transcript_summary) : null,
-    callSummaryTitle: analysis.call_summary_title ? String(analysis.call_summary_title) : null,
-    stage,
-    stageStatus: stage ? 'completed' : undefined,
-  };
-
-  let simulation;
-  if (existing) {
-    simulation = await prisma.simulation.update({
-      where: { id: existing.id },
-      data: simData,
+  // ---------- Resolve or create the parent Simulation ----------
+  let simulation = null;
+  if (simulationId) {
+    simulation = await prisma.simulation.findFirst({
+      where: { id: simulationId, caseId },
     });
-    console.log(`[webhook] Simulation updated (stub): ${simulation.id} case=${caseId} score=${score}`);
-    betterstack.info('[webhook] Simulation updated', { simulationId: simulation.id, caseId, score });
-  } else {
+  }
+  if (!simulation && conversationId) {
+    const stageRow = await prisma.simulationStage.findFirst({ where: { conversationId } });
+    if (stageRow) simulation = await prisma.simulation.findUnique({ where: { id: stageRow.simulationId } });
+  }
+  if (!simulation) {
+    simulation = await prisma.simulation.findFirst({
+      where: { caseId, ...(clientId ? { clientId } : {}) },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+  if (!simulation) {
     simulation = await prisma.simulation.create({
-      data: simData,
+      data: {
+        caseId,
+        clientId,
+        selectedStage: stage,
+      },
     });
-    console.log(`[webhook] Simulation saved: ${simulation.id} case=${caseId} score=${score}`);
-    betterstack.info('[webhook] Simulation saved', { simulationId: simulation.id, caseId, score });
   }
 
-  // Touch case updatedAt (non-fatal; main work is simulation save)
+  // ---------- Upsert SimulationStage row ----------
+  await prisma.simulationStage.upsert({
+    where: { simulationId_stage: { simulationId: simulation.id, stage } },
+    create: {
+      simulationId: simulation.id,
+      stage,
+      conversationId,
+      status: 'completed',
+      score,
+      scoreReason,
+      fullAnalysis,
+      turnScores: turnScores && Array.isArray(turnScores) ? turnScores : undefined,
+      transcript: transcript || undefined,
+      callDurationSecs: meta.call_duration_secs != null ? parseInt(meta.call_duration_secs, 10) || null : null,
+      transcriptSummary: analysis.transcript_summary ? String(analysis.transcript_summary) : null,
+      callSummaryTitle: analysis.call_summary_title ? String(analysis.call_summary_title) : null,
+      ...(personaId && { personaId }),
+    },
+    update: {
+      conversationId,
+      status: 'completed',
+      score,
+      scoreReason,
+      fullAnalysis,
+      turnScores: turnScores && Array.isArray(turnScores) ? turnScores : undefined,
+      transcript: transcript || undefined,
+      callDurationSecs: meta.call_duration_secs != null ? parseInt(meta.call_duration_secs, 10) || null : null,
+      transcriptSummary: analysis.transcript_summary ? String(analysis.transcript_summary) : null,
+      callSummaryTitle: analysis.call_summary_title ? String(analysis.call_summary_title) : null,
+      ...(personaId && { personaId }),
+    },
+  });
+
+  // Recompute the combined simulation score
+  await computeSimScore(prisma, simulation.id);
+
+  console.log(`[webhook] SimulationStage upserted: sim=${simulation.id} case=${caseId} stage=${stage} score=${score}`);
+  betterstack.info('[webhook] SimulationStage upserted', { simulationId: simulation.id, caseId, stage, score });
+
   try {
     await prisma.case.update({
       where: { id: caseId },

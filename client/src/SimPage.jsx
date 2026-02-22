@@ -7,6 +7,15 @@ import { useT, useLangPrefix } from './i18n/LanguageContext';
 const API = '/api';
 const CONSENT_KEY = (caseId) => `deposim_consent_${caseId}`;
 
+function stopStreamTracks(stream) {
+  if (!stream || typeof stream.getTracks !== 'function') return;
+  stream.getTracks().forEach((track) => {
+    try {
+      track.stop();
+    } catch (_) {}
+  });
+}
+
 function SimPage() {
   const { caseId, stage: stageParam } = useParams();
   const navigate = useNavigate();
@@ -27,7 +36,8 @@ function SimPage() {
   const [messages, setMessages] = useState([]);
   const [stageData, setStageData] = useState(null);
   const [userRole, setUserRole] = useState(null);
-  const totalStages = stageData?.stages?.length ?? 4;
+  const [isStarting, setIsStarting] = useState(false);
+  const [manualStageSelect, setManualStageSelect] = useState(false);
   const messagesEndRef = useRef(null);
 
   const mediaRecorder = useRef(null);
@@ -36,12 +46,39 @@ function SimPage() {
   const cameraStreamRef = useRef(null);
   const conversationIdRef = useRef(null);
   const conversationRef = useRef(null);
+  const configRef = useRef(null);
+  const uploadStartedRef = useRef(false);
+  const doVideoUploadRef = useRef(null);
   const redirectToStageRef = useRef(null);
-  const touchStartX = useRef(null);
   const prevStageNum = useRef(stageNum);
   const sessionActive = useRef(false);
+  const endingRef = useRef(false);
+  const finishRecordingRef = useRef(null);
 
-  const requestCamera = useCallback(async () => {
+  // When user leaves the tab/page (close, navigate away, or browser back), stop camera
+  useEffect(() => {
+    const stopCameraNow = () => {
+      const stream = cameraStreamRef.current;
+      stopStreamTracks(stream);
+      cameraStreamRef.current = null;
+      setCameraStream(null);
+      if (videoRef.current) videoRef.current.srcObject = null;
+    };
+    const onHide = stopCameraNow;
+    const onPopState = () => {
+      // Browser back/forward: stop camera immediately so the light goes off
+      stopCameraNow();
+    };
+    window.addEventListener('pagehide', onHide);
+    window.addEventListener('popstate', onPopState);
+    return () => {
+      window.removeEventListener('pagehide', onHide);
+      window.removeEventListener('popstate', onPopState);
+    };
+  }, []);
+
+  const requestCamera = useCallback(async (options = {}) => {
+    const { keepPhase } = options;
     setCameraError(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -50,12 +87,14 @@ function SimPage() {
       });
       cameraStreamRef.current = stream;
       setCameraStream(stream);
-      setPhase('ready');
-      try {
-        if (caseId) sessionStorage.setItem(CONSENT_KEY(caseId), '1');
-      } catch (_) {}
-      if (caseId) {
-        fetch(`${API}/cases/${caseId}/record-consent`, { method: 'POST' }).catch(() => {});
+      if (!keepPhase) setPhase('ready');
+      if (!keepPhase) {
+        try {
+          if (caseId) sessionStorage.setItem(CONSENT_KEY(caseId), '1');
+        } catch (_) {}
+        if (caseId) {
+          fetch(`${API}/cases/${caseId}/record-consent`, { method: 'POST' }).catch(() => {});
+        }
       }
     } catch (err) {
       const denied = err.name === 'NotAllowedError' || /denied/i.test(err.message);
@@ -71,7 +110,7 @@ function SimPage() {
     fetch(API + '/sim/signed-url', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ caseId, stage: stageNum }),
+      body: JSON.stringify({ caseId, stage: stageNum, simulationId: stageData?.simulationId || undefined }),
     })
       .then((r) => r.json())
       .then((d) => {
@@ -79,7 +118,9 @@ function SimPage() {
         setConfig(d);
       })
       .catch((err) => setConfigError(err.message));
-  }, [caseId, stageNum]);
+  }, [caseId, stageNum, stageData?.simulationId]);
+
+  useEffect(() => { configRef.current = config; }, [config]);
 
   useEffect(() => {
     if (!caseId) return;
@@ -106,6 +147,9 @@ function SimPage() {
     setMessages([]);
     setConfig(null);
     sessionActive.current = false;
+    startingRef.current = false;
+    setIsStarting(false);
+    setManualStageSelect(false);
     recordedChunks.current = [];
     const hasConsent = typeof sessionStorage !== 'undefined' && caseId && sessionStorage.getItem(CONSENT_KEY(caseId));
     if (hasConsent) {
@@ -122,7 +166,7 @@ function SimPage() {
     }
   }, [phase, caseId, cameraStream, requestCamera]);
 
-  // Redirect after saving: either to another stage (swipe/chevron) or to case (Back to Case)
+  // Redirect after saving
   useEffect(() => {
     if (phase !== 'saving') return;
     const toStage = redirectToStageRef.current;
@@ -145,6 +189,8 @@ function SimPage() {
     (props) => {
       if (props?.conversationId) conversationIdRef.current = props.conversationId;
       sessionActive.current = true;
+      uploadStartedRef.current = false;
+      endingRef.current = false;
       setPhase('calling');
       setMessages([]);
       recordedChunks.current = [];
@@ -159,11 +205,25 @@ function SimPage() {
             : MediaRecorder.isTypeSupported('video/webm')
               ? 'video/webm'
               : 'video/mp4';
-          mediaRecorder.current = new MediaRecorder(stream, { mimeType });
-          mediaRecorder.current.ondataavailable = (e) => {
-            if (e.data && e.data.size > 0) recordedChunks.current.push(e.data);
-          };
-          mediaRecorder.current.start(1000);
+          const videoTracks = stream.getVideoTracks().filter(t => t.readyState === 'live');
+          if (videoTracks.length === 0) {
+            console.error('[DepoSim] No live video tracks for recording');
+          } else {
+            const recordingStream = new MediaStream(videoTracks);
+            mediaRecorder.current = new MediaRecorder(recordingStream, { mimeType });
+            mediaRecorder.current.ondataavailable = (e) => {
+              if (e.data && e.data.size > 0) recordedChunks.current.push(e.data);
+            };
+            mediaRecorder.current.onstop = () => {
+              console.log('[DepoSim] MediaRecorder stopped, chunks:', recordedChunks.current.length);
+              if (!endingRef.current) finishRecordingRef.current?.();
+            };
+            mediaRecorder.current.start(1000);
+            console.log('[DepoSim] MediaRecorder started', { mimeType, tracks: recordingStream.getTracks().map(t => `${t.kind}:${t.readyState}`) });
+            videoTracks[0].addEventListener('ended', () => {
+              console.warn('[DepoSim] Video track ended during session, chunks so far:', recordedChunks.current.length);
+            }, { once: true });
+          }
         } catch (err) {
           console.warn('[DepoSim] MediaRecorder start failed:', err);
         }
@@ -174,15 +234,27 @@ function SimPage() {
 
   const stopCamera = useCallback(() => {
     const stream = cameraStreamRef.current;
-    if (stream && typeof stream.getTracks === 'function') {
-      stream.getTracks().forEach((track) => track.stop());
-    }
+    stopStreamTracks(stream);
     cameraStreamRef.current = null;
     setCameraStream(null);
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
+    if (videoRef.current) videoRef.current.srcObject = null;
   }, []);
+
+  // Stop camera when entering saving phase
+  useEffect(() => {
+    if (phase === 'saving') stopCamera();
+  }, [phase, stopCamera]);
+
+  // Stop camera on unmount only (avoids Strict Mode double-mount killing the stream)
+  const mountedAtRef = useRef(null);
+  useEffect(() => {
+    mountedAtRef.current = Date.now();
+    return () => {
+      if (mountedAtRef.current != null && Date.now() - mountedAtRef.current > 300) {
+        stopCamera();
+      }
+    };
+  }, [stopCamera]);
 
   const fireAndForgetEvaluation = useCallback(() => {
     const capturedCaseId = caseId;
@@ -205,45 +277,99 @@ function SimPage() {
           fetch(`${API}/cases/${capturedCaseId}/stage-summary`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ simulationId: simId }),
+            body: JSON.stringify({ simulationId: simId, stage: capturedStage }),
           }).catch(() => {});
           fetch(`${API}/simulations/${simId}/evaluate-stage`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ stage: capturedStage }),
           }).catch(() => {});
         }
       } catch { /* background evaluation - safe to ignore */ }
     })();
   }, [caseId, stageNum]);
 
-  const handleDisconnect = useCallback(() => {
-    sessionActive.current = false;
-    if (mediaRecorder.current && mediaRecorder.current.state !== 'inactive') {
-      mediaRecorder.current.stop();
-    }
-    stopCamera();
-
+  const doVideoUpload = useCallback(() => {
+    if (uploadStartedRef.current) return;
     const chunks = recordedChunks.current;
-    const convId = conversationIdRef.current || conversationRef.current?.getId?.() || '';
-    if (chunks.length > 0 && (convId || caseId)) {
-      const blob = new Blob(chunks, {
-        type: mediaRecorder.current?.mimeType || 'video/webm',
-      });
-      uploadRecordingToS3(blob, {
-        conversationId: convId || undefined,
-        caseId,
-      }).catch((err) => console.warn('[DepoSim] Upload error:', err));
+    if (!caseId || chunks.length === 0) {
+      console.warn('[DepoSim] doVideoUpload: skipped', { caseId, chunks: chunks.length });
+      return;
     }
+    uploadStartedRef.current = true;
+    const mimeType = mediaRecorder.current?.mimeType || 'video/webm';
+    const blob = new Blob(chunks, { type: mimeType });
+    const convId = conversationIdRef.current || conversationRef.current?.getId?.() || '';
+    console.log('[DepoSim] Starting video upload', { chunks: chunks.length, size: blob.size, simulationId: configRef.current?.simulationId, stage: stageNum });
+    uploadRecordingToS3(blob, {
+      simulationId: configRef.current?.simulationId || undefined,
+      conversationId: convId || undefined,
+      caseId,
+      stage: stageNum,
+    }).catch((err) => console.warn('[DepoSim] Upload error:', err));
+  }, [caseId, stageNum]);
+  doVideoUploadRef.current = doVideoUpload;
 
-    fireAndForgetEvaluation();
-    setPhase('saving');
-  }, [stopCamera, caseId, fireAndForgetEvaluation]);
+  const finishRecording = useCallback(async () => {
+    if (endingRef.current) return;
+    endingRef.current = true;
+    try {
+      const recorder = mediaRecorder.current;
+      if (recorder && recorder.state !== 'inactive') {
+        await Promise.race([
+          new Promise((resolve) => {
+            recorder.addEventListener('stop', resolve, { once: true });
+            try { recorder.stop(); } catch (_) { resolve(); }
+          }),
+          new Promise((resolve) => setTimeout(resolve, 3000)),
+        ]);
+      }
 
+      console.log('[DepoSim] finishRecording: flushed', {
+        chunks: recordedChunks.current.length,
+        tracks: cameraStreamRef.current?.getTracks().map(t => `${t.kind}:${t.readyState}`),
+      });
+
+      doVideoUploadRef.current?.();
+
+      sessionActive.current = false;
+      try { conversationRef.current?.endSession?.(); } catch (_) {}
+
+      stopCamera();
+      fireAndForgetEvaluation();
+      setPhase('saving');
+    } catch (err) {
+      console.error('[DepoSim] finishRecording error:', err);
+      stopCamera();
+      setPhase('saving');
+    }
+  }, [stopCamera, fireAndForgetEvaluation]);
+  finishRecordingRef.current = finishRecording;
+
+  const handleDisconnect = useCallback(() => {
+    finishRecordingRef.current?.();
+  }, []);
+
+  // Attach stream to video whenever we have one
   useEffect(() => {
-    if ((phase === 'ready' || phase === 'calling') && cameraStream && videoRef.current) {
-      videoRef.current.srcObject = cameraStream;
+    if ((phase === 'ready' || phase === 'calling') && videoRef.current) {
+      const stream = cameraStreamRef.current || cameraStream;
+      if (stream && stream.active) {
+        videoRef.current.srcObject = stream;
+      }
     }
   }, [phase, cameraStream]);
+
+  // If we're in ready/calling but stream was cleared (e.g. Strict Mode), re-acquire camera
+  const recoveringRef = useRef(false);
+  useEffect(() => {
+    if (phase !== 'ready' && phase !== 'calling') return;
+    if (cameraStreamRef.current) return;
+    if (recoveringRef.current) return;
+    recoveringRef.current = true;
+    requestCamera({ keepPhase: true })
+      .finally(() => { recoveringRef.current = false; });
+  }, [phase, requestCamera]);
 
   const handleMessage = useCallback((event) => {
     if (!event) return;
@@ -306,8 +432,7 @@ function SimPage() {
     onAgentChatResponsePart: handleAgentChatPart,
     onError: (err) => {
       console.error('[DepoSim] Conversation error:', err);
-      sessionActive.current = false;
-      setPhase('saving');
+      finishRecordingRef.current?.();
     },
   });
   conversationRef.current = conversation;
@@ -316,11 +441,17 @@ function SimPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  const startingRef = useRef(false);
   const startCall = async () => {
+    if (startingRef.current || isStarting) return;
     if (!config?.signedUrl || !config?.dynamicVariables) return;
+    startingRef.current = true;
+    setIsStarting(true);
     const dv = config.dynamicVariables;
     if (!dv.depo_prompt || !dv.first_message) {
       console.error('[DepoSim] Voice agent requires depo_prompt and first_message; they were not provided.');
+      startingRef.current = false;
+      setIsStarting(false);
       return;
     }
     try {
@@ -336,8 +467,6 @@ function SimPage() {
         connectionType: 'websocket',
         overrides: {
           agent: {
-            prompt: { prompt: config.dynamicVariables.depo_prompt },
-            firstMessage: config.dynamicVariables.first_message,
             language: 'en',
           },
           conversation: {
@@ -348,55 +477,19 @@ function SimPage() {
       });
     } catch (err) {
       console.error('[DepoSim] Start session failed:', err);
+      startingRef.current = false;
+      setIsStarting(false);
       setPhase('ready');
     }
   };
 
-  // FIX #4: endCall sets phase directly, doesn't rely solely on onDisconnect
   const endCall = useCallback(() => {
-    if (mediaRecorder.current && mediaRecorder.current.state !== 'inactive') {
-      try { mediaRecorder.current.stop(); } catch (_) {}
-    }
-    stopCamera();
-    if (sessionActive.current) {
-      sessionActive.current = false;
-      try { conversation.endSession?.(); } catch (_) {}
-    } else {
-      setPhase('saving');
-    }
-  }, [stopCamera, conversation]);
-
-  const goToPrevStage = () => {
-    if (stageNum <= 1) return;
-    redirectToStageRef.current = stageNum - 1;
-    endCall();
-  };
-
-  const goToNextStage = () => {
-    if (stageNum >= totalStages) return;
-    redirectToStageRef.current = stageNum + 1;
-    endCall();
-  };
+    finishRecordingRef.current?.();
+  }, []);
 
   const goBackToCase = () => {
     redirectToStageRef.current = null;
     endCall();
-  };
-
-  const handleTouchStart = (e) => {
-    touchStartX.current = e.touches?.[0]?.clientX ?? null;
-  };
-
-  const handleTouchEnd = (e) => {
-    const startX = touchStartX.current;
-    if (startX == null) return;
-    touchStartX.current = null;
-    const endX = e.changedTouches?.[0]?.clientX;
-    if (endX == null) return;
-    const delta = endX - startX;
-    const threshold = 60;
-    if (delta < -threshold) goToNextStage();
-    else if (delta > threshold) goToPrevStage();
   };
 
   if (!caseId) {
@@ -423,7 +516,7 @@ function SimPage() {
 
   if (phase === 'consent') {
     return (
-      <div className="sim-page sim-page-dark">
+      <div className="sim-page sim-calling-white">
         <div className="sim-consent">
           <a href="https://deposim.com" target="_blank" rel="noopener noreferrer">
             <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="sim-logo" />
@@ -461,34 +554,115 @@ function SimPage() {
   }
 
   if (phase === 'ready') {
+    const hasStream = !!(cameraStream && cameraStreamRef.current);
+    const hasAttempted = stageData?.stages?.some(s => s.status === 'completed' || s.simulationId);
+    const buttonLabel = (!hasAttempted || manualStageSelect) ? t('sim.ready.start') : t('sim.ready.continue');
+    const stageShortNames = [t('sim.stage.short1'), t('sim.stage.short2'), t('sim.stage.short3'), t('sim.stage.short4')];
+    const casePath = userRole === 'client'
+      ? `${prefix}/client/cases/${caseId}`
+      : `${prefix}/cases/${caseId}`;
     return (
-      <div className="sim-page">
+      <div className="sim-page sim-calling-white">
         <div className="sim-consent">
           <a href="https://deposim.com" target="_blank" rel="noopener noreferrer">
             <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="sim-logo" />
           </a>
-          <div className="sim-preview-wrap">
-            <video ref={videoRef} autoPlay muted playsInline />
+          <h1>{t('sim.consent.title')}</h1>
+          <p className="sim-subtitle">{t('sim.consent.subtitle')}</p>
+          <div className="sim-features">
+            <div className="sim-feature">
+              <span className="sim-feat-icon">📋</span>
+              <span><strong>{t('sim.consent.bodyLanguage')}</strong> — {t('sim.consent.bodyLanguageDesc')}</span>
+            </div>
+            <div className="sim-feature">
+              <span className="sim-feat-icon">📊</span>
+              <span><strong>{t('sim.consent.report')}</strong> — {t('sim.consent.reportDesc')}</span>
+            </div>
           </div>
-          <button className="sim-btn sim-btn-start sim-btn-primary" onClick={startCall} disabled={!config}>
-            {t('sim.ready.start')}
+          {!hasStream && cameraError ? (
+            <>
+              <div className="sim-camera-denied">
+                <strong>{cameraError === 'denied' ? t('sim.consent.cameraBlocked') : t('sim.consent.permissionsRequired')}</strong>
+                {cameraError === 'denied' ? (
+                  <ol>
+                    <li>{t('sim.consent.cameraBlockedStep1')}</li>
+                    <li>{t('sim.consent.cameraBlockedStep2')}</li>
+                    <li>{t('sim.consent.cameraBlockedStep3')}</li>
+                  </ol>
+                ) : (
+                  <p>{t('sim.consent.permissionsRequired')}</p>
+                )}
+                {cameraError === 'denied' ? (
+                  <button onClick={() => window.location.reload()}>{t('sim.consent.reloadPage')}</button>
+                ) : (
+                  <button onClick={requestCamera}>{t('sim.consent.retryPermissions')}</button>
+                )}
+              </div>
+              {cameraError !== 'denied' && (
+                <p style={{ color: '#ed4956', fontSize: 14, marginTop: 8 }}>{cameraError}</p>
+              )}
+            </>
+          ) : (
+            <div className="sim-preview-wrap">
+              <video ref={videoRef} autoPlay muted playsInline />
+            </div>
+          )}
+          {stageData?.stages && (
+            <div className="stage-progress stage-progress-sim">
+              {[1, 2, 3, 4].map((n, i) => {
+                const stage = stageData.stages?.find(s => s.stage === n);
+                const status = stage?.status || (n === 1 ? 'available' : 'locked');
+                const isCurrent = n === stageNum;
+                const isCompleted = status === 'completed';
+                let stateClass = 'stage-donut-locked';
+                if (isCurrent) stateClass = 'stage-donut-selected';
+                else if (isCompleted) stateClass = 'stage-donut-completed';
+                else if (status === 'available') stateClass = 'stage-donut-active';
+                return (
+                  <div key={n} className="stage-donut-wrap">
+                    {i > 0 && <div className={`stage-connector${n <= stageNum ? ' stage-connector-active' : ''}`} />}
+                    <button
+                      type="button"
+                      className={`stage-donut ${stateClass}`}
+                      onClick={() => {
+                        setManualStageSelect(true);
+                        if (n !== stageNum) {
+                          navigate(`${prefix}/sim/${caseId}/stage/${n}`, { replace: true });
+                        }
+                      }}
+                    >
+                      {isCompleted ? (
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="stage-donut-check">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      ) : (
+                        <span className="stage-donut-num">{n}</span>
+                      )}
+                    </button>
+                    <span className={`stage-label${isCurrent ? ' stage-label-selected' : ''}`}>{stageShortNames[n - 1]}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <button
+            className="sim-btn sim-btn-start sim-btn-primary"
+            onClick={startCall}
+            disabled={!config || !hasStream || isStarting}
+          >
+            {isStarting ? t('common.loading') : buttonLabel}
           </button>
+          <Link to={casePath} className="sim-btn sim-btn-outline" style={{ marginTop: 12 }}>
+            {t('sim.ready.returnToCase')}
+          </Link>
         </div>
       </div>
     );
   }
 
   if (phase === 'calling') {
-    const prevStageInfo = stageData?.stages?.find((s) => s.stage === stageNum - 1);
-    const prevStageAttempted = prevStageInfo && (prevStageInfo.completed === true || prevStageInfo.status === 'completed');
-    const canPrev = stageNum > 1 && !prevStageAttempted;
-    const canNext = stageNum < totalStages;
     return (
-      <div
-        className="sim-page sim-calling sim-calling-white"
-        onTouchStart={handleTouchStart}
-        onTouchEnd={handleTouchEnd}
-      >
+      <div className="sim-page sim-calling sim-calling-white">
         <header className="sim-calling-header">
           <a href="https://deposim.com" target="_blank" rel="noopener noreferrer" className="sim-calling-logo-link">
             <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="sim-calling-logo" />
@@ -514,28 +688,8 @@ function SimPage() {
           </div>
         </div>
         <nav className="sim-calling-nav">
-          <button
-            type="button"
-            className="sim-calling-chevron"
-            onClick={goToPrevStage}
-            disabled={!canPrev}
-            aria-label={t('sim.nav.prevStage')}
-            title={t('sim.nav.prevStage')}
-          >
-            ‹
-          </button>
           <button type="button" className="sim-btn sim-btn-back-to-case" onClick={goBackToCase}>
             {t('sim.nav.backToCase')}
-          </button>
-          <button
-            type="button"
-            className="sim-calling-chevron"
-            onClick={goToNextStage}
-            disabled={!canNext}
-            aria-label={t('sim.nav.nextStage')}
-            title={t('sim.nav.nextStage')}
-          >
-            ›
           </button>
         </nav>
       </div>

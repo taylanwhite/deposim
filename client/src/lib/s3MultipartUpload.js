@@ -10,11 +10,11 @@ const API = '/api';
 /**
  * Upload a video blob via S3 multipart upload.
  * @param {Blob} blob - The video blob to upload
- * @param {Object} opts - { conversationId?, caseId, onProgress?(pct) }
+ * @param {Object} opts - { simulationId?, conversationId?, caseId, stage?, onProgress?(pct) }
  * @returns {Promise<{ok: boolean, error?: string}>}
  */
 export async function uploadRecordingToS3(blob, opts) {
-  const { conversationId, caseId, onProgress } = opts || {};
+  const { simulationId, conversationId, caseId, stage, onProgress } = opts || {};
   if (!caseId) return { ok: false, error: 'caseId required' };
 
   const ext = blob.type?.includes('mp4') ? 'mp4' : 'webm';
@@ -30,7 +30,7 @@ export async function uploadRecordingToS3(blob, opts) {
   const initRes = await fetch(`${API}/simulations/video/upload-init`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ conversationId: conversationId || null, caseId }),
+    body: JSON.stringify({ simulationId: simulationId || null, conversationId: conversationId || null, caseId, stage: stage || null }),
   });
   const initData = await initRes.json();
   if (!initData.ok) return { ok: false, error: initData.error || 'Upload init failed' };
@@ -76,8 +76,10 @@ export async function uploadRecordingToS3(blob, opts) {
       uploadId,
       key,
       parts: completedParts,
+      simulationId: simulationId || null,
       conversationId: conversationId || null,
       caseId,
+      stage: stage || null,
     }),
   });
   const completeData = await completeRes.json();

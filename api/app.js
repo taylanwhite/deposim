@@ -712,8 +712,9 @@ app.get('/api/client/cases/:id/simulations', requireClientSession, async (req, r
     const sims = await prisma.simulation.findMany({
       where: { caseId: req.params.id, clientId: { in: req.clientIds } },
       orderBy: { createdAt: 'desc' },
+      include: { stages: true },
     });
-    res.json(sims);
+    res.json(sims.map((s) => projectSimFromStages(s)));
   } catch (err) {
     betterstack.logApiError('GET /api/client/cases/:id/simulations', err);
     res.status(500).json({ error: 'Failed to list simulations' });
@@ -723,18 +724,42 @@ app.get('/api/client/cases/:id/simulations', requireClientSession, async (req, r
 // Client: get a single simulation (only if they personally ran it)
 app.get('/api/client/simulations/:simId', requireClientSession, async (req, res) => {
   try {
+    const stageParam = req.query.stage ? clampStage(req.query.stage) : null;
     const sim = await prisma.simulation.findUnique({
       where: { id: req.params.simId },
-      include: { case: true },
+      include: { case: true, stages: true },
     });
     if (!sim) return res.status(404).json({ error: 'Simulation not found' });
     if (!sim.clientId || !req.clientIds.includes(sim.clientId)) {
       return res.status(404).json({ error: 'Simulation not found or access denied' });
     }
-    res.json(sim);
+    res.json(projectSimFromStages(sim, stageParam));
   } catch (err) {
     betterstack.logApiError('GET /api/client/simulations/:simId', err);
     res.status(500).json({ error: 'Failed to get simulation' });
+  }
+});
+
+app.patch('/api/client/simulations/:simId/selected-stage', requireClientSession, async (req, res) => {
+  try {
+    const stage = clampStage(req.body?.stage);
+    const sim = await prisma.simulation.findUnique({
+      where: { id: req.params.simId },
+      include: { stages: true },
+    });
+    if (!sim) return res.status(404).json({ error: 'Simulation not found' });
+    if (!sim.clientId || !req.clientIds.includes(sim.clientId)) {
+      return res.status(404).json({ error: 'Simulation not found or access denied' });
+    }
+    const updated = await prisma.simulation.update({
+      where: { id: sim.id },
+      data: { selectedStage: stage },
+      include: { stages: true },
+    });
+    res.json(projectSimFromStages(updated, stage));
+  } catch (err) {
+    betterstack.logApiError('PATCH /api/client/simulations/:simId/selected-stage', err);
+    res.status(500).json({ error: 'Failed to update selected stage' });
   }
 });
 
@@ -745,19 +770,28 @@ app.get('/api/client/cases/:id/stages', requireClientSession, async (req, res) =
       where: { caseId: req.params.id, clientId: { in: req.clientIds } },
     });
     if (!link) return res.status(404).json({ error: 'Case not found or access denied' });
-    const sims = await prisma.simulation.findMany({
-      where: { caseId: req.params.id, stage: { not: null }, clientId: { in: req.clientIds } },
+    const sim = await prisma.simulation.findFirst({
+      where: { caseId: req.params.id, clientId: { in: req.clientIds } },
       orderBy: { createdAt: 'desc' },
+      include: { stages: true },
     });
-    const stages = [1, 2, 3, 4].map(n => {
-      const stageSims = sims.filter(s => s.stage === n);
-      const completed = stageSims.length > 0;
-      const prevCompleted = n === 1 || sims.some(s => s.stage === n - 1);
-      const status = completed ? 'completed' : (prevCompleted ? 'available' : 'locked');
-      return { stage: n, status, completed, simCount: stageSims.length, simulationId: stageSims[0]?.id ?? null, score: stageSims[0]?.score ?? null };
+    if (!sim) {
+      const stages = [1, 2, 3, 4].map((n) => ({
+        stage: n,
+        status: n === 1 ? 'available' : 'locked',
+        completed: false,
+        simulationId: null,
+        score: null,
+      }));
+      return res.json({ stages, currentStage: 1, selectedStage: 1, simulationId: null });
+    }
+    const { stages, currentStage } = getStageProgressFromRows(sim.stages || [], sim.id);
+    res.json({
+      stages,
+      currentStage,
+      selectedStage: clampStage(sim.selectedStage || currentStage),
+      simulationId: sim.id,
     });
-    const currentStage = stages.find(s => !s.completed)?.stage ?? 5;
-    res.json({ stages, currentStage });
   } catch (err) {
     betterstack.logApiError('GET /api/client/cases/:id/stages', err);
     res.status(500).json({ error: 'Failed to get stage data' });
@@ -1078,14 +1112,21 @@ app.post('/api/cases/:id/notify-deposim-sent', ...authAndStaff, async (req, res)
       if (cc?.client) targetClient = cc.client;
     }
 
-    // Create a blank simulation so the client's run attaches to it (one sim per "send")
-    await prisma.simulation.create({
-      data: {
-        caseId: c.id,
-        clientId: targetClient?.id || null,
-        stage: 1,
-      },
+    const launchStage = clampStage(req.body?.stage || 1);
+
+    const existingSim = await prisma.simulation.findFirst({
+      where: { caseId: c.id, ...(targetClient?.id ? { clientId: targetClient.id } : {}) },
+      orderBy: { createdAt: 'desc' },
     });
+    if (!existingSim) {
+      await prisma.simulation.create({
+        data: {
+          caseId: c.id,
+          clientId: targetClient?.id || null,
+          selectedStage: launchStage,
+        },
+      });
+    }
 
     const frontendOrigin = (APP_URL || '').trim() || (req.protocol === 'https' ? `https://${req.get('host')}` : `https://${req.get('host')}`);
     let base;
@@ -1095,7 +1136,7 @@ app.post('/api/cases/:id/notify-deposim-sent', ...authAndStaff, async (req, res)
       base = (APP_URL || '').trim() || `${req.protocol}://${req.get('host')}`;
     }
     if (!base.startsWith('https')) base = base.replace(/^http/, 'https');
-    const simPath = `/sim/${c.id}`;
+    const simPath = `/sim/${c.id}/stage/${launchStage}`;
     // When we have a target client, short link points to frontend /client/enter so the frontend sets the cookie then redirects (no API redirect)
     const targetUrl = targetClient
       ? `${frontendOrigin}/client/enter?token=${encodeURIComponent(signClientToken(targetClient.id))}&redirect=${encodeURIComponent(simPath)}`
@@ -2536,39 +2577,9 @@ app.get('/api/simulations', ...authAndOrg, async (req, res) => {
       where,
       orderBy: { createdAt: 'desc' },
       take: 100,
-      include: { case: { include: { client: true } } },
+      include: { case: { include: { client: true } }, stages: true },
     });
-
-    // For sims missing bodyAnalysis/recordingS3Key, try to copy from a sibling with same conversationId
-    const byConv = new Map();
-    for (const s of list) {
-      if (s.conversationId) {
-        const key = s.conversationId;
-        if (!byConv.has(key)) byConv.set(key, []);
-        byConv.get(key).push(s);
-      }
-    }
-    for (const [, sims] of byConv) {
-      const withBody = sims.find((s) => s.bodyAnalysis);
-      const withRecording = sims.find((s) => s.recordingS3Key);
-      const withTranscript = sims.find((s) => s.transcript || s.score != null);
-      for (const s of sims) {
-        if (!s.bodyAnalysis && withBody) s.bodyAnalysis = withBody.bodyAnalysis;
-        if (!s.recordingS3Key && withRecording) s.recordingS3Key = withRecording.recordingS3Key;
-        if (withTranscript) {
-          if (!s.transcript && withTranscript.transcript) s.transcript = withTranscript.transcript;
-          if (s.score == null && withTranscript.score != null) s.score = withTranscript.score;
-          if (!s.scoreReason && withTranscript.scoreReason) s.scoreReason = withTranscript.scoreReason;
-          if (!s.fullAnalysis && withTranscript.fullAnalysis) s.fullAnalysis = withTranscript.fullAnalysis;
-          if (!s.turnScores && withTranscript.turnScores) s.turnScores = withTranscript.turnScores;
-          if (s.callDurationSecs == null && withTranscript.callDurationSecs != null) s.callDurationSecs = withTranscript.callDurationSecs;
-          if (!s.transcriptSummary && withTranscript.transcriptSummary) s.transcriptSummary = withTranscript.transcriptSummary;
-          if (!s.callSummaryTitle && withTranscript.callSummaryTitle) s.callSummaryTitle = withTranscript.callSummaryTitle;
-        }
-      }
-    }
-
-    res.json(list);
+    res.json(list.map((s) => projectSimFromStages(s)));
   } catch (err) {
     betterstack.logApiError('GET /api/simulations', err);
     res.status(500).json({ error: 'Failed to list simulations' });
@@ -2580,15 +2591,11 @@ app.get('/api/simulations/:id/recording-url', ...authAndOrg, async (req, res) =>
   try {
     const s = await prisma.simulation.findUnique({ where: { id: req.params.id } });
     if (!s) return res.status(404).json({ error: 'Simulation not found' });
-
-    let key = s.recordingS3Key;
-    // Fallback: this sim may not have the key (race with webhook); find one with same conversationId that does
-    if (!key && s.conversationId) {
-      const alt = await prisma.simulation.findFirst({
-        where: { conversationId: s.conversationId, recordingS3Key: { not: null } },
-      });
-      if (alt) key = alt.recordingS3Key;
-    }
+    const stageNum = clampStage(req.query.stage || s.selectedStage || 1);
+    const stageRow = await prisma.simulationStage.findUnique({
+      where: { simulationId_stage: { simulationId: s.id, stage: stageNum } },
+    });
+    const key = stageRow?.recordingS3Key;
     if (!key) return res.status(404).json({ error: 'No recording for this simulation' });
 
     const url = await getPresignedViewUrl(key);
@@ -2601,31 +2608,33 @@ app.get('/api/simulations/:id/recording-url', ...authAndOrg, async (req, res) =>
 
 app.get('/api/simulations/:id', ...authAndOrg, async (req, res) => {
   try {
-    let s = await prisma.simulation.findUnique({
+    const stageParam = req.query.stage ? clampStage(req.query.stage) : null;
+    const s = await prisma.simulation.findUnique({
       where: { id: req.params.id },
-      include: { case: { include: { client: true } } },
+      include: { case: { include: { client: true } }, stages: true },
     });
     if (!s) return res.status(404).json({ error: 'Simulation not found' });
-    // If missing transcript/score, try to merge from sibling with same conversationId (webhook may have updated a different record)
-    if ((!s.transcript && s.score == null) && s.conversationId) {
-      const sibling = await prisma.simulation.findFirst({
-        where: { conversationId: s.conversationId, id: { not: s.id } },
-      });
-      if (sibling) {
-        if (!s.transcript && sibling.transcript) s.transcript = sibling.transcript;
-        if (s.score == null && sibling.score != null) s.score = sibling.score;
-        if (!s.scoreReason && sibling.scoreReason) s.scoreReason = sibling.scoreReason;
-        if (!s.fullAnalysis && sibling.fullAnalysis) s.fullAnalysis = sibling.fullAnalysis;
-        if (!s.turnScores && sibling.turnScores) s.turnScores = sibling.turnScores;
-        if (s.callDurationSecs == null && sibling.callDurationSecs != null) s.callDurationSecs = sibling.callDurationSecs;
-        if (!s.transcriptSummary && sibling.transcriptSummary) s.transcriptSummary = sibling.transcriptSummary;
-        if (!s.callSummaryTitle && sibling.callSummaryTitle) s.callSummaryTitle = sibling.callSummaryTitle;
-      }
-    }
-    res.json(s);
+    res.json(projectSimFromStages(s, stageParam));
   } catch (err) {
     betterstack.logApiError('GET /api/simulations/:id', err);
     res.status(500).json({ error: 'Failed to get simulation' });
+  }
+});
+
+app.patch('/api/simulations/:id/selected-stage', ...authAndOrg, async (req, res) => {
+  try {
+    const stage = clampStage(req.body?.stage);
+    const sim = await prisma.simulation.findUnique({ where: { id: req.params.id } });
+    if (!sim) return res.status(404).json({ error: 'Simulation not found' });
+    const updated = await prisma.simulation.update({
+      where: { id: sim.id },
+      data: { selectedStage: stage },
+      include: { stages: true },
+    });
+    res.json(projectSimFromStages(updated, stage));
+  } catch (err) {
+    betterstack.logApiError('PATCH /api/simulations/:id/selected-stage', err);
+    res.status(500).json({ error: err.message || 'Failed to update selected stage' });
   }
 });
 
@@ -2637,7 +2646,8 @@ async function resolveSimForVideo(prisma, simId, conversationId, caseId) {
   }
   if (!sim && conversationId) {
     for (let attempt = 0; attempt < 10 && !sim; attempt++) {
-      sim = await prisma.simulation.findFirst({ where: { conversationId: String(conversationId) } });
+      const stageRow = await prisma.simulationStage.findFirst({ where: { conversationId: String(conversationId) } });
+      if (stageRow) sim = await prisma.simulation.findUnique({ where: { id: stageRow.simulationId } });
       if (!sim && attempt < 9) await new Promise((r) => setTimeout(r, 3000));
     }
   }
@@ -2655,11 +2665,7 @@ async function resolveSimForVideo(prisma, simId, conversationId, caseId) {
     const caseExists = await prisma.case.findUnique({ where: { id: String(caseId) } });
     if (caseExists) {
       sim = await prisma.simulation.create({
-        data: {
-          caseId: String(caseId),
-          conversationId: conversationId ? String(conversationId) : null,
-          status: 'completed',
-        },
+        data: { caseId: String(caseId) },
       });
     }
   }
@@ -2669,10 +2675,10 @@ async function resolveSimForVideo(prisma, simId, conversationId, caseId) {
 // ---------- S3 multipart upload: init (for large recordings) ----------
 app.post('/api/simulations/video/upload-init', async (req, res) => {
   try {
-    const { conversationId, caseId } = req.body || req.query || {};
+    const { simulationId, conversationId, caseId } = req.body || req.query || {};
     if (!caseId || typeof caseId !== 'string') return res.status(400).json({ error: 'caseId required' });
 
-    const sim = await resolveSimForVideo(prisma, null, conversationId, caseId);
+    const sim = await resolveSimForVideo(prisma, simulationId || null, conversationId, caseId);
     if (!sim) return res.status(404).json({ error: 'Simulation not found' });
 
     const ext = 'webm';
@@ -2703,10 +2709,13 @@ app.post('/api/simulations/video/upload-urls', async (req, res) => {
 });
 
 // ---------- S3 multipart upload: complete, then run Gemini analysis ----------
+// Video is analyzed here: after client uploads all parts, we complete the S3 multipart upload,
+// resolve the simulation (by simulationId from client, or conversationId/caseId), download the
+// file to temp, run analyzeVideoFile (Gemini), then upsert SimulationStage with bodyAnalysis/bodyScore/recordingS3Key.
 app.post('/api/simulations/video/upload-complete', async (req, res) => {
   let tmpPath = null;
   try {
-    const { uploadId, key, parts, conversationId, caseId } = req.body || {};
+    const { uploadId, key, parts, simulationId, conversationId, caseId } = req.body || {};
     if (!uploadId || !key || !Array.isArray(parts) || parts.length === 0) {
       return res.status(400).json({ error: 'uploadId, key, and parts required' });
     }
@@ -2714,26 +2723,31 @@ app.post('/api/simulations/video/upload-complete', async (req, res) => {
 
     await completeMultipartUpload(key, uploadId, parts);
 
-    const sim = await resolveSimForVideo(prisma, null, conversationId, caseId);
-    if (!sim) return res.status(404).json({ error: 'Simulation not found' });
+    const sim = await resolveSimForVideo(prisma, simulationId || null, conversationId, caseId);
+    if (!sim) {
+      console.warn('[upload-complete] Simulation not found', { simulationId, conversationId, caseId });
+      return res.status(404).json({ error: 'Simulation not found' });
+    }
 
     tmpPath = await downloadToTemp(key);
     const promptText = getBodyAnalysisPrompt();
     const mimeType = key.endsWith('.mp4') ? 'video/mp4' : 'video/webm';
     const result = await analyzeVideoFile(tmpPath, mimeType, promptText);
 
-    await prisma.simulation.update({
-      where: { id: sim.id },
-      data: {
-        bodyAnalysis: String(result.text || ''),
-        bodyAnalysisModel: String(result.model || 'gemini-2.5-flash'),
-        recordingS3Key: key,
-      },
+    const stageNum = clampStage(req.body?.stage || sim.selectedStage || 1);
+    const bodyScore = computeBodyScoreFromAnalysis(result.text);
+    await prisma.simulationStage.upsert({
+      where: { simulationId_stage: { simulationId: sim.id, stage: stageNum } },
+      create: { simulationId: sim.id, stage: stageNum, bodyAnalysis: String(result.text || ''), bodyAnalysisModel: String(result.model || 'gemini-2.5-flash'), bodyScore, recordingS3Key: key },
+      update: { bodyAnalysis: String(result.text || ''), bodyAnalysisModel: String(result.model || 'gemini-2.5-flash'), bodyScore, recordingS3Key: key },
     });
+    await computeSimScore(prisma, sim.id);
+    console.log('[upload-complete] Body analysis saved', { simulationId: sim.id, stage: stageNum, bodyScore });
 
     res.json({ ok: true, bodyAnalysis: result.text, bodyAnalysisModel: result.model });
   } catch (err) {
     betterstack.logApiError('POST /api/simulations/video/upload-complete', err);
+    console.error('[upload-complete] Error:', err.message);
     res.status(500).json({ error: err.message || 'Upload complete failed' });
   } finally {
     if (tmpPath) fs.unlink(tmpPath, () => {});
@@ -2760,13 +2774,14 @@ app.post('/api/simulations/:id/video', upload.single('video'), async (req, res) 
     const promptText = getBodyAnalysisPrompt();
     const result = await analyzeVideoFile(req.file.path, mimeType, promptText);
 
-    await prisma.simulation.update({
-      where: { id: sim.id },
-      data: {
-        bodyAnalysis: String(result.text || ''),
-        bodyAnalysisModel: String(result.model || 'gemini-2.5-flash'),
-      },
+    const stageNum = clampStage(req.query.stage || req.body?.stage || sim.selectedStage || 1);
+    const bodyScore = computeBodyScoreFromAnalysis(result.text);
+    await prisma.simulationStage.upsert({
+      where: { simulationId_stage: { simulationId: sim.id, stage: stageNum } },
+      create: { simulationId: sim.id, stage: stageNum, bodyAnalysis: String(result.text || ''), bodyAnalysisModel: String(result.model || 'gemini-2.5-flash'), bodyScore },
+      update: { bodyAnalysis: String(result.text || ''), bodyAnalysisModel: String(result.model || 'gemini-2.5-flash'), bodyScore },
     });
+    await computeSimScore(prisma, sim.id);
 
     fs.unlink(req.file.path, () => {});
     res.json({ ok: true, bodyAnalysis: result.text, bodyAnalysisModel: result.model });
@@ -2780,10 +2795,9 @@ app.post('/api/simulations/:id/video', upload.single('video'), async (req, res) 
 // ---------- Sim: signed URL for React SDK (agent + dynamic vars) ----------
 app.post('/api/sim/signed-url', async (req, res) => {
   try {
-    const { caseId, stage } = req.body || {};
+    const { caseId, stage, simulationId } = req.body || {};
     if (!caseId || typeof caseId !== 'string') return res.status(400).json({ error: 'caseId required' });
-
-    const stageNum = Math.max(1, Math.min(4, parseInt(stage, 10) || 1));
+    const stageNum = clampStage(stage);
 
     const caseRecord = await prisma.case.findUnique({
       where: { id: caseId },
@@ -2809,6 +2823,49 @@ app.post('/api/sim/signed-url', async (req, res) => {
     }
     const personaId = persona?.id || requestedPersonaId || null;
 
+    // Resolve which client is running this sim (from auth if available, else case primary client)
+    let simClientId = caseRecord.clientId;
+    const simAuth = typeof req.auth === 'function' ? req.auth() : req.auth;
+    const authUserId = simAuth?.userId;
+    if (authUserId) {
+      const linkedClient = await prisma.client.findFirst({
+        where: { clerkUserId: authUserId },
+        select: { id: true },
+      });
+      if (linkedClient) simClientId = linkedClient.id;
+    }
+
+    let simulation = null;
+    if (simulationId) {
+      simulation = await prisma.simulation.findFirst({
+        where: { id: simulationId, caseId },
+        include: { stages: true },
+      });
+    }
+    if (!simulation) {
+      simulation = await prisma.simulation.findFirst({
+        where: { caseId, ...(simClientId ? { clientId: simClientId } : {}) },
+        orderBy: { createdAt: 'desc' },
+        include: { stages: true },
+      });
+    }
+    if (!simulation) {
+      simulation = await prisma.simulation.create({
+        data: {
+          caseId,
+          clientId: simClientId || null,
+          selectedStage: stageNum,
+        },
+        include: { stages: true },
+      });
+    } else if (simulation.selectedStage !== stageNum) {
+      simulation = await prisma.simulation.update({
+        where: { id: simulation.id },
+        data: { selectedStage: stageNum },
+        include: { stages: true },
+      });
+    }
+
     let depoPrompt = '';
     let firstMessage = '';
     let primerMensaje = '';
@@ -2818,14 +2875,15 @@ app.post('/api/sim/signed-url', async (req, res) => {
       if (stagePromptText) {
         depoPrompt = stagePromptText.replace('{{case_info}}', caseInfo);
 
-        // Inject previous stage summaries
         if (stageNum > 1) {
-          const prevSims = await prisma.simulation.findMany({
-            where: { caseId, stage: { lt: stageNum }, stageSummary: { not: null } },
-            orderBy: { stage: 'asc' },
-          });
-          const summaryText = prevSims.length > 0
-            ? prevSims.map((s) => `[Stage ${s.stage} — ${stageNames[s.stage] || 'Unknown'} Summary]\n${s.stageSummary}`).join('\n\n')
+          const stageRows = simulation.stages || [];
+          const previousSummaries = [];
+          for (let n = 1; n < stageNum; n++) {
+            const row = stageRows.find((r) => r.stage === n);
+            if (row?.stageSummary) previousSummaries.push(`[Stage ${n} — ${stageNames[n] || 'Unknown'} Summary]\n${row.stageSummary}`);
+          }
+          const summaryText = previousSummaries.length > 0
+            ? previousSummaries.join('\n\n')
             : 'No previous stage data available.';
           depoPrompt = depoPrompt.replace('{{previous_stage_summary}}', summaryText);
         } else {
@@ -2877,18 +2935,6 @@ app.post('/api/sim/signed-url', async (req, res) => {
     const { signed_url: signedUrl } = await elevenRes.json();
     if (!signedUrl) return res.status(502).json({ error: 'No signed_url in response' });
 
-    // Resolve which client is running this sim (from auth if available, else case primary client)
-    let simClientId = caseRecord.clientId;
-    const simAuth = typeof req.auth === 'function' ? req.auth() : req.auth;
-    const authUserId = simAuth?.userId;
-    if (authUserId) {
-      const linkedClient = await prisma.client.findFirst({
-        where: { clerkUserId: authUserId },
-        select: { id: true },
-      });
-      if (linkedClient) simClientId = linkedClient.id;
-    }
-
     // Voice agent requires these dynamic variables to be overridden; otherwise it uses dashboard placeholders and will not work.
     const dynamicVariables = {
       depo_prompt: String(depoPrompt || '').trim(),
@@ -2897,11 +2943,20 @@ app.post('/api/sim/signed-url', async (req, res) => {
       case_id: String(caseId || ''),
       case_info: String(caseInfo || ''),
       stage: String(stageNum),
+      simulation_id: String(simulation.id),
       client_id: simClientId ? String(simClientId) : '',
       ...(personaId && { persona_id: personaId }),
     };
 
-    res.json({ signedUrl, dynamicVariables, stage: stageNum, case: { name, caseNumber, firstName, lastName }, personaId: personaId || undefined, personaName: persona?.name });
+    res.json({
+      signedUrl,
+      dynamicVariables,
+      stage: stageNum,
+      simulationId: simulation.id,
+      case: { name, caseNumber, firstName, lastName },
+      personaId: personaId || undefined,
+      personaName: persona?.name,
+    });
   } catch (err) {
     betterstack.logApiError('POST /api/sim/signed-url', err);
     res.status(500).json({ error: err.message || 'Server error' });
@@ -2923,34 +2978,34 @@ app.post('/api/chat', ...authAndOrg, async (req, res) => {
     if (!Array.isArray(messages) || messages.length === 0)
       return res.status(400).json({ error: 'messages array is required' });
 
-    // Build context from simulation if provided
     let simContext = '';
     if (simulationId) {
       const sim = await prisma.simulation.findUnique({
         where: { id: simulationId },
-        include: { case: { include: { client: true } } },
+        include: { case: { include: { client: true } }, stages: true },
       });
       if (sim) {
         const client = sim.case?.client;
         const caseName = client ? `${client.firstName || ''} ${client.lastName || ''}`.trim() || 'Unknown' : 'Unknown';
         const caseNum = sim.case?.caseNumber || '';
         const caseDesc = sim.case?.description || '';
-        const transcriptText = Array.isArray(sim.transcript)
-          ? sim.transcript.map(t => `${t.role === 'agent' ? 'Q' : 'A'}: ${t.message || t.original_message || ''}`).join('\n')
+        const stageRow = (sim.stages || []).find((r) => r.stage === (sim.selectedStage || 1)) || sim.stages?.[0] || {};
+        const transcriptText = Array.isArray(stageRow.transcript)
+          ? stageRow.transcript.map(t => `${t.role === 'agent' ? 'Q' : 'A'}: ${t.message || t.original_message || ''}`).join('\n')
           : '';
 
         simContext = `
 --- SIMULATION CONTEXT ---
 Case: #${caseNum} — ${caseName}
 Case Description: ${caseDesc}
-Score: ${sim.score != null ? sim.score + '%' : 'N/A'}
-Score Reason: ${sim.scoreReason || 'N/A'}
-Duration: ${sim.callDurationSecs ? Math.floor(sim.callDurationSecs / 60) + 'm ' + (sim.callDurationSecs % 60) + 's' : 'N/A'}
-Status: ${sim.status || 'N/A'}
-Summary: ${sim.callSummaryTitle || 'N/A'}
-Transcript Summary: ${sim.transcriptSummary || 'N/A'}
-Full Analysis: ${sim.fullAnalysis || 'N/A'}
-Body Language Analysis: ${sim.bodyAnalysis || 'N/A'}
+Overall Score: ${sim.score != null ? sim.score + '%' : 'N/A'}
+Stage ${stageRow.stage || '?'} Score: ${stageRow.score != null ? stageRow.score + '%' : 'N/A'}
+Score Reason: ${stageRow.scoreReason || 'N/A'}
+Duration: ${stageRow.callDurationSecs ? Math.floor(stageRow.callDurationSecs / 60) + 'm ' + (stageRow.callDurationSecs % 60) + 's' : 'N/A'}
+Summary: ${stageRow.callSummaryTitle || 'N/A'}
+Transcript Summary: ${stageRow.transcriptSummary || 'N/A'}
+Full Analysis: ${stageRow.fullAnalysis || 'N/A'}
+Body Language Analysis: ${stageRow.bodyAnalysis || 'N/A'}
 ${transcriptText ? '\n--- TRANSCRIPT ---\n' + transcriptText : ''}
 --- END CONTEXT ---`;
       }
@@ -3304,6 +3359,112 @@ async function getStageNamesFromTemplate(prisma, templateId) {
   return { ...STAGE_NAMES, ...names };
 }
 
+function clampStage(stage) {
+  return Math.max(1, Math.min(4, parseInt(stage, 10) || 1));
+}
+
+function getStageProgressFromRows(stageRows, simId, stageNames = STAGE_NAMES) {
+  const stages = [];
+  let prevCompleted = true;
+  let currentStage = 1;
+  let foundCurrent = false;
+  for (let n = 1; n <= 4; n++) {
+    const row = stageRows.find((r) => r.stage === n);
+    const completed = row?.status === 'completed';
+    const status = completed ? 'completed' : (prevCompleted ? 'available' : 'locked');
+    if (!foundCurrent && status !== 'completed') {
+      currentStage = n;
+      foundCurrent = true;
+    }
+    stages.push({
+      stage: n,
+      name: stageNames[n],
+      status,
+      completed,
+      simulationId: simId || null,
+      score: row?.score ?? null,
+    });
+    prevCompleted = completed;
+  }
+  if (!foundCurrent) currentStage = 4;
+  return { stages, currentStage };
+}
+
+function computeBodyScoreFromAnalysis(bodyAnalysisText) {
+  if (!bodyAnalysisText) return null;
+  try {
+    let raw = typeof bodyAnalysisText === 'string' ? bodyAnalysisText : JSON.stringify(bodyAnalysisText);
+    raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    const d = JSON.parse(raw);
+    const cats = ['overall_demeanor', 'key_body_signals', 'stress_signals', 'credible_assessment'];
+    const scores = cats.filter((k) => d[k] && typeof d[k].score === 'number').map((k) => d[k].score);
+    if (scores.length === 0) return null;
+    return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
+  } catch { return null; }
+}
+
+async function computeSimScore(prisma, simulationId) {
+  const rows = await prisma.simulationStage.findMany({ where: { simulationId } });
+  const stageScores = [];
+  const reasonParts = [];
+  for (const row of rows) {
+    if (row.status !== 'completed') continue;
+    const voice = row.score ?? null;
+    const body = row.bodyScore ?? null;
+    let stageAvg = null;
+    if (voice != null && body != null) stageAvg = Math.round((voice + body) / 2);
+    else if (voice != null) stageAvg = voice;
+    else if (body != null) stageAvg = body;
+    if (stageAvg != null) {
+      stageScores.push(stageAvg);
+      reasonParts.push(`Stage ${row.stage}: ${stageAvg}/100 (voice ${voice ?? '—'}, body ${body ?? '—'})`);
+    }
+  }
+  const combined = stageScores.length > 0
+    ? Math.round(stageScores.reduce((a, b) => a + b, 0) / stageScores.length)
+    : null;
+  const scoreReason = reasonParts.length > 0
+    ? `Average of ${reasonParts.length} stage(s): ${reasonParts.join('; ')}`
+    : null;
+  await prisma.simulation.update({ where: { id: simulationId }, data: { score: combined, scoreReason } });
+  return combined;
+}
+
+function projectSimFromStages(sim, stageNum = null) {
+  const stageRows = Array.isArray(sim.stages) ? sim.stages : [];
+  const selected = clampStage(stageNum || sim.selectedStage || 1);
+  const row = stageRows.find((r) => r.stage === selected) || {};
+  const projected = {
+    id: sim.id,
+    caseId: sim.caseId,
+    clientId: sim.clientId,
+    personaId: row.personaId || null,
+    selectedStage: selected,
+    score: sim.score,
+    scoreReason: sim.scoreReason || null,
+    createdAt: sim.createdAt,
+    case: sim.case || undefined,
+    conversationId: row.conversationId || null,
+    stageStatus: row.status || null,
+    retakeRecommended: !!row.retakeRecommended,
+    stageSummary: row.stageSummary || null,
+    stageScore: row.score ?? null,
+    stageScoreReason: row.scoreReason || null,
+    fullAnalysis: row.fullAnalysis || null,
+    turnScores: row.turnScores || null,
+    transcript: row.transcript || null,
+    callDurationSecs: row.callDurationSecs ?? null,
+    transcriptSummary: row.transcriptSummary || null,
+    callSummaryTitle: row.callSummaryTitle || null,
+    bodyAnalysis: row.bodyAnalysis || null,
+    bodyAnalysisModel: row.bodyAnalysisModel || null,
+    bodyScore: row.bodyScore ?? null,
+    recordingS3Key: row.recordingS3Key || null,
+  };
+  const progress = getStageProgressFromRows(stageRows, sim.id);
+  return { ...projected, ...progress };
+}
+
 // ---------- Deposition templates (list for case creation / “sell packs”) ----------
 app.get('/api/templates', async (req, res) => {
   try {
@@ -3444,44 +3605,29 @@ app.get('/api/cases/:id/stages', async (req, res) => {
     const caseId = req.params.id;
     const caseRecord = await prisma.case.findUnique({ where: { id: caseId } });
     if (!caseRecord) return res.status(404).json({ error: 'Case not found' });
-
-    const sims = await prisma.simulation.findMany({
-      where: { caseId, stage: { not: null } },
-      orderBy: [{ stage: 'asc' }, { createdAt: 'desc' }],
-    });
-
-    const stageMap = {};
-    for (const s of sims) {
-      if (!stageMap[s.stage]) stageMap[s.stage] = s;
-    }
-
     const stageNames = await getStageNamesFromTemplate(prisma, caseRecord.templateId);
-    let currentStage = 1;
-    const stages = [1, 2, 3, 4].map((n) => {
-      const sim = stageMap[n];
-      if (!sim) {
-        const prevCompleted = n === 1 || (stageMap[n - 1] && stageMap[n - 1].stageStatus === 'completed');
-        return {
-          stage: n,
-          name: stageNames[n],
-          status: prevCompleted ? 'available' : 'locked',
-          simulationId: null,
-          score: null,
-        };
-      }
-      if (n + 1 <= 4 && !stageMap[n + 1]) currentStage = n + 1;
-      return {
+    const sim = await prisma.simulation.findFirst({
+      where: { caseId },
+      orderBy: { createdAt: 'desc' },
+      include: { stages: true },
+    });
+    if (!sim) {
+      const stages = [1, 2, 3, 4].map((n) => ({
         stage: n,
         name: stageNames[n],
-        status: 'completed',
-        simulationId: sim.id,
-        score: sim.score,
-      };
+        status: n === 1 ? 'available' : 'locked',
+        simulationId: null,
+        score: null,
+      }));
+      return res.json({ stages, currentStage: 1, selectedStage: 1, simulationId: null });
+    }
+    const { stages, currentStage } = getStageProgressFromRows(sim.stages || [], sim.id, stageNames);
+    res.json({
+      stages,
+      currentStage,
+      selectedStage: clampStage(sim.selectedStage || currentStage),
+      simulationId: sim.id,
     });
-
-    if (stageMap[4]) currentStage = 4;
-
-    res.json({ stages, currentStage });
   } catch (err) {
     betterstack.logApiError('GET /api/cases/:id/stages', err);
     res.status(500).json({ error: 'Failed to get stages' });
@@ -3494,24 +3640,26 @@ app.post('/api/cases/:id/stage-summary', async (req, res) => {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return res.status(500).json({ error: 'OPENAI_API_KEY not set' });
 
-    const { simulationId } = req.body;
+    const { simulationId, stage } = req.body;
     if (!simulationId) return res.status(400).json({ error: 'simulationId is required' });
 
     const sim = await prisma.simulation.findUnique({
       where: { id: simulationId },
-      include: { case: { include: { client: true } } },
+      include: { case: { include: { client: true } }, stages: true },
     });
     if (!sim) return res.status(404).json({ error: 'Simulation not found' });
 
-    const transcript = Array.isArray(sim.transcript)
-      ? sim.transcript.map((t) => `${t.role === 'agent' ? 'Q' : 'A'}: ${t.message || t.original_message || ''}`).join('\n')
+    const stageNum = clampStage(stage || sim.selectedStage || 1);
+    const stageRow = (sim.stages || []).find((r) => r.stage === stageNum);
+    const transcript = Array.isArray(stageRow?.transcript)
+      ? stageRow.transcript.map((t) => `${t.role === 'agent' ? 'Q' : 'A'}: ${t.message || t.original_message || ''}`).join('\n')
       : '';
 
     if (!transcript) return res.status(400).json({ error: 'No transcript to summarize' });
 
     const client = sim.case?.client;
     const stageNames = await getStageNamesFromTemplate(prisma, sim.case?.templateId);
-    const stageName = stageNames[sim.stage] || `Stage ${sim.stage}`;
+    const stageName = stageNames[stageNum] || `Stage ${stageNum}`;
 
     const resp = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -3547,9 +3695,10 @@ Do NOT include commentary or coaching advice. Only confirmed facts and notable r
 
     const summary = data.choices?.[0]?.message?.content || '';
 
-    await prisma.simulation.update({
-      where: { id: simulationId },
-      data: { stageSummary: summary },
+    await prisma.simulationStage.upsert({
+      where: { simulationId_stage: { simulationId, stage: stageNum } },
+      create: { simulationId, stage: stageNum, stageSummary: summary },
+      update: { stageSummary: summary },
     });
 
     res.json({ ok: true, summary });
@@ -3564,22 +3713,11 @@ app.get('/api/sim/:id/results', async (req, res) => {
   try {
     const sim = await prisma.simulation.findUnique({
       where: { id: req.params.id },
-      select: {
-        id: true,
-        stage: true,
-        score: true,
-        scoreReason: true,
-        fullAnalysis: true,
-        bodyAnalysis: true,
-        callDurationSecs: true,
-        transcriptSummary: true,
-        callSummaryTitle: true,
-        stageStatus: true,
-        retakeRecommended: true,
-      },
+      include: { stages: true },
     });
     if (!sim) return res.status(404).json({ error: 'Simulation not found' });
-    res.json(sim);
+    const stageNum = req.query.stage ? clampStage(req.query.stage) : null;
+    res.json(projectSimFromStages(sim, stageNum));
   } catch (err) {
     betterstack.logApiError('GET /api/sim/:id/results', err);
     res.status(500).json({ error: 'Failed to get simulation results' });
@@ -3591,10 +3729,11 @@ app.post('/api/simulations/:id/evaluate-stage', async (req, res) => {
   try {
     const sim = await prisma.simulation.findUnique({ where: { id: req.params.id } });
     if (!sim) return res.status(404).json({ error: 'Simulation not found' });
-
-    await prisma.simulation.update({
-      where: { id: sim.id },
-      data: { stageStatus: 'completed' },
+    const stageNum = clampStage(req.body?.stage || sim.selectedStage || 1);
+    await prisma.simulationStage.upsert({
+      where: { simulationId_stage: { simulationId: sim.id, stage: stageNum } },
+      create: { simulationId: sim.id, stage: stageNum, status: 'completed' },
+      update: { status: 'completed' },
     });
 
     res.json({ ok: true });
