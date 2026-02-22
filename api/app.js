@@ -74,6 +74,9 @@ const ROUTE_DESCRIPTIONS = [
   ['GET',    '/api/locations/:id/users',           'Listed location users'],
   ['POST',   '/api/locations/:id/users',           'Assigned user to location'],
   ['DELETE', '/api/locations/:id/users/:userId',   'Removed user from location'],
+  // Integrations
+  ['GET',    '/api/integrations',                  'Viewed integration settings'],
+  ['PUT',    '/api/integrations',                  'Saved integration settings'],
   // Users
   ['GET',    '/api/users',                         'Listed users'],
   ['GET',    '/api/users/:id/locations',           'Listed user locations'],
@@ -456,6 +459,19 @@ app.get('/api/health', (req, res) => {
 });
 
 // ---------- Mini Link redirect (public, no auth) — must be before SPA catch-all if any ----------
+app.get('/api/short-links/resolve/:slug', async (req, res) => {
+  try {
+    const slug = (req.params.slug || '').trim().toLowerCase();
+    if (!slug) return res.status(404).json({ error: 'Not found' });
+    const link = await prisma.shortLink.findUnique({ where: { slug } });
+    if (!link) return res.status(404).json({ error: 'Short link not found' });
+    res.json({ url: link.targetUrl });
+  } catch (err) {
+    betterstack.logApiError('GET /api/short-links/resolve/:slug', err);
+    res.status(500).json({ error: 'Error' });
+  }
+});
+
 app.get('/s/:slug', async (req, res) => {
   try {
     const slug = (req.params.slug || '').trim().toLowerCase();
@@ -739,7 +755,28 @@ app.patch('/api/client/me/language', requireAuthApi, resolveAccess, async (req, 
 app.get('/api/cases', ...authAndStaff, async (req, res) => {
   try {
     const where = scopedWhere(req);
-    if (req.query.organizationId) where.organizationId = req.query.organizationId;
+    if (req.query.organizationId) {
+      // Include cases explicitly tagged with this org, AND legacy cases with null org
+      // whose location belongs to this org (backfill-free approach).
+      const orgLocations = await prisma.location.findMany({
+        where: { organizationId: req.query.organizationId },
+        select: { id: true },
+      });
+      const orgLocIds = orgLocations.map(l => l.id);
+      const orgCondition = {
+        OR: [
+          { organizationId: req.query.organizationId },
+          { organizationId: null, locationId: { in: orgLocIds } },
+        ],
+      };
+      // Merge with any existing scopedWhere conditions
+      if (Object.keys(where).length > 0) {
+        Object.assign(where, { AND: [{ ...where }, orgCondition] });
+        for (const k of Object.keys(where)) { if (k !== 'AND') delete where[k]; }
+      } else {
+        Object.assign(where, orgCondition);
+      }
+    }
     if (req.query.locationId) where.locationId = req.query.locationId;
     const cases = await prisma.case.findMany({
       where,
@@ -828,6 +865,13 @@ app.post('/api/cases', ...authAndWrite, async (req, res) => {
       }
     }
 
+    // Derive organizationId from location when not set on the user (e.g. super users)
+    let resolvedOrgId = req.orgId;
+    if (!resolvedOrgId && locationId) {
+      const loc = await prisma.location.findUnique({ where: { id: String(locationId) }, select: { organizationId: true } });
+      if (loc?.organizationId) resolvedOrgId = loc.organizationId;
+    }
+
     const resolveOrCreateClient = async (entry) => {
       if (entry.clientId && String(entry.clientId).trim()) return String(entry.clientId).trim();
       const c = entry.client || entry;
@@ -837,7 +881,7 @@ app.post('/api/cases', ...authAndWrite, async (req, res) => {
       }
       const newClient = await prisma.client.create({
         data: {
-          organizationId: req.orgId,
+          organizationId: resolvedOrgId,
           locationId: locationId != null && locationId !== '' ? String(locationId) : null,
           firstName: String(firstName).trim(),
           lastName: String(lastName).trim(),
@@ -870,7 +914,7 @@ app.post('/api/cases', ...authAndWrite, async (req, res) => {
 
     const c = await prisma.case.create({
       data: {
-        organizationId: req.orgId,
+        organizationId: resolvedOrgId,
         locationId: locationId != null && locationId !== '' ? String(locationId) : null,
         clientId: primaryClientId,
         name: name != null && String(name).trim() ? String(name).trim() : null,
@@ -1308,6 +1352,96 @@ app.delete('/api/locations/:id', ...authAndAdmin, async (req, res) => {
     if (err.code === 'P2025') return res.status(404).json({ error: 'Location not found' });
     betterstack.logApiError('DELETE /api/locations/:id', err);
     res.status(500).json({ error: 'Failed to delete location' });
+  }
+});
+
+// ---------- Integrations (admin only; per location + type) ----------
+const INTEGRATION_TYPES = new Set(['filevine', 'litify', 'custom']);
+function normalizeIntegrationType(type) {
+  const t = String(type || '').trim().toLowerCase();
+  return INTEGRATION_TYPES.has(t) ? t : null;
+}
+
+async function assertCanManageLocation(req, locationId) {
+  const loc = await prisma.location.findUnique({ where: { id: locationId }, select: { id: true, organizationId: true } });
+  if (!loc) return { ok: false, status: 404, error: 'Location not found' };
+  if (req.userRole !== 'super' && loc.organizationId !== req.orgId) {
+    return { ok: false, status: 403, error: 'Access denied: location is not in your organization.' };
+  }
+  return { ok: true, loc };
+}
+
+// Fetch integration settings for a location + type
+// Query: ?locationId=...&type=filevine|litify|custom
+app.get('/api/integrations', ...authAndAdmin, async (req, res) => {
+  try {
+    const locationId = String(req.query.locationId || '').trim();
+    const type = normalizeIntegrationType(req.query.type);
+    if (!locationId) return res.status(400).json({ error: 'locationId is required' });
+    if (!type) return res.status(400).json({ error: 'type must be one of: filevine, litify, custom' });
+
+    const access = await assertCanManageLocation(req, locationId);
+    if (!access.ok) return res.status(access.status).json({ error: access.error });
+
+    const integration = await prisma.integration.findUnique({
+      where: { locationId_type: { locationId, type } },
+      select: { id: true, type: true, url: true, accessTokenId: true, secret: true, updatedAt: true },
+    });
+
+    // Never return the stored secret; only indicate whether one exists.
+    if (!integration) return res.json({ integration: null });
+    res.json({
+      integration: {
+        id: integration.id,
+        type: integration.type,
+        url: integration.url,
+        accessTokenId: integration.accessTokenId,
+        hasSecret: !!integration.secret,
+        updatedAt: integration.updatedAt,
+      },
+    });
+  } catch (err) {
+    betterstack.logApiError('GET /api/integrations', err);
+    res.status(500).json({ error: 'Failed to fetch integration settings' });
+  }
+});
+
+// Upsert integration settings for a location + type
+// Body: { locationId, type, url?, accessTokenId?, secret? }  (secret optional; if omitted/blank, existing secret is preserved)
+app.put('/api/integrations', ...authAndAdmin, async (req, res) => {
+  try {
+    const locationId = String(req.body?.locationId || '').trim();
+    const type = normalizeIntegrationType(req.body?.type);
+    const url = req.body?.url != null && String(req.body.url).trim() ? String(req.body.url).trim() : null;
+    const accessTokenId = req.body?.accessTokenId != null && String(req.body.accessTokenId).trim() ? String(req.body.accessTokenId).trim() : null;
+    const secretRaw = req.body?.secret != null ? String(req.body.secret) : '';
+    const secret = secretRaw.trim() ? secretRaw : null;
+
+    if (!locationId) return res.status(400).json({ error: 'locationId is required' });
+    if (!type) return res.status(400).json({ error: 'type must be one of: filevine, litify, custom' });
+
+    const access = await assertCanManageLocation(req, locationId);
+    if (!access.ok) return res.status(access.status).json({ error: access.error });
+
+    const dataBase = { url, accessTokenId };
+    const created = await prisma.integration.upsert({
+      where: { locationId_type: { locationId, type } },
+      create: { locationId, type, ...dataBase, ...(secret ? { secret } : {}) },
+      update: { ...dataBase, ...(secret ? { secret } : {}) },
+      select: { id: true, type: true, url: true, accessTokenId: true, secret: true, updatedAt: true },
+    });
+
+    res.json({
+      id: created.id,
+      type: created.type,
+      url: created.url,
+      accessTokenId: created.accessTokenId,
+      hasSecret: !!created.secret,
+      updatedAt: created.updatedAt,
+    });
+  } catch (err) {
+    betterstack.logApiError('PUT /api/integrations', err);
+    res.status(500).json({ error: 'Failed to save integration settings' });
   }
 });
 
@@ -3088,7 +3222,6 @@ app.patch('/api/templates/:id', ...authAndWrite, async (req, res) => {
     const id = req.params.id;
     const existing = await prisma.depositionTemplate.findUnique({ where: { id }, select: { key: true } });
     if (!existing) return res.status(404).json({ error: 'Template not found' });
-    if (existing.key === 'default') return res.status(400).json({ error: 'The default template cannot be edited' });
     const data = {};
     if (name !== undefined) data.name = String(name).trim();
     if (description !== undefined) data.description = description == null || description === '' ? null : String(description).trim();
@@ -3262,6 +3395,33 @@ Do NOT include commentary or coaching advice. Only confirmed facts and notable r
   } catch (err) {
     betterstack.logApiError('POST /api/cases/:id/stage-summary', err);
     res.status(500).json({ error: err.message || 'Failed to generate summary' });
+  }
+});
+
+// ---------- Stage: get simulation results (public, for post-call display) ----------
+app.get('/api/sim/:id/results', async (req, res) => {
+  try {
+    const sim = await prisma.simulation.findUnique({
+      where: { id: req.params.id },
+      select: {
+        id: true,
+        stage: true,
+        score: true,
+        scoreReason: true,
+        fullAnalysis: true,
+        bodyAnalysis: true,
+        callDurationSecs: true,
+        transcriptSummary: true,
+        callSummaryTitle: true,
+        stageStatus: true,
+        retakeRecommended: true,
+      },
+    });
+    if (!sim) return res.status(404).json({ error: 'Simulation not found' });
+    res.json(sim);
+  } catch (err) {
+    betterstack.logApiError('GET /api/sim/:id/results', err);
+    res.status(500).json({ error: 'Failed to get simulation results' });
   }
 });
 

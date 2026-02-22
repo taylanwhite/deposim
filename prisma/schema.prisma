@@ -59,12 +59,29 @@ model Location {
 
   organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   userLocations UserLocation[]
+  integrations  Integration[]
   clients       Client[]
   cases         Case[]
   brandings     Branding[]     @relation("BrandingLocation")
   prompts       Prompt[]
 
   @@map("locations")
+}
+
+model Integration {
+  id            String   @id @default(uuid())
+  locationId    String   @map("location_id")
+  type          String
+  url           String?
+  accessTokenId String?  @map("access_token_id")
+  secret        String?
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  location Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@unique([locationId, type])
+  @@map("integrations")
 }
 
 model UserLocation {

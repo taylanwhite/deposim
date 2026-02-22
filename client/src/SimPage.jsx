@@ -6,6 +6,31 @@ import { useT, useLangPrefix } from './i18n/LanguageContext';
 
 const API = '/api';
 
+function extractReadableText(raw) {
+  if (!raw || typeof raw !== 'string') return '';
+  let text = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed === 'string') return parsed;
+    // Body analysis: structured categories from Gemini
+    if (parsed.overall_demeanor) {
+      const sections = [];
+      for (const [key, val] of Object.entries(parsed)) {
+        if (key === 'timeline_of_notable_moments') continue;
+        if (val && typeof val === 'object' && val.score_reason) {
+          const label = key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+          sections.push(`${label}: ${val.score_reason}`);
+        }
+      }
+      return sections.join('\n\n') || '';
+    }
+    // Deposition analysis: flat JSON with known keys
+    return parsed.full_analysis || parsed.score_reason || parsed.analysis || '';
+  } catch {
+    return text;
+  }
+}
+
 const STAGE_NAMES = [
   'Background & Employment',
   'Accident & Aftermath',
@@ -174,6 +199,10 @@ function SimPage() {
   const [stageData, setStageData] = useState(null);
   const [stageEval, setStageEval] = useState(null); // { retakeRecommended, reason }
   const [evaluating, setEvaluating] = useState(false);
+  const [stageOverride, setStageOverride] = useState(null);
+  const [simResult, setSimResult] = useState(null);
+  const [userRole, setUserRole] = useState(null); // 'client' | 'staff' | null
+  const effectiveStage = stageOverride ?? stageNum;
   const messagesEndRef = useRef(null);
 
   const mediaRecorder = useRef(null);
@@ -182,13 +211,15 @@ function SimPage() {
   const conversationIdRef = useRef(null);
   const conversationRef = useRef(null);
 
-  // Fetch signed URL + config when caseId/stage is set
+  // Fetch signed URL + config when caseId/stage changes (including overrides)
   useEffect(() => {
     if (!caseId) return;
+    setConfig(null);
+    setConfigError(null);
     fetch(API + '/sim/signed-url', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ caseId, stage: stageNum }),
+      body: JSON.stringify({ caseId, stage: effectiveStage }),
     })
       .then((r) => r.json())
       .then((d) => {
@@ -196,7 +227,7 @@ function SimPage() {
         setConfig(d);
       })
       .catch((err) => setConfigError(err.message));
-  }, [caseId, stageNum]);
+  }, [caseId, effectiveStage]);
 
   // Fetch stage progress
   useEffect(() => {
@@ -206,6 +237,14 @@ function SimPage() {
       .then(setStageData)
       .catch(() => {});
   }, [caseId]);
+
+  // Detect user role for navigation
+  useEffect(() => {
+    fetch(`${API}/client/me`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setUserRole(d?.accessLevel === 'client' ? 'client' : 'staff'))
+      .catch(() => setUserRole('staff'));
+  }, []);
 
   const handleConnect = useCallback(
     (props) => {
@@ -237,24 +276,35 @@ function SimPage() {
   const runStageEvaluation = useCallback(async () => {
     setEvaluating(true);
     try {
-      // Wait a bit for the webhook to process the simulation
-      await new Promise((r) => setTimeout(r, 5000));
+      // Poll for the simulation to appear with a score (webhook may take time)
+      let simId = null;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        await new Promise((r) => setTimeout(r, attempt === 0 ? 5000 : 3000));
+        const stagesResp = await fetch(`${API}/cases/${caseId}/stages`);
+        if (!stagesResp.ok) continue;
+        const stagesData = await stagesResp.json();
+        const stageInfo = stagesData.stages?.find((s) => s.stage === effectiveStage);
+        if (stageInfo?.simulationId) {
+          simId = stageInfo.simulationId;
+          const resultResp = await fetch(`${API}/sim/${simId}/results`);
+          if (resultResp.ok) {
+            const result = await resultResp.json();
+            if (result.score != null) {
+              setSimResult(result);
+              break;
+            }
+          }
+        }
+      }
 
-      // Find the latest simulation for this case + stage
-      const simsResp = await fetch(`${API}/simulations?caseId=${caseId}`);
-      const sims = simsResp.ok ? await simsResp.json() : [];
-      const stageSim = sims.find((s) => s.stage === stageNum);
-
-      if (stageSim) {
-        // Generate stage summary for next stage
+      if (simId) {
         await fetch(`${API}/cases/${caseId}/stage-summary`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ simulationId: stageSim.id }),
+          body: JSON.stringify({ simulationId: simId }),
         }).catch(() => {});
 
-        // Evaluate whether retake is recommended
-        const evalResp = await fetch(`${API}/simulations/${stageSim.id}/evaluate-stage`, {
+        const evalResp = await fetch(`${API}/simulations/${simId}/evaluate-stage`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
         });
@@ -262,13 +312,19 @@ function SimPage() {
           const evalData = await evalResp.json();
           setStageEval(evalData);
         }
+
+        // Re-fetch results after evaluation to capture any updates
+        try {
+          const finalResp = await fetch(`${API}/sim/${simId}/results`);
+          if (finalResp.ok) setSimResult(await finalResp.json());
+        } catch {}
       }
     } catch (err) {
       console.warn('[DepoSim] Stage evaluation failed:', err);
     } finally {
       setEvaluating(false);
     }
-  }, [caseId, stageNum]);
+  }, [caseId, effectiveStage]);
 
   const handleDisconnect = useCallback(() => {
     if (mediaRecorder.current && mediaRecorder.current.state !== 'inactive') {
@@ -499,21 +555,45 @@ function SimPage() {
 
   // Ready to start call
   if (phase === 'ready') {
+    const continueStage = stageData?.currentStage ?? stageNum;
     return (
-      <div className="sim-page sim-page-dark">
+      <div className="sim-page">
         <div className="sim-consent">
           <a href="https://deposim.com" target="_blank" rel="noopener noreferrer">
             <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="sim-logo" />
           </a>
-          <SimStageProgress currentStage={stageNum} stageData={stageData} />
-          <h1>{t('sim.ready.title')}</h1>
-          <p className="sim-subtitle">{t('sim.ready.subtitle')}</p>
+
+          <div className={`sim-continue-section${stageOverride != null ? ' collapsed' : ''}`}>
+            <SimStageProgress currentStage={continueStage} stageData={stageData} />
+            <p className="sim-continue-text">
+              {t('sim.ready.continuing', { stage: continueStage, name: t(`sim.stage.short${continueStage}`) })}
+            </p>
+          </div>
+
           <div className="sim-preview-wrap">
             <video ref={pipVideoRef} autoPlay muted playsInline />
           </div>
-          <button className="sim-btn sim-btn-start sim-btn-primary" onClick={startCall}>
-            {t('sim.ready.start')}
+
+          <button className="sim-btn sim-btn-start sim-btn-primary" onClick={startCall} disabled={!config}>
+            {stageOverride != null
+              ? t('sim.ready.startStage', { name: t(`sim.stage.short${stageOverride}`) })
+              : t('sim.ready.start')}
           </button>
+
+          <p className="sim-ready-divider">{t('sim.ready.jumpTo')}</p>
+
+          <div className="sim-stage-buttons">
+            {[1, 2, 3, 4].map((n) => (
+              <button
+                key={n}
+                className={`sim-stage-btn${stageOverride === n ? ' active' : ''}`}
+                onClick={() => setStageOverride(stageOverride === n ? null : n)}
+              >
+                <span className="sim-stage-btn-num">{n}</span>
+                <span className="sim-stage-btn-name">{t(`sim.stage.short${n}`)}</span>
+              </button>
+            ))}
+          </div>
         </div>
       </div>
     );
@@ -531,7 +611,7 @@ function SimPage() {
                 ? `${config.case.lastName}, ${config.case.firstName}`
                 : config?.case?.name || 'Deponent'}
             </span>
-            <span className="sim-case-num">#{config?.case?.caseNumber || '—'} · {t(`sim.stage.short${stageNum}`)}</span>
+            <span className="sim-case-num">#{config?.case?.caseNumber || '—'} · {t(`sim.stage.short${effectiveStage}`)}</span>
           </div>
         </div>
 
@@ -579,17 +659,21 @@ function SimPage() {
     );
   }
 
-  // Post-call with stage evaluation
-  const isLastStage = stageNum === 4;
-  const nextStage = stageNum + 1;
-  const currentStageName = t(`sim.stage.name${stageNum}`);
-  const nextStageName = nextStage <= 4 ? t(`sim.stage.name${nextStage}`) : '';
+  // Post-call with stage evaluation and session results
+  const allStagesComplete = stageData?.stages?.length === 4 && stageData.stages.every((s) => s.status === 'completed');
+  const nextIncomplete = [1, 2, 3, 4].find((n) => {
+    const s = stageData?.stages?.find((st) => st.stage === n);
+    return !s || s.status !== 'completed';
+  });
+  const nextStage = nextIncomplete ?? (effectiveStage < 4 ? effectiveStage + 1 : null);
+  const currentStageName = t(`sim.stage.name${effectiveStage}`);
+  const nextStageName = nextStage && nextStage <= 4 ? t(`sim.stage.name${nextStage}`) : '';
 
   return (
     <div className="sim-page">
       <div className="sim-postcall">
         <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="sim-logo" />
-        <SimStageProgress currentStage={stageNum} stageData={stageData} />
+        <SimStageProgress currentStage={effectiveStage} stageData={stageData} />
 
         <div className="sim-postcall-status">{t('sim.stage.stageComplete', { name: currentStageName })}</div>
 
@@ -610,10 +694,41 @@ function SimPage() {
           </div>
         )}
 
-        {/* Stage evaluation */}
         {evaluating && (
           <div className="sim-postcall-eval">
             <p className="sim-postcall-eval-loading">{t('sim.stage.evaluating')}</p>
+          </div>
+        )}
+
+        {!evaluating && simResult && (
+          <div className="sim-postcall-results">
+            {simResult.score != null && (
+              <div className="sim-postcall-score">
+                <span className="sim-score-number">{simResult.score}</span>
+                <span className="sim-score-label">/100</span>
+              </div>
+            )}
+            {simResult.scoreReason && (
+              <p className="sim-postcall-score-reason">{simResult.scoreReason}</p>
+            )}
+            {(() => {
+              const text = extractReadableText(simResult.fullAnalysis);
+              return text ? (
+                <div className="sim-postcall-analysis">
+                  <h4>{t('sim.postcall.analysis')}</h4>
+                  <p>{text.length > 400 ? text.slice(0, 400) + '…' : text}</p>
+                </div>
+              ) : null;
+            })()}
+            {(() => {
+              const text = extractReadableText(simResult.bodyAnalysis);
+              return text ? (
+                <div className="sim-postcall-body-result">
+                  <h4>{t('sim.postcall.bodyAnalysisTitle')}</h4>
+                  <p>{text.length > 400 ? text.slice(0, 400) + '…' : text}</p>
+                </div>
+              ) : null;
+            })()}
           </div>
         )}
 
@@ -624,33 +739,27 @@ function SimPage() {
           </div>
         )}
 
-        {/* Navigation buttons */}
         <div className="sim-postcall-actions">
-          {!isLastStage && (
-            <button
-              className="sim-btn sim-btn-primary sim-btn-continue"
-              onClick={() => navigate(`${prefix}/sim/${caseId}/stage/${nextStage}`)}
-            >
-              {t('sim.stage.continue', { name: nextStageName })}
-            </button>
-          )}
-          {isLastStage && (
+          {allStagesComplete && (
             <div className="sim-postcall-all-complete">
               <h2>{t('sim.stage.allComplete')}</h2>
               <p>{t('sim.stage.allCompleteDesc')}</p>
             </div>
           )}
           <button
-            className="sim-btn-ghost"
+            className="sim-btn sim-btn-outline sim-btn-continue"
             onClick={() => {
-              window.location.href = `${prefix}/sim/${caseId}/stage/${stageNum}`;
+              window.location.href = `${prefix}/sim/${caseId}/stage/${effectiveStage}`;
             }}
           >
             {t('sim.stage.retake', { name: currentStageName })}
           </button>
-          <Link to={`${prefix}/cases`} className="sim-postcall-back-link">
-            {t('sim.postcall.backToCases')}
-          </Link>
+          <button
+            className="sim-btn sim-btn-primary sim-btn-continue"
+            onClick={() => navigate(userRole === 'client' ? `${prefix}/client/cases/${caseId}` : `${prefix}/cases/${caseId}`)}
+          >
+            {t('sim.postcall.backToSessions')}
+          </button>
         </div>
       </div>
     </div>

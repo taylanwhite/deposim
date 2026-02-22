@@ -636,6 +636,142 @@
 .integration-fields { display: flex; flex-direction: column; gap: 14px; }
 .integration-fields label { display: block; }
 .integration-fields .label-text { display: block; font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+.integration-settings .label-text { display: block; font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+
+.integration-settings { display: flex; flex-direction: column; gap: 14px; }
+.integration-selectors { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 720px) { .integration-selectors { grid-template-columns: 1fr; } }
+
+.integration-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+.integration-tab {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.integration-tab.active { background: var(--gradient); border: none; color: #fff; }
+.integration-tab:disabled { opacity: 0.4; cursor: default; }
+
+.integration-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.integration-secret-hint { margin-top: 6px; font-size: 12px; color: var(--muted); }
+
+/* ── Provider card tabs ── */
+.integration-provider-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.integration-provider-tab {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 10px 14px;
+  border: 1.5px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg2);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.integration-provider-tab:hover:not(:disabled) {
+  border-color: rgba(98, 54, 255, 0.5);
+  background: rgba(98, 54, 255, 0.04);
+}
+.integration-provider-tab.active {
+  border-color: var(--accent);
+  background: rgba(98, 54, 255, 0.08);
+  box-shadow: 0 0 0 1px rgba(98, 54, 255, 0.15);
+}
+.integration-provider-tab:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.integration-provider-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 800;
+  color: #fff;
+  letter-spacing: -0.3px;
+  flex-shrink: 0;
+}
+.integration-provider-name {
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  line-height: 1.2;
+}
+.integration-provider-check {
+  position: absolute;
+  top: 7px;
+  right: 8px;
+  width: 16px;
+  height: 16px;
+  color: #16981c;
+}
+.integration-provider-check svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Simple autocomplete (used in settings) */
+.simple-autocomplete { position: relative; }
+.simple-autocomplete.disabled { opacity: 0.85; }
+.simple-autocomplete-input-row { position: relative; }
+.simple-autocomplete-clear {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 6px;
+}
+.simple-autocomplete-clear:hover { color: var(--text); }
+.simple-autocomplete-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 60;
+  border: 1px solid rgba(128,128,128,0.25);
+  border-radius: 10px;
+  background: var(--card-bg, #1a1a2e);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+  overflow: hidden;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.simple-autocomplete-item {
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  font-size: 13px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.simple-autocomplete-item:hover { background: rgba(128,128,128,0.08); }
+.simple-autocomplete-item.active { color: var(--accent, #6236ff); font-weight: 700; }
 
 .muted { color: var(--muted); }
 .error-text { color: #ed4956; font-size: 14px; }
@@ -915,6 +1051,13 @@
   -webkit-tap-highlight-color: transparent;
 }
 .btn-link:hover { text-decoration: underline; }
+.btn-link:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.5;
+  text-decoration: none;
+  pointer-events: none;
+}
 
 /* Prompt edit inline */
 .prompt-add-hint {
@@ -1664,6 +1807,14 @@
   background: linear-gradient(135deg, #6236ff 0%, #be29ec 100%);
   color: #fff;
 }
+.sim-btn-outline {
+  background: #fff;
+  color: #6236ff;
+  border: 2px solid #6236ff;
+}
+.sim-btn-outline:hover {
+  background: rgba(98, 54, 255, 0.06);
+}
 .sim-preview-wrap {
   max-width: 320px;
   aspect-ratio: 4/3;
@@ -1685,6 +1836,88 @@
   padding: 16px 40px;
   font-size: 18px;
   border-radius: 14px;
+}
+.sim-btn-start:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ===== Continue section (progress bug + text) with collapse animation ===== */
+.sim-continue-section {
+  max-height: 220px;
+  opacity: 1;
+  overflow: hidden;
+  transition: max-height 0.35s ease, opacity 0.3s ease, margin 0.35s ease;
+  margin-bottom: 8px;
+}
+.sim-continue-section.collapsed {
+  max-height: 0;
+  opacity: 0;
+  margin-bottom: 0;
+}
+.sim-continue-text {
+  font-size: 15px;
+  font-weight: 600;
+  color: rgba(0,0,0,0.55);
+  margin: 0 0 8px;
+}
+
+/* ===== Stage jump divider ===== */
+.sim-ready-divider {
+  font-size: 13px;
+  color: rgba(0,0,0,0.35);
+  margin: 20px 0 12px;
+}
+
+/* ===== Stage jump buttons ===== */
+.sim-stage-buttons {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+  max-width: 400px;
+}
+.sim-stage-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 16px;
+  border: 2px solid rgba(0,0,0,0.12);
+  border-radius: 12px;
+  background: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-width: 76px;
+  -webkit-tap-highlight-color: transparent;
+}
+.sim-stage-btn:hover {
+  border-color: rgba(98,54,255,0.35);
+  background: rgba(98,54,255,0.04);
+}
+.sim-stage-btn.active {
+  border-color: #6236ff;
+  background: rgba(98,54,255,0.1);
+  color: #6236ff;
+}
+.sim-stage-btn-num {
+  font-size: 18px;
+  font-weight: 700;
+  color: rgba(0,0,0,0.5);
+  transition: color 0.2s ease;
+}
+.sim-stage-btn.active .sim-stage-btn-num {
+  color: #6236ff;
+}
+.sim-stage-btn-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(0,0,0,0.4);
+  white-space: nowrap;
+  transition: color 0.2s ease;
+}
+.sim-stage-btn.active .sim-stage-btn-name {
+  color: #6236ff;
 }
 .sim-header {
   padding: 16px;
@@ -1865,7 +2098,8 @@
 .sim-postcall-name { font-size: 24px; font-weight: 700; margin-top: 4px; }
 .sim-postcall-status { font-size: 16px; font-weight: 600; color: #0095f6; margin-top: 16px; }
 .sim-postcall-body { margin-top: 16px; font-size: 14px; color: rgba(0,0,0,0.6); max-width: 400px; }
-.sim-postcall .sim-btn { background: #0095f6; color: #fff; margin-top: 24px; }
+.sim-postcall .sim-btn { margin-top: 24px; }
+.sim-postcall .sim-btn-outline { background: #fff; color: #6236ff; border: 2px solid #6236ff; }
 
 /* ===== DepoSim Sent Toast (bottom popup) ===== */
 .deposim-sent-toast {
@@ -2024,10 +2258,10 @@
   .sim-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
-/* Sim card: square Instagram post, gradient from score (red→green), white text */
+/* Sim card: compact tile, gradient from score (red→green), white text */
 .sim-post-card {
   position: relative;
-  aspect-ratio: 1;
+  aspect-ratio: 2 / 1;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -2650,6 +2884,18 @@
   white-space: nowrap;
 }
 
+/* Stage progress on white background (non-dark sim page) */
+.sim-page:not(.sim-page-dark) .stage-donut-locked {
+  border-color: rgba(0,0,0,0.12);
+  color: rgba(0,0,0,0.3);
+}
+.sim-page:not(.sim-page-dark) .stage-connector {
+  background: rgba(0,0,0,0.1);
+}
+.sim-page:not(.sim-page-dark) .stage-label {
+  color: rgba(0,0,0,0.4);
+}
+
 /* ===== Post-call stage evaluation ===== */
 .sim-postcall-status {
   font-size: 18px;
@@ -2697,6 +2943,64 @@
   font-size: 13px;
   color: rgba(0,0,0,0.5);
   margin-bottom: 8px;
+}
+
+/* ===== Post-call session results ===== */
+.sim-postcall-results {
+  max-width: 420px;
+  margin: 16px auto;
+  text-align: center;
+}
+.sim-postcall-score {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+.sim-score-number {
+  font-size: 48px;
+  font-weight: 800;
+  background: linear-gradient(135deg, #6236ff, #be29ec);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  line-height: 1;
+}
+.sim-score-label {
+  font-size: 18px;
+  font-weight: 600;
+  color: rgba(0,0,0,0.3);
+}
+.sim-postcall-score-reason {
+  font-size: 14px;
+  color: rgba(0,0,0,0.6);
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+.sim-postcall-analysis,
+.sim-postcall-body-result {
+  text-align: left;
+  background: rgba(0,0,0,0.03);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+.sim-postcall-analysis h4,
+.sim-postcall-body-result h4 {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgba(0,0,0,0.4);
+  margin: 0 0 8px;
+}
+.sim-postcall-analysis p,
+.sim-postcall-body-result p {
+  font-size: 13px;
+  color: rgba(0,0,0,0.6);
+  line-height: 1.6;
+  margin: 0;
 }
 
 .sim-postcall-actions {
@@ -2779,6 +3083,20 @@
 [data-theme="dark"] .sim-postcall-name { color: rgba(255,255,255,0.6); }
 [data-theme="dark"] .sim-postcall-case { color: rgba(255,255,255,0.4); }
 [data-theme="dark"] .sim-postcall-body { color: rgba(255,255,255,0.45); }
+[data-theme="dark"] .sim-postcall-score-reason { color: rgba(255,255,255,0.6); }
+[data-theme="dark"] .sim-score-label { color: rgba(255,255,255,0.3); }
+[data-theme="dark"] .sim-postcall-analysis,
+[data-theme="dark"] .sim-postcall-body-result { background: rgba(255,255,255,0.05); }
+[data-theme="dark"] .sim-postcall-analysis h4,
+[data-theme="dark"] .sim-postcall-body-result h4 { color: rgba(255,255,255,0.4); }
+[data-theme="dark"] .sim-postcall-analysis p,
+[data-theme="dark"] .sim-postcall-body-result p { color: rgba(255,255,255,0.6); }
+[data-theme="dark"] .sim-continue-text { color: rgba(255,255,255,0.55); }
+[data-theme="dark"] .sim-ready-divider { color: rgba(255,255,255,0.3); }
+[data-theme="dark"] .sim-stage-btn { border-color: rgba(255,255,255,0.15); }
+[data-theme="dark"] .sim-stage-btn:hover { border-color: rgba(98,54,255,0.4); background: rgba(98,54,255,0.08); }
+[data-theme="dark"] .sim-stage-btn-num { color: rgba(255,255,255,0.5); }
+[data-theme="dark"] .sim-stage-btn-name { color: rgba(255,255,255,0.4); }
 
 /* ===== Client Portal ===== */
 .client-empty-state {

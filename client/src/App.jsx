@@ -1,11 +1,19 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Routes, Route, useNavigate, useParams, useLocation, useOutletContext, Navigate, Outlet, Link } from 'react-router-dom';
+import { Routes, Route, useNavigate, useParams, useLocation, useOutletContext, useSearchParams, Navigate, Outlet, Link } from 'react-router-dom';
 import { SignedIn, SignedOut, RedirectToSignIn, UserButton, useAuth } from '@clerk/clerk-react';
 import './App.css';
 import SimPage from './SimPage';
 import { LanguageProvider, useT, useLangPrefix } from './i18n/LanguageContext';
 
 const API = '/api';
+
+function formatPhone(raw) {
+  if (!raw) return '';
+  const digits = raw.replace(/\D/g, '');
+  const d = digits.length === 11 && digits[0] === '1' ? digits.slice(1) : digits;
+  if (d.length === 10) return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
+  return raw;
+}
 
 // In-memory cache for /api/client/me to avoid repeated getToken() and Clerk token endpoint calls (prevents 429 rate limits).
 // See https://github.com/clerk/javascript/issues/4894 — avoid re-running auth fetches on every getToken reference change.
@@ -1283,7 +1291,7 @@ function ClientAutocomplete({ selectedClients = [], onChange, placeholder = 'Sea
           {results.map(c => (
             <button key={c.id} type="button" className="client-autocomplete-item" onClick={() => selectClient(c)}>
               <span className="client-autocomplete-name">{c.lastName}, {c.firstName}</span>
-              {c.phone && <span className="client-autocomplete-phone">{c.phone}</span>}
+              {c.phone && <span className="client-autocomplete-phone">{formatPhone(c.phone)}</span>}
             </button>
           ))}
           {!showCreate && (
@@ -1326,7 +1334,7 @@ function ClientPickerModal({ clients, onSelect, onCancel }) {
           {clients.map(cc => (
             <button key={cc.clientId || cc.client?.id} type="button" className="client-picker-item" onClick={() => onSelect(cc.client || cc)}>
               <span className="client-picker-name">{cc.client?.lastName || cc.lastName}, {cc.client?.firstName || cc.firstName}</span>
-              {(cc.client?.phone || cc.phone) && <span className="client-picker-phone">{cc.client?.phone || cc.phone}</span>}
+              {(cc.client?.phone || cc.phone) && <span className="client-picker-phone">{formatPhone(cc.client?.phone || cc.phone)}</span>}
             </button>
           ))}
         </div>
@@ -1373,7 +1381,7 @@ function BottomBar({ tab, onTab, onCenterClick, centerAction, onStartDeposim }) 
 }
 
 /* ===== Create Case form ===== */
-function CreateCaseForm({ goBack, onSuccess, showToast, tab, switchTab }) {
+function CreateCaseForm({ goBack, onSuccess, showToast, tab, switchTab, orgId }) {
   const { t } = useT();
   const [caseName, setCaseName] = useState('');
   const [caseNumber, setCaseNumber] = useState('');
@@ -1390,11 +1398,12 @@ function CreateCaseForm({ goBack, onSuccess, showToast, tab, switchTab }) {
 
   useEffect(() => {
     setLocationsLoading(true);
-    fetch(API + '/locations').then(r => r.ok ? r.json() : []).then(locs => {
+    fetch(API + '/locations').then(r => r.ok ? r.json() : []).then(allLocs => {
+      const locs = orgId ? allLocs.filter(l => l.organizationId === orgId) : allLocs;
       setLocations(locs);
-      if (locs.length === 1) setLocationId(locs[0].id);
+      if (locs.length > 0) setLocationId(locs[0].id);
     }).catch(() => {}).finally(() => setLocationsLoading(false));
-  }, []);
+  }, [orgId]);
 
   useEffect(() => {
     fetch(API + '/templates')
@@ -1411,6 +1420,13 @@ function CreateCaseForm({ goBack, onSuccess, showToast, tab, switchTab }) {
 
   const selectedTemplate = templates.find(t => t.id === templateId) || templates[0];
   const personas = selectedTemplate?.personas || [];
+
+  // Auto-select first persona whenever the persona list changes
+  useEffect(() => {
+    if (personas.length > 0 && !defaultPersonaId) {
+      setDefaultPersonaId(personas[0].id);
+    }
+  }, [personas.length, selectedTemplate?.id]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -1490,7 +1506,7 @@ function CreateCaseForm({ goBack, onSuccess, showToast, tab, switchTab }) {
               <>
                 <label>
                   <span className="label-text">Deposition template</span>
-                  <select className="input" value={templateId} onChange={e => { setTemplateId(e.target.value); setDefaultPersonaId(''); }}>
+                  <select className="input" value={templateId} onChange={e => { setTemplateId(e.target.value); setDefaultPersonaId(''); /* effect will pick first persona */ }}>
                     {templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                   </select>
                   {selectedTemplate?.description && <span className="label-hint" style={{ display: 'block', fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>{selectedTemplate.description}</span>}
@@ -1499,7 +1515,6 @@ function CreateCaseForm({ goBack, onSuccess, showToast, tab, switchTab }) {
                   <label>
                     <span className="label-text">{t('createCase.defaultPersona')}</span>
                     <select className="input" value={defaultPersonaId} onChange={e => setDefaultPersonaId(e.target.value)}>
-                      <option value="">Use template default</option>
                       {personas.map(p => <option key={p.id} value={p.id}>{p.name} — {p.description}</option>)}
                     </select>
                   </label>
@@ -2068,7 +2083,7 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
               {caseClients.map(cc => (
                 <div key={cc.id || cc.clientId} className="case-client-row">
                   <span className="case-client-name">{cc.client?.lastName}, {cc.client?.firstName}</span>
-                  {cc.client?.phone && <span className="case-client-phone">{cc.client.phone}</span>}
+                  {cc.client?.phone && <span className="case-client-phone">{formatPhone(cc.client.phone)}</span>}
                   <span className="case-client-role">{cc.role}</span>
                   {caseClients.length > 1 && (
                     <button type="button" className="case-client-remove" onClick={() => removeClientFromCase(cc.clientId)} title="Remove">&times;</button>
@@ -2337,6 +2352,371 @@ function SearchableSelect({ value, onChange, options, placeholder }) {
   );
 }
 
+/* ===== Single-select Autocomplete (input + dropdown) ===== */
+function SingleSelectAutocomplete({ value, onChange, options, placeholder, disabled = false }) {
+  const { t } = useT();
+  const wrapRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+
+  const selected = options.find(o => o.value === value) || null;
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) {
+        setOpen(false);
+        setQuery('');
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const filtered = (open && query.trim())
+    ? options.filter(o => o.label.toLowerCase().includes(query.toLowerCase()))
+    : options;
+
+  const displayValue = open ? query : (selected?.label || '');
+
+  const select = (v) => {
+    onChange(v);
+    setOpen(false);
+    setQuery('');
+  };
+
+  return (
+    <div className={`simple-autocomplete${disabled ? ' disabled' : ''}`} ref={wrapRef}>
+      <div className="simple-autocomplete-input-row">
+        <input
+          className="input"
+          value={displayValue}
+          placeholder={placeholder}
+          disabled={disabled}
+          onFocus={() => {
+            if (disabled) return;
+            setQuery(selected?.label || '');
+            setOpen(true);
+          }}
+          onChange={(e) => { setQuery(e.target.value); if (!disabled) setOpen(true); }}
+          autoComplete="off"
+        />
+        {!disabled && value && (
+          <button type="button" className="simple-autocomplete-clear" onClick={() => select('')} aria-label="Clear">
+            ×
+          </button>
+        )}
+      </div>
+
+      {open && !disabled && (
+        <div className="simple-autocomplete-dropdown" role="listbox">
+          {filtered.length === 0 && (
+            <div className="simple-autocomplete-item muted">{t('search.noMatches')}</div>
+          )}
+          {filtered.map(o => (
+            <button
+              key={o.value}
+              type="button"
+              className={`simple-autocomplete-item${o.value === value ? ' active' : ''}`}
+              onClick={() => select(o.value)}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ===== Integration Settings (per org/location + type) ===== */
+const INTEGRATION_PROVIDERS = [
+  {
+    key: 'filevine',
+    label: 'FileVine',
+    abbr: 'FV',
+    color: '#00a651',
+    urlPlaceholder: 'https://api.filevine.io/v2/…',
+    accessIdPlaceholder: 'Client ID',
+  },
+  {
+    key: 'litify',
+    label: 'Litify',
+    abbr: 'Li',
+    color: '#0176d3',
+    urlPlaceholder: 'https://yourorg.my.salesforce.com/…',
+    accessIdPlaceholder: 'Consumer Key',
+  },
+  {
+    key: 'custom',
+    label: 'Custom',
+    abbr: '⚙',
+    color: '#6236ff',
+    urlPlaceholder: 'https://…',
+    accessIdPlaceholder: 'Access ID',
+  },
+];
+
+function IntegrationSettings({ access, showToast }) {
+  const allOrgs = access?.organizations || [];
+  const allLocations = access?.locations || [];
+
+  const [orgId, setOrgId] = useState('');
+  const [locationId, setLocationId] = useState('');
+  const [type, setType] = useState('filevine');
+
+  // Cache: { filevine: { url, accessTokenId, hasSecret } | null, litify: …, custom: … }
+  const [cache, setCache] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // Local editable fields, synced from cache on type switch
+  const [url, setUrl] = useState('');
+  const [accessTokenId, setAccessTokenId] = useState('');
+  const [secret, setSecret] = useState('');
+
+  const orgOptions = allOrgs.map(o => ({ value: o.id, label: o.name }));
+  const filteredLocations = orgId ? allLocations.filter(l => l.organizationId === orgId) : [];
+  const locationOptions = filteredLocations.map(l => ({ value: l.id, label: l.name }));
+
+  // Auto-seed orgId on mount/access change
+  useEffect(() => {
+    const nextOrg = (access?.orgId && allOrgs.some(o => o.id === access.orgId))
+      ? access.orgId
+      : (allOrgs.length === 1 ? allOrgs[0].id : '');
+    setOrgId(prev => prev || nextOrg);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [access?.orgId, allOrgs.length]);
+
+  // Auto-select location when only one exists; clear when org changes
+  useEffect(() => {
+    if (!orgId) { setLocationId(''); return; }
+    const locs = allLocations.filter(l => l.organizationId === orgId);
+    if (locs.length === 1) { setLocationId(locs[0].id); return; }
+    if (locationId) {
+      const sel = allLocations.find(l => l.id === locationId);
+      if (sel && sel.organizationId !== orgId) setLocationId('');
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orgId, allLocations.length]);
+
+  // When location changes: pre-fetch all 3 providers at once
+  useEffect(() => {
+    let cancelled = false;
+    setCache({});
+    setUrl(''); setAccessTokenId(''); setSecret('');
+    if (!locationId) return;
+    setLoading(true);
+    (async () => {
+      try {
+        const results = await Promise.all(
+          INTEGRATION_PROVIDERS.map(p =>
+            fetch(`${API}/integrations?locationId=${encodeURIComponent(locationId)}&type=${p.key}`)
+              .then(r => r.ok ? r.json() : null)
+              .catch(() => null)
+          )
+        );
+        if (cancelled) return;
+        const next = {};
+        INTEGRATION_PROVIDERS.forEach((p, i) => {
+          next[p.key] = results[i]?.integration || null;
+        });
+        setCache(next);
+        // Seed fields for the currently active type
+        const cur = next[type];
+        setUrl(cur?.url || '');
+        setAccessTokenId(cur?.accessTokenId || '');
+        setSecret('');
+      } catch (_) {
+        if (!cancelled) setCache({});
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locationId]);
+
+  // When tab changes: load fields from cache
+  useEffect(() => {
+    const cur = cache[type];
+    setUrl(cur?.url || '');
+    setAccessTokenId(cur?.accessTokenId || '');
+    setSecret('');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [type]);
+
+  const save = async () => {
+    if (!orgId) return showToast?.('Select an organization.');
+    if (!locationId) return showToast?.('Select a location.');
+    setSaving(true);
+    try {
+      const body = {
+        locationId,
+        type,
+        url: url.trim() || null,
+        accessTokenId: accessTokenId.trim() || null,
+        ...(secret.trim() ? { secret } : {}),
+      };
+      const r = await fetch(`${API}/integrations`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        showToast?.(e?.error || 'Failed to save integration.');
+        return;
+      }
+      const saved = await r.json().catch(() => ({}));
+      const newEntry = {
+        url: saved.url || url.trim() || null,
+        accessTokenId: saved.accessTokenId || accessTokenId.trim() || null,
+        hasSecret: !!saved.hasSecret || !!secret.trim(),
+      };
+      setCache(prev => ({ ...prev, [type]: newEntry }));
+      setSecret('');
+      showToast?.('Integration saved.');
+    } catch (_) {
+      showToast?.('Failed to save integration.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const curProvider = INTEGRATION_PROVIDERS.find(p => p.key === type);
+  const curCache = cache[type];
+  const isConfigured = !!(curCache?.url || curCache?.accessTokenId || curCache?.hasSecret);
+  const hasSecret = !!curCache?.hasSecret;
+  const fieldsDisabled = !locationId || loading;
+
+  return (
+    <div className="integration-settings">
+
+      {/* ── Org → Location selectors ── */}
+      <div className="integration-selectors" style={{ gridTemplateColumns: orgId ? '1fr 1fr' : '1fr' }}>
+        <label>
+          <span className="label-text">Organization</span>
+          <SingleSelectAutocomplete
+            value={orgId}
+            onChange={(v) => { setOrgId(v); setLocationId(''); }}
+            options={orgOptions}
+            placeholder="Select an organization…"
+            disabled={orgOptions.length <= 1}
+          />
+        </label>
+        {orgId && (
+          <label>
+            <span className="label-text">Location</span>
+            <SingleSelectAutocomplete
+              value={locationId}
+              onChange={(v) => setLocationId(v)}
+              options={locationOptions}
+              placeholder="Select a location…"
+            />
+          </label>
+        )}
+      </div>
+
+      {/* ── Provider tabs ── */}
+      <div className="integration-provider-tabs" role="tablist">
+        {INTEGRATION_PROVIDERS.map(p => {
+          const configured = !!(cache[p.key]?.url || cache[p.key]?.accessTokenId || cache[p.key]?.hasSecret);
+          return (
+            <button
+              key={p.key}
+              type="button"
+              role="tab"
+              aria-selected={type === p.key}
+              className={`integration-provider-tab${type === p.key ? ' active' : ''}`}
+              onClick={() => setType(p.key)}
+              disabled={!locationId}
+            >
+              <div className="integration-provider-icon" style={{ background: p.color }}>
+                {p.abbr}
+              </div>
+              <span className="integration-provider-name">{p.label}</span>
+              {configured && (
+                <span className="integration-provider-check" title="Configured">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="3 8 6.5 11.5 13 4.5" />
+                  </svg>
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ── Credential fields ── */}
+      {locationId ? (
+        loading ? (
+          <p style={{ color: 'var(--muted)', fontSize: 13, padding: '8px 0' }}>Loading…</p>
+        ) : (
+          <div className="integration-fields">
+            <label>
+              <span className="label-text">URL</span>
+              <input
+                type="text"
+                className="input"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder={curProvider?.urlPlaceholder || 'https://…'}
+              />
+            </label>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <label>
+                <span className="label-text">Access ID</span>
+                <input
+                  type="text"
+                  className="input"
+                  value={accessTokenId}
+                  onChange={(e) => setAccessTokenId(e.target.value)}
+                  placeholder={curProvider?.accessIdPlaceholder || 'Access ID'}
+                  autoComplete="off"
+                />
+              </label>
+              <label>
+                <span className="label-text">Secret</span>
+                <input
+                  type="password"
+                  className="input"
+                  value={secret}
+                  onChange={(e) => setSecret(e.target.value)}
+                  placeholder={hasSecret ? '••••••• (saved)' : 'Secret key'}
+                  autoComplete="new-password"
+                />
+              </label>
+            </div>
+          </div>
+        )
+      ) : (
+        <div style={{ padding: '20px 0', textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>
+          Select an organization and location to configure integrations.
+        </div>
+      )}
+
+      {/* ── Footer ── */}
+      {locationId && !loading && (
+        <div className="integration-actions">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+            <span style={{
+              display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+              background: isConfigured ? '#16981c' : 'rgba(128,128,128,0.4)',
+              flexShrink: 0,
+            }} />
+            <span style={{ color: isConfigured ? '#16981c' : 'var(--muted)' }}>
+              {isConfigured ? `${curProvider?.label} configured` : 'Not configured'}
+            </span>
+          </div>
+          <button type="button" className="btn primary" onClick={save} disabled={saving}>
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ===== Cases List Page ===== */
 function CasesListPage() {
   const { theme, handleThemeChange, toast, showToast, activeTab, access } = useAppContext();
@@ -2350,17 +2730,32 @@ function CasesListPage() {
   const [caseSearchExpanded, setCaseSearchExpanded] = useState(false);
   const [depoSimSentCaseId, setDepoSimSentCaseId] = useState(null);
   const [depoSimSentShortUrl, setDepoSimSentShortUrl] = useState(null);
-  const [filterOrgId, setFilterOrgId] = useState('');
   const [filterLocationId, setFilterLocationId] = useState('');
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const allLocations = access?.locations || [];
   const allOrgs = access?.organizations || [];
-  const showOrgFilter = allOrgs.length > 1;
-  const showLocationFilter = allLocations.length > 1 || filterOrgId;
+  const showOrgSelector = allOrgs.length > 1;
 
-  const filteredLocations = filterOrgId
-    ? allLocations.filter(l => l.organizationId === filterOrgId)
+  // Active org from URL, defaulting to latest (last) org once access loads
+  const [activeOrgId, setActiveOrgId] = useState(() => searchParams.get('org') || '');
+  useEffect(() => {
+    if (!activeOrgId && allOrgs.length > 0) {
+      const sorted = [...allOrgs].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+      setActiveOrgId(sorted[0].id);
+    }
+  }, [allOrgs.length]);
+  // Sync active org to URL
+  useEffect(() => {
+    if (!activeOrgId) return;
+    if (searchParams.get('org') === activeOrgId) return;
+    setSearchParams(prev => { const p = new URLSearchParams(prev); p.set('org', activeOrgId); return p; }, { replace: true });
+  }, [activeOrgId]);
+
+  const filteredLocations = activeOrgId
+    ? allLocations.filter(l => l.organizationId === activeOrgId)
     : allLocations;
+  const showLocationFilter = filteredLocations.length > 1;
 
   const [caseScores, setCaseScores] = useState({});
   useEffect(() => {
@@ -2380,7 +2775,7 @@ function CasesListPage() {
 
   useEffect(() => {
     const params = new URLSearchParams();
-    if (filterOrgId) params.set('organizationId', filterOrgId);
+    if (activeOrgId) params.set('organizationId', activeOrgId);
     if (filterLocationId) params.set('locationId', filterLocationId);
     const qs = params.toString() ? `?${params}` : '';
     setLoading(true);
@@ -2389,15 +2784,15 @@ function CasesListPage() {
       .then(setCases)
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [filterOrgId, filterLocationId]);
+  }, [activeOrgId, filterLocationId]);
 
-  // Reset location filter when org filter changes
+  // Reset location filter when active org changes
   useEffect(() => {
-    if (filterOrgId && filterLocationId) {
+    if (filterLocationId) {
       const loc = allLocations.find(l => l.id === filterLocationId);
-      if (loc && loc.organizationId !== filterOrgId) setFilterLocationId('');
+      if (loc && activeOrgId && loc.organizationId !== activeOrgId) setFilterLocationId('');
     }
-  }, [filterOrgId]);
+  }, [activeOrgId]);
 
   const sortedCases = [...cases]
     .filter((c) => {
@@ -2438,6 +2833,16 @@ function CasesListPage() {
               <AdminUserButton />
             </div>
           </div>
+          {showOrgSelector && (
+            <div style={{ padding: '0 16px 8px', maxWidth: 320 }}>
+              <SearchableSelect
+                value={activeOrgId}
+                onChange={v => { if (v) { setActiveOrgId(v); setFilterLocationId(''); } }}
+                options={allOrgs.map(o => ({ value: o.id, label: o.name }))}
+                placeholder="Select organization…"
+              />
+            </div>
+          )}
           <div className="cases-subheader">
             <div className={`cases-search-wrap${caseSearchExpanded ? ' expanded' : ''}`}>
               <button type="button" className="cases-search-toggle" onClick={() => setCaseSearchExpanded((x) => !x)} aria-label="Search">
@@ -2462,14 +2867,6 @@ function CasesListPage() {
                   </button>
                 ))}
               </div>
-              {showOrgFilter && (
-                <SearchableSelect
-                  value={filterOrgId}
-                  onChange={v => { setFilterOrgId(v); setFilterLocationId(''); }}
-                  options={allOrgs.map(o => ({ value: o.id, label: o.name }))}
-                  placeholder={t('cases.filter.allOrgs')}
-                />
-              )}
               {showLocationFilter && (
                 <SearchableSelect
                   value={filterLocationId}
@@ -2499,7 +2896,7 @@ function CasesListPage() {
           )}
         </div>
       </div>
-      <BottomBar tab="cases" centerAction={null} />
+      <BottomBar tab="cases" centerAction={null} onCenterClick={() => nav(`${prefix}/cases/new${activeOrgId ? `?org=${activeOrgId}` : ''}`)} />
       {toast && <div className="toast">{toast}</div>}
       {depoSimSentCaseId && <DepoSimSentToast sending={false} caseId={depoSimSentCaseId} shortUrl={depoSimSentShortUrl} onDismiss={() => { setDepoSimSentCaseId(null); setDepoSimSentShortUrl(null); }} />}
     </div>
@@ -2611,14 +3008,17 @@ function CreateCasePage() {
   const nav = useNavigate();
   const prefix = useLangPrefix();
   const { showToast } = useAppContext();
+  const [searchParams] = useSearchParams();
+  const orgId = searchParams.get('org') || '';
 
   return (
     <CreateCaseForm
-      goBack={() => nav(`${prefix}/cases`)}
-      onSuccess={() => nav(`${prefix}/cases`)}
+      goBack={() => nav(`${prefix}/cases${orgId ? `?org=${orgId}` : ''}`)}
+      onSuccess={() => nav(`${prefix}/cases${orgId ? `?org=${orgId}` : ''}`)}
       showToast={showToast}
       tab="cases"
       switchTab={(t) => nav(`${prefix}/${t === 'settings' ? 'settings' : 'cases'}`)}
+      orgId={orgId}
     />
   );
 }
@@ -3385,6 +3785,641 @@ function LocationManager({ showToast, orgRefresh }) {
   );
 }
 
+/* ===== Organization Workspace (org + locations + invites) ===== */
+function OrganizationWorkspaceManager({ access, showToast }) {
+  const { t } = useT();
+  const isSuper = !!access?.isSuper;
+  const effectiveInitialOrgId = isSuper ? '' : (access?.orgId || '');
+
+  const [orgs, setOrgs] = useState([]);
+  const [orgId, setOrgId] = useState(effectiveInitialOrgId);
+  const [loading, setLoading] = useState(true);
+
+  const [users, setUsers] = useState([]);
+  const [invites, setInvites] = useState([]);
+  const [locations, setLocations] = useState([]);
+
+  const [selectedLocId, setSelectedLocId] = useState('');
+  const [locUsers, setLocUsers] = useState([]);
+  const [locUsersLoading, setLocUsersLoading] = useState(false);
+
+  // Super-only: create org
+  const [newOrgName, setNewOrgName] = useState('');
+  const [creatingOrg, setCreatingOrg] = useState(false);
+
+  // Location create/delete
+  const [newLocName, setNewLocName] = useState('');
+  const [creatingLoc, setCreatingLoc] = useState(false);
+  const [deletingLocId, setDeletingLocId] = useState(null);
+
+  // Org member assignment (super-only)
+  const [unassignedUsers, setUnassignedUsers] = useState([]);
+  const [assignUserId, setAssignUserId] = useState('');
+  const [assignRole, setAssignRole] = useState('admin');
+  const [assigningOrgUser, setAssigningOrgUser] = useState(false);
+
+  // Invites
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState('user');
+  const [inviteScope, setInviteScope] = useState('org'); // org | location
+  const [inviting, setInviting] = useState(false);
+  const [revokingInviteId, setRevokingInviteId] = useState(null);
+  const [copiedInviteCode, setCopiedInviteCode] = useState(null);
+
+  // Location membership assignment
+  const [locAssignUserId, setLocAssignUserId] = useState('');
+  const [assigningLocUser, setAssigningLocUser] = useState(false);
+  const [removingLocUserId, setRemovingLocUserId] = useState(null);
+
+  // Load orgs for super
+  useEffect(() => {
+    if (!isSuper) return;
+    fetch(API + '/organizations')
+      .then((r) => (r.ok ? r.json() : []))
+      .then((list) => {
+        setOrgs(list);
+        setOrgId((prev) => prev || (list[0]?.id || ''));
+      })
+      .catch(() => setOrgs([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSuper]);
+
+  // Keep orgId pinned for non-super
+  useEffect(() => {
+    if (isSuper) return;
+    setOrgId(access?.orgId || '');
+  }, [isSuper, access?.orgId]);
+
+  const loadWorkspace = useCallback(async () => {
+    if (!orgId) {
+      setUsers([]);
+      setInvites([]);
+      setLocations([]);
+      setSelectedLocId('');
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const qs = isSuper ? `?organizationId=${encodeURIComponent(orgId)}` : '';
+      const [u, inv, locs] = await Promise.all([
+        fetch(API + '/users' + (isSuper ? `?organizationId=${encodeURIComponent(orgId)}` : '')).then((r) => (r.ok ? r.json() : [])),
+        fetch(API + '/invites' + qs).then((r) => (r.ok ? r.json() : [])),
+        fetch(API + '/locations' + `?organizationId=${encodeURIComponent(orgId)}`).then((r) => (r.ok ? r.json() : [])),
+      ]);
+      setUsers(u);
+      setInvites(inv);
+      setLocations(locs);
+
+      // Reset selected location if it no longer exists
+      setSelectedLocId((prev) => (prev && locs.some((l) => l.id === prev) ? prev : (locs[0]?.id || '')));
+    } catch (_) {
+      setUsers([]);
+      setInvites([]);
+      setLocations([]);
+      setSelectedLocId('');
+    } finally {
+      setLoading(false);
+    }
+  }, [orgId, isSuper]);
+
+  useEffect(() => { loadWorkspace(); }, [loadWorkspace]);
+
+  // Load assignable (unassigned/different-org) users for super org assignment
+  useEffect(() => {
+    if (!isSuper || !orgId) return;
+    fetch(`${API}/users?unassigned=true&assignableToOrg=${encodeURIComponent(orgId)}`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((list) => setUnassignedUsers(list.filter((u) => u.role !== 'super')))
+      .catch(() => setUnassignedUsers([]));
+  }, [isSuper, orgId]);
+
+  // Load users assigned to selected location
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!selectedLocId) {
+        setLocUsers([]);
+        return;
+      }
+      setLocUsersLoading(true);
+      try {
+        const r = await fetch(API + `/locations/${selectedLocId}/users`);
+        const d = r.ok ? await r.json() : [];
+        if (!cancelled) setLocUsers(d);
+      } catch (_) {
+        if (!cancelled) setLocUsers([]);
+      } finally {
+        if (!cancelled) setLocUsersLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedLocId]);
+
+  const orgOptions = (isSuper ? orgs : (access?.organizations || [])).map((o) => ({ value: o.id, label: o.name }));
+  const locOptions = locations.map((l) => ({ value: l.id, label: l.name }));
+
+  const orgUsers = users.filter((u) => u.organizationId === orgId && u.role !== 'super');
+  const pendingInvites = invites.filter((i) => !i.usedBy && i.organizationId === orgId);
+
+  const assignedLocUserIds = new Set(locUsers.map((u) => u.id));
+  const locAssignableUsers = users
+    .filter((u) => u.role !== 'super')
+    .filter((u) => !assignedLocUserIds.has(u.id))
+    .filter((u) => (u.organizationId ? u.organizationId === orgId : true));
+
+  const createOrg = async (e) => {
+    e.preventDefault();
+    if (!isSuper || !newOrgName.trim() || creatingOrg) return;
+    setCreatingOrg(true);
+    try {
+      const r = await fetch(API + '/organizations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newOrgName.trim() }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || 'Failed');
+      setNewOrgName('');
+      const created = await r.json().catch(() => null);
+      if (created?.id) setOrgId(created.id);
+      showToast?.(t('org.created'));
+      // Refresh org options (super-only)
+      fetch(API + '/organizations')
+        .then((rr) => (rr.ok ? rr.json() : []))
+        .then(setOrgs)
+        .catch(() => {});
+    } catch (err) {
+      showToast?.(t('common.error', { msg: err.message }));
+    } finally {
+      setCreatingOrg(false);
+    }
+  };
+
+  const assignExistingUserToOrg = async (e) => {
+    e.preventDefault();
+    if (!isSuper || !orgId || !assignUserId || assigningOrgUser) return;
+    setAssigningOrgUser(true);
+    try {
+      const r = await fetch(API + `/users/${assignUserId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ organizationId: orgId, role: assignRole }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || 'Failed');
+      setAssignUserId('');
+      showToast?.(t('org.assigned'));
+      loadWorkspace();
+    } catch (err) {
+      showToast?.(t('common.error', { msg: err.message }));
+    } finally {
+      setAssigningOrgUser(false);
+    }
+  };
+
+  const updateUserRole = async (userId, role) => {
+    try {
+      const r = await fetch(API + `/users/${userId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || 'Failed');
+      showToast?.(t('team.roleUpdated'));
+      loadWorkspace();
+    } catch (err) {
+      showToast?.(t('common.error', { msg: err.message }));
+    }
+  };
+
+  const removeUser = async (userId, name) => {
+    if (!window.confirm(t('team.confirmRemove', { name }))) return;
+    try {
+      const r = await fetch(API + `/users/${userId}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || 'Failed');
+      showToast?.(t('team.userRemoved'));
+      loadWorkspace();
+    } catch (err) {
+      showToast?.(t('common.error', { msg: err.message }));
+    }
+  };
+
+  const createLocation = async (e) => {
+    e.preventDefault();
+    if (!orgId || !newLocName.trim() || creatingLoc) return;
+    setCreatingLoc(true);
+    try {
+      const r = await fetch(API + '/locations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newLocName.trim(), organizationId: orgId }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || 'Failed');
+      const created = await r.json().catch(() => null);
+      setNewLocName('');
+      if (created?.id) setSelectedLocId(created.id);
+      showToast?.(t('loc.created'));
+      loadWorkspace();
+    } catch (err) {
+      showToast?.(t('common.error', { msg: err.message }));
+    } finally {
+      setCreatingLoc(false);
+    }
+  };
+
+  const deleteLocation = async (locId) => {
+    if (!window.confirm(t('loc.confirmDelete'))) return;
+    setDeletingLocId(locId);
+    try {
+      const r = await fetch(API + `/locations/${locId}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || 'Failed');
+      showToast?.(t('loc.deleted'));
+      loadWorkspace();
+    } catch (err) {
+      showToast?.(t('common.error', { msg: err.message }));
+    } finally {
+      setDeletingLocId(null);
+    }
+  };
+
+  const inviteUser = async (e) => {
+    e.preventDefault();
+    if (!orgId || inviting) return;
+    if (inviteScope === 'location' && !selectedLocId) {
+      showToast?.(t('team.selectRequired'));
+      return;
+    }
+    setInviting(true);
+    try {
+      const body = {
+        email: inviteEmail.trim() || null,
+        role: inviteRole,
+        ...(inviteScope === 'location' ? { locationIds: [selectedLocId] } : { organizationId: orgId }),
+      };
+      const r = await fetch(API + '/invites', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || 'Failed');
+      setInviteEmail('');
+      showToast?.(t('team.inviteCreated'));
+      loadWorkspace();
+    } catch (err) {
+      showToast?.(t('common.error', { msg: err.message }));
+    } finally {
+      setInviting(false);
+    }
+  };
+
+  const revokeInvite = async (inviteId) => {
+    setRevokingInviteId(inviteId);
+    try {
+      const r = await fetch(API + `/invites/${inviteId}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || 'Failed');
+      showToast?.(t('team.inviteRevoked'));
+      loadWorkspace();
+    } catch (err) {
+      showToast?.(t('common.error', { msg: err.message }));
+    } finally {
+      setRevokingInviteId(null);
+    }
+  };
+
+  const copyInviteLink = (code) => {
+    const url = `${window.location.origin}/invite/${code}`;
+    navigator.clipboard.writeText(url).then(() => {
+      setCopiedInviteCode(code);
+      setTimeout(() => setCopiedInviteCode(null), 2000);
+      showToast?.(t('team.linkCopied'));
+    });
+  };
+
+  const assignUserToLocation = async (e) => {
+    e.preventDefault();
+    if (!selectedLocId || !locAssignUserId || assigningLocUser) return;
+    setAssigningLocUser(true);
+    try {
+      const r = await fetch(API + `/locations/${selectedLocId}/users`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: locAssignUserId }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || 'Failed');
+      setLocAssignUserId('');
+      showToast?.(t('loc.assigned'));
+      // reload users in location
+      const refreshed = await fetch(API + `/locations/${selectedLocId}/users`).then((r2) => (r2.ok ? r2.json() : []));
+      setLocUsers(refreshed);
+    } catch (err) {
+      showToast?.(t('common.error', { msg: err.message }));
+    } finally {
+      setAssigningLocUser(false);
+    }
+  };
+
+  const removeUserFromLocation = async (userId) => {
+    if (!selectedLocId) return;
+    setRemovingLocUserId(userId);
+    try {
+      const r = await fetch(API + `/locations/${selectedLocId}/users/${userId}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || 'Failed');
+      showToast?.(t('loc.removedUser'));
+      setLocUsers((prev) => prev.filter((u) => u.id !== userId));
+    } catch (err) {
+      showToast?.(t('common.error', { msg: err.message }));
+    } finally {
+      setRemovingLocUserId(null);
+    }
+  };
+
+  if (loading) return <p style={{ color: 'var(--muted)', padding: 12 }}>{t('common.loading')}</p>;
+
+  const divider = <div style={{ borderTop: '1px solid var(--border)', margin: '16px 0' }} />;
+
+  const UserRow = ({ u, onRoleChange, onRemove, removing }) => {
+    const name = [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email || t('team.unknown');
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0' }}>
+        {u.imageUrl ? (
+          <img src={u.imageUrl} alt="" style={{ width: 30, height: 30, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+        ) : (
+          <div style={{ width: 30, height: 30, borderRadius: '50%', background: '#6236ff', display: 'grid', placeItems: 'center', color: '#fff', fontSize: 13, fontWeight: 600, flexShrink: 0 }}>
+            {name[0]?.toUpperCase() || '?'}
+          </div>
+        )}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
+          {u.email && <div style={{ fontSize: 11, color: 'var(--muted)' }}>{u.email}</div>}
+        </div>
+        {onRoleChange && (
+          <select
+            value={u.role}
+            onChange={(e) => onRoleChange(u.id, e.target.value)}
+            style={{ fontSize: 12, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(128,128,128,0.25)', background: 'transparent', color: 'inherit', flexShrink: 0 }}
+          >
+            <option value="admin">{t('role.admin')}</option>
+            <option value="user">{t('role.user')}</option>
+          </select>
+        )}
+        {onRemove && (
+          <button
+            type="button"
+            onClick={() => onRemove(u.id, name)}
+            disabled={removing}
+            style={{ background: 'none', border: 'none', color: '#ed4956', cursor: 'pointer', fontSize: 12, fontWeight: 500, opacity: 0.8, padding: '2px 6px', flexShrink: 0 }}
+          >
+            {t('team.remove')}
+          </button>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+
+      {/* ── Org selector (super sees autocomplete; admin sees read-only pill) ── */}
+      {isSuper ? (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginBottom: 16 }}>
+          <div style={{ flex: 1 }}>
+            <SingleSelectAutocomplete
+              value={orgId}
+              onChange={(v) => { setOrgId(v); setSelectedLocId(''); }}
+              options={orgOptions}
+              placeholder="Select an organization…"
+            />
+          </div>
+          <form onSubmit={createOrg} style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+            <input
+              className="input"
+              value={newOrgName}
+              onChange={(e) => setNewOrgName(e.target.value)}
+              placeholder="New organization name"
+              style={{ width: 180 }}
+            />
+            <button type="submit" className="btn primary btn-sm" disabled={creatingOrg || !newOrgName.trim()}>
+              {creatingOrg ? t('org.creating') : t('org.create')}
+            </button>
+          </form>
+        </div>
+      ) : (
+        <div style={{ marginBottom: 16, fontSize: 14, color: 'var(--muted)' }}>
+          {orgOptions.find((o) => o.value === orgId)?.label || '—'}
+        </div>
+      )}
+
+      {/* ── Members ── */}
+      <div className="form-section-label">Members</div>
+
+      {orgUsers.length === 0 ? (
+        <p style={{ color: 'var(--muted)', fontSize: 13, margin: '4px 0 0' }}>{t('org.noUsers')}</p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {orgUsers.map((u) => (
+            <UserRow key={u.id} u={u} onRoleChange={updateUserRole} onRemove={removeUser} />
+          ))}
+        </div>
+      )}
+
+      {/* Super-only: assign existing user to org */}
+      {isSuper && unassignedUsers.length > 0 && (
+        <form onSubmit={assignExistingUserToOrg} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10 }}>
+          <select className="input" value={assignUserId} onChange={(e) => setAssignUserId(e.target.value)} style={{ flex: 1, minWidth: 160 }}>
+            <option value="">Add existing user…</option>
+            {unassignedUsers.map((u) => (
+              <option key={u.id} value={u.id}>{[u.firstName, u.lastName].filter(Boolean).join(' ') || u.email || u.id}</option>
+            ))}
+          </select>
+          <select className="input" value={assignRole} onChange={(e) => setAssignRole(e.target.value)} style={{ width: 'auto' }}>
+            <option value="admin">{t('role.admin')}</option>
+            <option value="user">{t('role.user')}</option>
+          </select>
+          <button type="submit" className="btn primary btn-sm" disabled={!assignUserId || assigningOrgUser}>
+            {assigningOrgUser ? t('org.assigning') : 'Add'}
+          </button>
+        </form>
+      )}
+
+      {divider}
+
+      {/* ── Invite ── */}
+      <div className="form-section-label">Invite</div>
+
+      <form onSubmit={inviteUser} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input
+            className="input"
+            type="email"
+            placeholder={t('team.emailPlaceholder')}
+            value={inviteEmail}
+            onChange={(e) => setInviteEmail(e.target.value)}
+            style={{ flex: 1, minWidth: 160 }}
+          />
+          <select className="input" value={inviteRole} onChange={(e) => setInviteRole(e.target.value)} style={{ width: 'auto' }}>
+            <option value="admin">{t('role.admin')}</option>
+            <option value="user">{t('role.user')}</option>
+          </select>
+          <button type="submit" className="btn primary btn-sm" disabled={inviting || !orgId}>
+            {inviting ? t('team.creating') : t('team.createInvite')}
+          </button>
+        </div>
+
+        {/* Scope toggle: org vs location */}
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <span style={{ fontSize: 12, color: 'var(--muted)', marginRight: 2 }}>Scope:</span>
+          {['org', 'location'].map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => setInviteScope(s)}
+              style={{
+                padding: '3px 10px', borderRadius: 12, fontSize: 12, fontWeight: 500, cursor: 'pointer',
+                background: inviteScope === s ? 'var(--accent)' : 'transparent',
+                color: inviteScope === s ? '#fff' : 'var(--muted)',
+                border: inviteScope === s ? 'none' : '1px solid var(--border)',
+              }}
+            >
+              {s === 'org' ? 'Organization' : 'Location'}
+            </button>
+          ))}
+          {inviteScope === 'location' && (
+            <div style={{ flex: 1, minWidth: 140 }}>
+                <SingleSelectAutocomplete
+                  value={selectedLocId}
+                  onChange={(v) => setSelectedLocId(v)}
+                  options={locOptions}
+                  placeholder="Select a location…"
+                  disabled={locOptions.length === 0}
+                />
+            </div>
+          )}
+        </div>
+      </form>
+
+      {/* Pending invites */}
+      {pendingInvites.length > 0 && (
+        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--muted)' }}>{t('team.pendingInvites')}</div>
+          {pendingInvites.map((inv) => (
+            <div key={inv.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0' }}>
+              <div style={{ width: 28, height: 28, borderRadius: '50%', background: 'rgba(128,128,128,0.15)', display: 'grid', placeItems: 'center', color: 'var(--muted)', fontSize: 12, fontWeight: 600, flexShrink: 0 }}>
+                {(inv.email || '?')[0]?.toUpperCase()}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{inv.email || t('team.noEmail')}</div>
+                <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+                  {t(`role.${inv.role}`) || inv.role} · {new Date(inv.createdAt).toLocaleDateString()}
+                </div>
+              </div>
+              <button type="button" onClick={() => copyInviteLink(inv.code)}
+                style={{ background: 'none', border: '1px solid rgba(128,128,128,0.25)', borderRadius: 6, cursor: 'pointer', fontSize: 11, fontWeight: 500, padding: '3px 8px', color: 'inherit', flexShrink: 0 }}>
+                {copiedInviteCode === inv.code ? t('team.copied') : t('team.copyLink')}
+              </button>
+              <button type="button" onClick={() => revokeInvite(inv.id)} disabled={revokingInviteId === inv.id}
+                style={{ background: 'none', border: 'none', color: '#ed4956', cursor: 'pointer', fontSize: 12, fontWeight: 500, padding: '2px 4px', flexShrink: 0 }}>
+                {t('team.revoke')}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {divider}
+
+      {/* ── Locations ── */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+        <span className="form-section-label" style={{ margin: 0 }}>Locations</span>
+        <form onSubmit={createLocation} style={{ display: 'flex', gap: 8 }}>
+          <input className="input" value={newLocName} onChange={(e) => setNewLocName(e.target.value)} placeholder="New location name" style={{ width: 160, fontSize: 13, padding: '6px 10px' }} />
+          <button type="submit" className="btn primary btn-sm" disabled={!newLocName.trim() || creatingLoc || !orgId}>
+            {creatingLoc ? t('loc.creating') : '+ Add'}
+          </button>
+        </form>
+      </div>
+
+      {locations.length === 0 ? (
+        <p style={{ color: 'var(--muted)', fontSize: 13, margin: 0 }}>{t('loc.noLocations')}</p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {locations.map((loc) => {
+            const isSelected = selectedLocId === loc.id;
+            return (
+              <div key={loc.id}>
+                <div
+                  onClick={() => setSelectedLocId(isSelected ? '' : loc.id)}
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: 10,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    background: isSelected ? 'rgba(98,54,255,0.12)' : 'var(--bg2)',
+                    border: `1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'}`,
+                    cursor: 'pointer',
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: 14, height: 14, color: isSelected ? 'var(--accent)' : 'var(--muted)', flexShrink: 0, transition: 'transform 0.15s', transform: isSelected ? 'rotate(90deg)' : 'rotate(0deg)' }}>
+                    <polyline points="9 18 15 12 9 6" />
+                  </svg>
+                  <span style={{ flex: 1, fontWeight: 500, fontSize: 14, color: isSelected ? 'var(--accent)' : 'var(--text)' }}>{loc.name}</span>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); deleteLocation(loc.id); }}
+                    disabled={deletingLocId === loc.id}
+                    style={{ background: 'none', border: 'none', color: '#ed4956', cursor: 'pointer', fontSize: 12, fontWeight: 500, opacity: 0.7, padding: '2px 4px', flexShrink: 0 }}
+                  >
+                    {t('loc.delete')}
+                  </button>
+                </div>
+
+                {/* Inline members panel for selected location */}
+                {isSelected && (
+                  <div style={{ marginLeft: 14, paddingLeft: 14, paddingTop: 10, paddingBottom: 4, borderLeft: '2px solid var(--accent)', marginBottom: 4 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--accent)', marginBottom: 8 }}>Members</div>
+
+                    {locUsersLoading ? (
+                      <p style={{ color: 'var(--muted)', fontSize: 13 }}>{t('common.loading')}</p>
+                    ) : (
+                      <>
+                        {locUsers.length === 0 && <p style={{ color: 'var(--muted)', fontSize: 13, margin: '0 0 8px' }}>{t('loc.noMembers')}</p>}
+                        <div style={{ display: 'flex', flexDirection: 'column' }}>
+                          {locUsers.map((u) => (
+                            <UserRow
+                              key={u.id}
+                              u={u}
+                              onRemove={(userId) => removeUserFromLocation(userId)}
+                              removing={removingLocUserId === u.id}
+                            />
+                          ))}
+                        </div>
+                        {locAssignableUsers.length > 0 && (
+                          <form onSubmit={assignUserToLocation} style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+                            <select className="input" value={locAssignUserId} onChange={(e) => setLocAssignUserId(e.target.value)} style={{ flex: 1, fontSize: 13 }}>
+                              <option value="">Add member…</option>
+                              {locAssignableUsers.map((u) => (
+                                <option key={u.id} value={u.id}>{[u.firstName, u.lastName].filter(Boolean).join(' ') || u.email || u.id}</option>
+                              ))}
+                            </select>
+                            <button type="submit" className="btn primary btn-sm" disabled={!locAssignUserId || assigningLocUser}>
+                              {assigningLocUser ? '…' : 'Add'}
+                            </button>
+                          </form>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ===== Invite Claim Page ===== */
 function InviteClaimPage() {
   const { t } = useT();
@@ -3816,8 +4851,8 @@ function DepositionTemplatesManager({ showToast }) {
                 <td style={{ padding: '8px 10px' }}>{Array.isArray(row.stages) ? row.stages.length : 0}</td>
                 <td style={{ padding: '8px 10px' }}>{Array.isArray(row.personas) ? row.personas.length : 0}</td>
                 <td style={{ padding: '8px 10px' }}>
-                  <button type="button" className="btn-link" onClick={() => openEdit(row)} disabled={row.key === 'default'} style={{ marginRight: 8 }}>{t('common.edit')}</button>
-                  <button type="button" className="btn-link" onClick={() => handleDelete(row.id)} disabled={row.key === 'default' || deletingId === row.id} style={{ color: row.key === 'default' ? 'var(--muted)' : '#ed4956' }}>{deletingId === row.id ? '…' : t('common.delete')}</button>
+                  <button type="button" className="btn-link" onClick={() => openEdit(row)} style={{ marginRight: 8 }}>{t('common.edit')}</button>
+                  <button type="button" className="btn-link" onClick={() => handleDelete(row.id)} disabled={row.key === 'default' || deletingId === row.id} style={{ color: row.key === 'default' ? 'var(--muted)' : '#ed4956', cursor: row.key === 'default' ? 'default' : 'pointer' }}>{deletingId === row.id ? '…' : t('common.delete')}</button>
                 </td>
               </tr>
             ))}
@@ -3863,8 +4898,6 @@ function SettingsPage() {
   const { theme, handleThemeChange, handleLanguageChange, toast, showToast, access } = useAppContext();
   const { t, lang } = useT();
   const [showPrompts, setShowPrompts] = useState(false);
-  const [orgRefresh, setOrgRefresh] = useState(0);
-  const bumpOrgRefresh = useCallback(() => setOrgRefresh(n => n + 1), []);
 
   useEffect(() => {
     let buf = '';
@@ -3917,45 +4950,16 @@ function SettingsPage() {
               </div>
             </div>
           </div>
-          <div className="card">
-            <h3>{t('settings.integration')}</h3>
-            <div className="integration-fields">
-              <label>
-                <span className="label-text">Filevine URL</span>
-                <input type="text" className="input" placeholder="https://app.filevine.com" />
-              </label>
-              <label>
-                <span className="label-text">User ID</span>
-                <input type="text" className="input" placeholder="User ID" />
-              </label>
-              <label>
-                <span className="label-text">Access Token</span>
-                <input type="password" className="input" placeholder="Access Token" />
-              </label>
-            </div>
-          </div>
-          {access?.isAdmin && (
+          {(access?.isAdmin || access?.isSuper) && (
             <div className="card">
-              <h3>{t('settings.teamInvites')}</h3>
-              <MemberManager showToast={showToast} orgRefresh={orgRefresh} />
-            </div>
-          )}
-          {access?.isSuper && (
-            <div className="card">
-              <h3>{t('settings.organizations')}</h3>
-              <OrgManager showToast={showToast} onOrgChange={bumpOrgRefresh} />
-            </div>
-          )}
-          {access?.isAdmin && (
-            <div className="card">
-              <h3>{t('settings.locations')}</h3>
-              <LocationManager showToast={showToast} orgRefresh={orgRefresh} />
+              <h3>{t('settings.integration')}</h3>
+              <IntegrationSettings access={access} showToast={showToast} />
             </div>
           )}
           {(access?.isAdmin || access?.isSuper) && (
             <div className="card">
-              <h3>{t('settings.shortLinks')}</h3>
-              <ShortLinkManager showToast={showToast} />
+              <h3>{t('settings.organizations')}</h3>
+              <OrganizationWorkspaceManager access={access} showToast={showToast} />
             </div>
           )}
           {(access?.isAdmin || access?.isSuper) && (
