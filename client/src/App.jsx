@@ -1872,44 +1872,45 @@ function getScoreGradient(percent) {
   return `linear-gradient(135deg, rgb(${r},${g},${b}) 0%, rgb(${r2},${g2},${b2}) 100%)`;
 }
 
-const STAGE_NAMES_SHORT = ['Background', 'Accident', 'Medical', 'Treatment'];
-
 function SimCard({ sim: s, caseData, onClick }) {
   const bodyScore = getBodyScore(s);
   const combined = getCombinedScore(s);
   const isProcessing = combined == null;
   const gradient = getScoreGradient(combined);
   const client = caseData?.client || caseData;
-  const clientFallback = client ? `${client.lastName || ''}, ${client.firstName || ''}`.trim() : '';
-  const name = caseData?.name || clientFallback || s.callSummaryTitle || s.eventType || 'Simulation';
+  const clientName = client ? `${client.lastName || ''}, ${client.firstName || ''}`.trim() : (caseData?.name || s.callSummaryTitle || '—');
   const dateStr = new Date(s.createdAt).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
   const duration = s.callDurationSecs != null ? `${Math.max(1, Math.round(s.callDurationSecs / 60))}m` : '—';
+  const simStage = s.stage != null ? Math.max(1, Math.min(4, s.stage)) : 1;
 
   return (
     <button type="button" className={`sim-post-card${isProcessing ? ' sim-post-card-processing' : ''}`} onClick={onClick} style={{ background: gradient }}>
-      {s.stage != null && (
-        <div className="sim-post-stage-badge">
-          Stage {s.stage}: {STAGE_NAMES_SHORT[s.stage - 1] || 'Unknown'}
-        </div>
-      )}
       <div className="sim-post-scores">
         {isProcessing ? (
           <span className="sim-post-processing-label">Processing…</span>
         ) : (
           <>
             <span className="sim-post-score" style={{ color: '#fff' }}>
-              {s.score != null ? `${s.score}%` : '—'}
+              {combined != null ? `${combined}%` : (s.score != null ? `${s.score}%` : '—')}
             </span>
-            {bodyScore != null && (
-              <span className="sim-post-body">Body Language Score: {bodyScore}%</span>
-            )}
+            <span className="sim-post-body">
+              Body Language Score: {bodyScore != null ? `${bodyScore}%` : '—'}
+            </span>
           </>
         )}
       </div>
-      <div className="sim-post-name">{name}</div>
+      <div className="sim-post-name">{clientName}</div>
       <div className="sim-post-meta">
         <span className="sim-post-date">{dateStr}</span>
         <span className="sim-post-duration">{duration !== '—' ? ` · ${duration}` : ''}</span>
+      </div>
+      <div className="sim-card-stage-bar" aria-hidden>
+        {[1, 2, 3, 4].map((n, i) => (
+          <span key={n} className="sim-card-stage-bar-inner">
+            {i > 0 && <span className={`sim-card-stage-connector${n <= simStage ? ' sim-card-stage-connector-done' : ''}`} />}
+            <span className={`sim-card-stage-dot${n <= simStage ? ' sim-card-stage-dot-done' : ''}`}>{n <= simStage ? '✓' : n}</span>
+          </span>
+        ))}
       </div>
     </button>
   );

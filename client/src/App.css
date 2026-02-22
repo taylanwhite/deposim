@@ -2397,17 +2397,24 @@
   margin-top: 4px;
 }
 
-/* Call History: Instagram grid of square posts */
+/* Call History: Instagram grid of square posts, centered when partial row */
 .call-history-section { margin-top: 24px; }
 .call-history-title { font-size: 16px; font-weight: 700; margin-bottom: 12px; }
 .call-history-empty { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
 .sim-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
   gap: 8px;
 }
+.sim-grid .sim-post-card {
+  flex: 0 0 calc((100% - 16px) / 3);
+  min-width: 0;
+}
 @media (max-width: 768px) {
-  .sim-grid { grid-template-columns: repeat(2, 1fr); }
+  .sim-grid .sim-post-card {
+    flex: 0 0 calc((100% - 8px) / 2);
+  }
 }
 
 /* Sim card: compact tile, gradient from score (red→green), white text */
@@ -2474,6 +2481,48 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 100%;
+  margin-bottom: 8px;
+}
+
+/* Sim card: stage progress bar (1 - 2 - 3 - 4) */
+.sim-card-stage-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  margin-top: auto;
+}
+.sim-card-stage-bar-inner {
+  display: flex;
+  align-items: center;
+}
+.sim-card-stage-connector {
+  width: 12px;
+  height: 2px;
+  background: rgba(255,255,255,0.3);
+  flex-shrink: 0;
+}
+.sim-card-stage-connector-done {
+  background: rgba(255,255,255,0.85);
+}
+.sim-card-stage-dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.25);
+  color: rgba(255,255,255,0.8);
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.sim-card-stage-dot-done {
+  background: rgba(255,255,255,0.95);
+  color: rgba(0,0,0,0.6);
+  font-size: 11px;
+  font-weight: 700;
 }
 
 /* ===== Simulation Detail: Instagram-style tabs + transcript + body ===== */
