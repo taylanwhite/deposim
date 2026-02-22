@@ -6,7 +6,7 @@
     "dev": "concurrently \"npm run dev:api\" \"npm run dev:client\"",
     "dev:api": "node api/server.js",
     "dev:client": "cd client && npm run dev",
-    "build": "npm run build:client && npm run prisma:generate",
+    "build": "npm run build:client && npm run prisma:generate && npm run prisma:migrate",
     "build:client": "cd client && npm install --include=dev && npm run build",
     "start": "cd client && npm run preview",
     "prisma:generate": "prisma generate",
