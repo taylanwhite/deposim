@@ -524,7 +524,7 @@ function SimPage() {
             </div>
           )}
           {cameraError && cameraError !== 'denied' && <p style={{ color: '#ed4956', fontSize: 14 }}>{cameraError}</p>}
-          <button className="sim-btn sim-btn-primary" onClick={requestCamera} disabled={!config}>
+          <button className="sim-btn sim-btn-primary" onClick={requestCamera}>
             {t('sim.consent.enableCamera')}
           </button>
         </div>

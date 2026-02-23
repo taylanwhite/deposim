@@ -16,24 +16,57 @@ const { GoogleGenAI } = require('@google/genai');
 const MODEL = 'gemini-2.5-flash';
 
 /** Hardcoded body analysis prompt — NOT user-editable. Returns valid JSON. */
-const BODY_ANALYSIS_PROMPT = `You are an expert body language and behavioral analyst specializing in deposition video review. Analyze this video carefully.
+const BODY_ANALYSIS_PROMPT = `You are a jury consultant and body language expert evaluating a plaintiff's DEPOSITION video. Your analysis helps the deponent understand how a jury would perceive their non-verbal behavior.
 
-For each of the following categories, provide:
-1. overall_demeanor — General composure, confidence, emotional state
-2. key_body_signals — Non-verbal cues (eye movement, posture, gestures, facial expressions, head tilts, lip compression, adaptors)
-3. stress_signals — Discomfort, anxiety, deception (gaze aversion, blink rate, throat clearing, fidgeting, defensive posturing)
-4. credible_assessment — Consistency between verbal and non-verbal signals
-5. timeline_of_notable_moments — Significant behavioral changes with timestamps
+CRITICAL CONTEXT — THIS IS A DEPOSITION, NOT A PRESENTATION:
+In a deposition, the IDEAL deponent is calm, still, and measured. Unlike a job interview or sales pitch, expressiveness is NOT desirable. The best deponents:
+- Sit still and composed (stillness = strength, not weakness)
+- Show minimal facial expression (gives opposing counsel nothing to exploit)
+- Maintain a neutral, steady demeanor (not animated or emotive)
+- Appear patient and unhurried
+- Do NOT react emotionally to provocative questions
+
+Do NOT penalize a deponent for being "passive," "unexpressive," or "still." In deposition context, these are POSITIVE traits that protect the client's case. Only penalize behaviors that a jury would interpret negatively: visible nervousness, fidgeting, evasiveness, hostility, or emotional outbursts.
+
+VIDEO COMPLETENESS:
+- If the video is very short (under 2 minutes), the deponent likely quit early. Cap scores at 40 for very short videos since there is insufficient data.
+- For longer videos, evaluate the full duration.
+
+SCORING CATEGORIES:
+
+1. overall_demeanor — How a jury would perceive this witness.
+   High scores (70-100): Calm, composed, still, patient, neutral expression, appears truthful. A deponent who sits quietly and answers without drama scores HIGH.
+   Medium scores (40-69): Mostly composed but with some visible nervousness, occasional fidgeting, or moments of visible frustration.
+   Low scores (0-39): Visibly anxious, hostile, dismissive, emotionally reactive, or appearing evasive. Only assign low scores for genuinely problematic behavior a jury would notice.
+
+2. key_body_signals — Non-verbal cues that help or hurt credibility.
+   Evaluate: posture, hand position, eye contact, facial expressions, head movement, shoulder tension.
+   High scores (70-100): Upright/relaxed posture, hands resting naturally, steady gaze, minimal unnecessary movement. Stillness is GOOD.
+   Medium scores (40-69): Generally okay posture with some fidgeting, occasional defensive gestures, inconsistent eye contact.
+   Low scores (0-39): Crossed arms throughout, persistent face/neck touching, avoiding all eye contact, slumped or aggressive posture.
+
+3. stress_signals — Visible indicators of anxiety or discomfort.
+   Evaluate: fidgeting, self-soothing gestures, blink rate changes, lip compression, breathing changes, leg bouncing.
+   High scores (70-100): Few or no visible stress indicators. Appears comfortable under questioning. Calm and still = high score.
+   Medium scores (40-69): Some stress indicators present but controlled. Occasional fidgeting or self-soothing.
+   Low scores (0-39): Frequent, obvious stress responses that a jury would interpret as deceptive or unreliable.
+
+4. credible_assessment — Would a jury believe this person?
+   Evaluate: Does the person appear honest and reliable? Is their body language consistent with truthful testimony?
+   High scores (70-100): Appears steady, genuine, and believable. Calm demeanor reinforces credibility.
+   Medium scores (40-69): Mostly credible but some moments where body language seems inconsistent or forced.
+   Low scores (0-39): Appears evasive, deceptive, or performing. Obvious disconnects between words and behavior.
+
+5. timeline_of_notable_moments — Key behavioral shifts with timestamps.
 
 CRITICAL — RETURN VALID JSON ONLY. No markdown, no extra text before or after.
 Each category (overall_demeanor, key_body_signals, stress_signals, credible_assessment) MUST have:
 - score: number 0-100
-- score_reason: string explaining why that score
-- summary: string brief summary
+- score_reason: ONE clear sentence explaining the score
+- summary: 1-2 sentence summary of observations
 
 timeline_of_notable_moments MUST be an array of objects: { "moment": "description", "timestamp": "0:45" }
 
-Example structure:
 {
   "overall_demeanor": { "score": 75, "score_reason": "...", "summary": "..." },
   "key_body_signals": { "score": 70, "score_reason": "...", "summary": "..." },
@@ -42,7 +75,7 @@ Example structure:
   "timeline_of_notable_moments": [{ "moment": "...", "timestamp": "0:45" }]
 }
 
-Every score must be 0-100. Every message/category must include score, score_reason, and summary.`;
+Remember: This is a DEPOSITION. Calm and still = GOOD. Expressive and animated = RISKY.`;
 
 /** Get the hardcoded body analysis prompt (not from DB). */
 function getBodyAnalysisPrompt() {
@@ -59,6 +92,19 @@ function getAI() {
   return _ai;
 }
 
+async function withRetry(fn, { maxRetries = 2, baseDelay = 2000, label = '' } = {}) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt === maxRetries) throw err;
+      const delay = baseDelay * Math.pow(2, attempt);
+      if (label) console.warn(`[${label}] Attempt ${attempt + 1} failed, retrying in ${delay}ms:`, err.message);
+      await sleep(delay);
+    }
+  }
+}
+
 /**
  * Analyze a YouTube video for body language.
  */
@@ -66,18 +112,22 @@ async function analyzeVideoUrl(youtubeUrl, promptText) {
   const ai = getAI();
   const start = Date.now();
 
-  const response = await ai.models.generateContent({
-    model: MODEL,
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          { text: promptText },
-          { fileData: { fileUri: youtubeUrl } },
+  const response = await withRetry(
+    () =>
+      ai.models.generateContent({
+        model: MODEL,
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: promptText },
+              { fileData: { fileUri: youtubeUrl } },
+            ],
+          },
         ],
-      },
-    ],
-  });
+      }),
+    { maxRetries: 2, label: 'analyzeVideoUrl' },
+  );
 
   const durationMs = Date.now() - start;
   const text = extractText(response);
@@ -118,19 +168,23 @@ async function analyzeVideoFile(filePath, mimeType, promptText) {
     throw new Error('Gemini file processing timed out (state: ' + uploaded.state + ')');
   }
 
-  // 3. Generate content using the uploaded file
-  const response = await ai.models.generateContent({
-    model: MODEL,
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          { text: promptText },
-          { fileData: { fileUri: uploaded.uri, mimeType: uploaded.mimeType } },
+  // 3. Generate content using the uploaded file (with retry)
+  const response = await withRetry(
+    () =>
+      ai.models.generateContent({
+        model: MODEL,
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: promptText },
+              { fileData: { fileUri: uploaded.uri, mimeType: uploaded.mimeType } },
+            ],
+          },
         ],
-      },
-    ],
-  });
+      }),
+    { maxRetries: 2, label: 'analyzeVideoFile' },
+  );
 
   const durationMs = Date.now() - start;
   const text = extractText(response);

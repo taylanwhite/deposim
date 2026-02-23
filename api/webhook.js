@@ -5,7 +5,7 @@
  * Env: ELEVENLABS_WEBHOOK_SECRET, OPENAI_API_KEY
  */
 const crypto = require('crypto');
-const { analyzeDeposition } = require('./openai');
+const { analyzeDeposition, generateSimulationSummary, STAGE_NAMES } = require('./openai');
 const betterstack = require('./betterstack');
 
 /**
@@ -73,18 +73,43 @@ function computeBodyScoreFromAnalysis(bodyAnalysisText) {
 async function computeSimScore(prisma, simulationId) {
   const rows = await prisma.simulationStage.findMany({ where: { simulationId } });
   const stageScores = [];
+  const completedStages = [];
   for (const row of rows) {
     if (row.status !== 'completed') continue;
     const voice = row.score ?? null;
     const body = row.bodyScore ?? null;
-    if (voice != null && body != null) stageScores.push(Math.round((voice + body) / 2));
-    else if (voice != null) stageScores.push(voice);
-    else if (body != null) stageScores.push(body);
+    let stageAvg = null;
+    if (voice != null && body != null) stageAvg = Math.round((voice + body) / 2);
+    else if (voice != null) stageAvg = voice;
+    else if (body != null) stageAvg = body;
+    if (stageAvg != null) stageScores.push(stageAvg);
+    completedStages.push({
+      stage: row.stage,
+      name: STAGE_NAMES[row.stage] || `Stage ${row.stage}`,
+      score: voice,
+      bodyScore: body,
+      scoreReason: row.scoreReason || null,
+    });
   }
   const combined = stageScores.length > 0
     ? Math.round(stageScores.reduce((a, b) => a + b, 0) / stageScores.length)
     : null;
+
+  // Save mathematical score immediately
   await prisma.simulation.update({ where: { id: simulationId }, data: { score: combined } });
+
+  // Generate AI summary (non-blocking — failures don't affect the score)
+  if (completedStages.length > 0) {
+    try {
+      const summary = await generateSimulationSummary(completedStages);
+      if (summary) {
+        await prisma.simulation.update({ where: { id: simulationId }, data: { scoreReason: summary } });
+      }
+    } catch (err) {
+      console.error('[webhook/computeSimScore] AI summary failed:', err.message);
+    }
+  }
+
   return combined;
 }
 
@@ -138,8 +163,8 @@ async function handleElevenLabsWebhook(req, res, prisma) {
   const meta = (typeof data.metadata === 'object' && data.metadata) || {};
   const analysis = (typeof data.analysis === 'object' && data.analysis) || {};
 
-  let score = 0;
-  let scoreReason = '';
+  let score = null;
+  let scoreReason = null;
   let fullAnalysis = null;
   let turnScores = null;
 
@@ -150,7 +175,7 @@ async function handleElevenLabsWebhook(req, res, prisma) {
         orderBy: { updatedAt: 'desc' },
       })
       .then((p) => p?.content || null);
-    const result = await analyzeDeposition(transcript, scorePrompt);
+    const result = await analyzeDeposition(transcript, scorePrompt, clampStage(dyn?.stage));
     if (result.success) {
       score = result.score;
       scoreReason = result.scoreReason;

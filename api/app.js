@@ -11,7 +11,7 @@ const { clerkMiddleware, createClerkClient } = require('@clerk/express');
 const clerkClient = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY });
 const { analyzeVideoUrl, analyzeVideoFile, getBodyAnalysisPrompt } = require('./gemini');
 const { handleElevenLabsWebhook } = require('./webhook');
-const { getDefaultScorePrompt } = require('./openai');
+const { getDefaultScorePrompt, generateSimulationSummary } = require('./openai');
 const { handleSimPage } = require('./sim-page');
 const {
   generateRecordingKey,
@@ -3406,7 +3406,7 @@ function computeBodyScoreFromAnalysis(bodyAnalysisText) {
 async function computeSimScore(prisma, simulationId) {
   const rows = await prisma.simulationStage.findMany({ where: { simulationId } });
   const stageScores = [];
-  const reasonParts = [];
+  const completedStages = [];
   for (const row of rows) {
     if (row.status !== 'completed') continue;
     const voice = row.score ?? null;
@@ -3415,18 +3415,34 @@ async function computeSimScore(prisma, simulationId) {
     if (voice != null && body != null) stageAvg = Math.round((voice + body) / 2);
     else if (voice != null) stageAvg = voice;
     else if (body != null) stageAvg = body;
-    if (stageAvg != null) {
-      stageScores.push(stageAvg);
-      reasonParts.push(`Stage ${row.stage}: ${stageAvg}/100 (voice ${voice ?? '—'}, body ${body ?? '—'})`);
-    }
+    if (stageAvg != null) stageScores.push(stageAvg);
+    completedStages.push({
+      stage: row.stage,
+      name: STAGE_NAMES[row.stage] || `Stage ${row.stage}`,
+      score: voice,
+      bodyScore: body,
+      scoreReason: row.scoreReason || null,
+    });
   }
   const combined = stageScores.length > 0
     ? Math.round(stageScores.reduce((a, b) => a + b, 0) / stageScores.length)
     : null;
-  const scoreReason = reasonParts.length > 0
-    ? `Average of ${reasonParts.length} stage(s): ${reasonParts.join('; ')}`
-    : null;
-  await prisma.simulation.update({ where: { id: simulationId }, data: { score: combined, scoreReason } });
+
+  // Save mathematical score immediately
+  await prisma.simulation.update({ where: { id: simulationId }, data: { score: combined } });
+
+  // Generate AI summary (failures don't affect the score)
+  if (completedStages.length > 0) {
+    try {
+      const summary = await generateSimulationSummary(completedStages);
+      if (summary) {
+        await prisma.simulation.update({ where: { id: simulationId }, data: { scoreReason: summary } });
+      }
+    } catch (err) {
+      console.error('[app/computeSimScore] AI summary failed:', err.message);
+    }
+  }
+
   return combined;
 }
 

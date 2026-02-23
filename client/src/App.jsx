@@ -803,6 +803,25 @@ function SimulationDetail({ d: initialSim, tab, switchTab, goBack, centerAction,
     setD(initialSim);
   }, [initialSim]);
 
+  // Poll for score updates while this stage is still processing
+  const stageHasStarted = !!(d.conversationId || d.callDurationSecs != null);
+  const stageIsProcessing = stageHasStarted && (d.stageScore == null || getBodyScore(d) == null);
+  useEffect(() => {
+    if (!stageIsProcessing || !d?.id) return;
+    const poll = setInterval(async () => {
+      try {
+        const stage = d.selectedStage || 1;
+        let resp = await fetch(`${API}/simulations/${d.id}?stage=${stage}`, { credentials: 'include' });
+        if (!resp.ok) resp = await fetch(`${API}/client/simulations/${d.id}?stage=${stage}`, { credentials: 'include' });
+        if (resp.ok) {
+          const updated = await resp.json();
+          setD(updated);
+        }
+      } catch (_) {}
+    }, 5000);
+    return () => clearInterval(poll);
+  }, [stageIsProcessing, d?.id, d?.selectedStage]);
+
   useEffect(() => {
     if (expandedTurn == null) return;
     const onDocClick = (e) => {
@@ -839,12 +858,14 @@ function SimulationDetail({ d: initialSim, tab, switchTab, goBack, centerAction,
     } catch (_) {}
   }, [d?.id]);
 
-  const transcriptScore = d.score;
+  const transcriptScore = d.stageScore ?? null;
   const bodyScore = getBodyScore(d);
   const totalScore = (transcriptScore != null && bodyScore != null)
     ? Math.round((transcriptScore + bodyScore) / 2)
     : (transcriptScore ?? bodyScore ?? null);
+  const simScore = d.score ?? totalScore;
   const scoreColor = (totalScore ?? 0) >= 75 ? SCORE_GREEN : (totalScore ?? 0) >= 50 ? '#ffab00' : '#ed4956';
+  const simScoreColor = (simScore ?? 0) >= 75 ? SCORE_GREEN : (simScore ?? 0) >= 50 ? '#ffab00' : '#ed4956';
   const transcriptScoreColor = (transcriptScore ?? 0) >= 75 ? SCORE_GREEN : (transcriptScore ?? 0) >= 50 ? '#ffab00' : '#ed4956';
   const bodyScoreColor = (bodyScore ?? 0) >= 75 ? SCORE_GREEN : (bodyScore ?? 0) >= 50 ? '#ffab00' : '#ed4956';
   const transcript = Array.isArray(d.transcript) ? d.transcript : [];
@@ -905,6 +926,13 @@ function SimulationDetail({ d: initialSim, tab, switchTab, goBack, centerAction,
             </div>
           </div>
 
+          {stageIsProcessing && (
+            <div className="sim-processing-banner">
+              <div className="sim-processing-spinner" />
+              <span>Analyzing your simulation…</span>
+            </div>
+          )}
+
           {Array.isArray(d?.stages) && d.stages.length > 0 && (
             <StageProgressDonuts
               stages={d.stages}
@@ -917,20 +945,24 @@ function SimulationDetail({ d: initialSim, tab, switchTab, goBack, centerAction,
             <div className="sim-score-summary-overlay" onClick={() => setShowScoreSummary(false)}>
               <div className="sim-score-summary-modal" onClick={e => e.stopPropagation()}>
                 <div className="sim-score-summary-header">
-                  <h3>Summary</h3>
+                  <h3>Stage {d.selectedStage || 1} Summary</h3>
                   <button type="button" className="sim-score-summary-close" onClick={() => setShowScoreSummary(false)}>×</button>
                 </div>
                 <div className="sim-score-summary-body">
                   <div className="sim-score-summary-ring" style={{ '--score-color': scoreColor }}>
                     <span>{totalScore != null ? `${totalScore}%` : '—'}</span>
                   </div>
-                  {d.scoreReason && (
+                  <div className="sim-score-summary-breakdown">
+                    <span style={{ color: transcriptScoreColor }}>Transcript: {transcriptScore != null ? `${transcriptScore}%` : '—'}</span>
+                    <span style={{ color: bodyScoreColor }}>Body Language: {bodyScore != null ? `${bodyScore}%` : '—'}</span>
+                  </div>
+                  {d.stageScoreReason && (
                     <div className="sim-score-summary-reason">
-                      <strong>Why:</strong> {d.scoreReason}
+                      <strong>Why:</strong> {d.stageScoreReason}
                     </div>
                   )}
-                  {!d.scoreReason && (
-                    <p className="sim-score-summary-empty">No score details available.</p>
+                  {!d.stageScoreReason && (
+                    <p className="sim-score-summary-empty">No score details available yet.</p>
                   )}
                 </div>
               </div>
