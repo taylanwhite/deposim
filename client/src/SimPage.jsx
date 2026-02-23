@@ -25,12 +25,7 @@ function SimPage() {
 
   const [config, setConfig] = useState(null);
   const [configError, setConfigError] = useState(null);
-  const [phase, setPhase] = useState(() => {
-    try {
-      if (caseId && typeof sessionStorage !== 'undefined' && sessionStorage.getItem(CONSENT_KEY(caseId))) return 'ready';
-    } catch (_) {}
-    return 'consent';
-  });
+  const [phase, setPhase] = useState('consent');
   const [cameraStream, setCameraStream] = useState(null);
   const [cameraError, setCameraError] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -159,12 +154,6 @@ function SimPage() {
       setPhase('consent');
     }
   }, [stageNum, caseId, requestCamera]);
-
-  useEffect(() => {
-    if (phase === 'ready' && !cameraStream && caseId && typeof sessionStorage !== 'undefined' && sessionStorage.getItem(CONSENT_KEY(caseId))) {
-      requestCamera();
-    }
-  }, [phase, caseId, cameraStream, requestCamera]);
 
   // Redirect after saving
   useEffect(() => {
@@ -523,16 +512,6 @@ function SimPage() {
           </a>
           <h1>{t('sim.consent.title')}</h1>
           <p className="sim-subtitle">{t('sim.consent.subtitle')}</p>
-          <div className="sim-features">
-            <div className="sim-feature">
-              <span className="sim-feat-icon">📋</span>
-              <span><strong>{t('sim.consent.bodyLanguage')}</strong> — {t('sim.consent.bodyLanguageDesc')}</span>
-            </div>
-            <div className="sim-feature">
-              <span className="sim-feat-icon">📊</span>
-              <span><strong>{t('sim.consent.report')}</strong> — {t('sim.consent.reportDesc')}</span>
-            </div>
-          </div>
           {cameraError === 'denied' && (
             <div className="sim-camera-denied">
               <strong>{t('sim.consent.cameraBlocked')}</strong>
@@ -556,7 +535,7 @@ function SimPage() {
   if (phase === 'ready') {
     const hasStream = !!(cameraStream && cameraStreamRef.current);
     const hasAttempted = stageData?.stages?.some(s => s.status === 'completed' || s.simulationId);
-    const buttonLabel = (!hasAttempted || manualStageSelect) ? t('sim.ready.start') : t('sim.ready.continue');
+    const buttonLabel = (!hasAttempted || manualStageSelect) ? t('sim.ready.start') : t('sim.ready.start');
     const stageShortNames = [t('sim.stage.short1'), t('sim.stage.short2'), t('sim.stage.short3'), t('sim.stage.short4')];
     const casePath = userRole === 'client'
       ? `${prefix}/client/cases/${caseId}`
@@ -567,18 +546,6 @@ function SimPage() {
           <a href="https://deposim.com" target="_blank" rel="noopener noreferrer">
             <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="sim-logo" />
           </a>
-          <h1>{t('sim.consent.title')}</h1>
-          <p className="sim-subtitle">{t('sim.consent.subtitle')}</p>
-          <div className="sim-features">
-            <div className="sim-feature">
-              <span className="sim-feat-icon">📋</span>
-              <span><strong>{t('sim.consent.bodyLanguage')}</strong> — {t('sim.consent.bodyLanguageDesc')}</span>
-            </div>
-            <div className="sim-feature">
-              <span className="sim-feat-icon">📊</span>
-              <span><strong>{t('sim.consent.report')}</strong> — {t('sim.consent.reportDesc')}</span>
-            </div>
-          </div>
           {!hasStream && cameraError ? (
             <>
               <div className="sim-camera-denied">

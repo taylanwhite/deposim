@@ -882,7 +882,7 @@ function SimulationDetail({ d: initialSim, tab, switchTab, goBack, centerAction,
           </div>
         </div>
         <div className="detail-body sim-detail-body">
-          {/* Summary strip: Total Score, Transcript Score, Body Language Score */}
+          {/* Score ring + date */}
           <div className="sim-detail-summary" ref={topRef}>
             <div className="sim-detail-summary-stack">
               <button
@@ -894,17 +894,6 @@ function SimulationDetail({ d: initialSim, tab, switchTab, goBack, centerAction,
               >
                 <span className="sim-detail-pct">{totalScore != null ? `${totalScore}%` : '—'}</span>
               </button>
-              <span className="sim-detail-label">Total Score</span>
-              <div className="sim-detail-sub-scores">
-                <div className="sim-detail-sub-score">
-                  <span className="sim-detail-sub-score-value" style={{ color: transcriptScoreColor }}>{transcriptScore != null ? `${transcriptScore}%` : '—'}</span>
-                  <span className="sim-detail-sub-score-label">Transcript</span>
-                </div>
-                <div className="sim-detail-sub-score">
-                  <span className="sim-detail-sub-score-value" style={{ color: bodyScoreColor }}>{bodyScore != null ? `${bodyScore}%` : '—'}</span>
-                  <span className="sim-detail-sub-score-label">Body Language</span>
-                </div>
-              </div>
               <div className="sim-detail-summary-meta">
                 <div className="sim-detail-meta">
                   {new Date(d.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
@@ -953,28 +942,14 @@ function SimulationDetail({ d: initialSim, tab, switchTab, goBack, centerAction,
               <p>This stage has not been simulated yet.</p>
             </div>
           ) : (<>
-          {/* Transcript / Body Language tabs with underline */}
+          {/* Transcript / Body Language tabs with scores inline */}
           <div className="sim-detail-tabs sim-detail-tabs-compact">
             <button className={`sim-detail-tab${simTab === 'transcript' ? ' active' : ''}`} onClick={() => setSimTab('transcript')}>
-              <span>Transcript</span>
+              <span>Transcript {transcriptScore != null ? `${transcriptScore}%` : ''}</span>
             </button>
             <button className={`sim-detail-tab${simTab === 'body' ? ' active' : ''}`} onClick={() => setSimTab('body')}>
-              <span>Body Language</span>
+              <span>Body Language {bodyScore != null ? `${bodyScore}%` : ''}</span>
             </button>
-          </div>
-
-          {/* Tab-specific score */}
-          <div className="sim-detail-tab-score">
-            {simTab === 'transcript' && (
-              <span style={{ color: transcriptScoreColor, fontWeight: 700, fontSize: 15 }}>
-                Transcript Score: {transcriptScore != null ? `${transcriptScore}%` : '—'}
-              </span>
-            )}
-            {simTab === 'body' && (
-              <span style={{ color: bodyScoreColor, fontWeight: 700, fontSize: 15 }}>
-                Body Language Score: {bodyScore != null ? `${bodyScore}%` : '—'}
-              </span>
-            )}
           </div>
 
           {simTab === 'transcript' && (
@@ -5187,6 +5162,8 @@ function ClientCasesPage() {
   const [cases, setCases] = useState([]);
   const [loading, setLoading] = useState(true);
   const [caseSort, setCaseSort] = useState('newest');
+  const [caseSearch, setCaseSearch] = useState('');
+  const [caseSearchExpanded, setCaseSearchExpanded] = useState(false);
 
   useEffect(() => {
     fetch(`${API}/client/cases`, { credentials: 'include' })
@@ -5196,12 +5173,21 @@ function ClientCasesPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  const sortedCases = [...cases].sort((a, b) => {
-    if (caseSort === 'newest') return new Date(b.createdAt) - new Date(a.createdAt);
-    if (caseSort === 'oldest') return new Date(a.createdAt) - new Date(b.createdAt);
-    if (caseSort === 'lastName') return (a.name || a.client?.lastName || '').localeCompare(b.name || b.client?.lastName || '');
-    return 0;
-  });
+  const sortedCases = [...cases]
+    .filter(c => {
+      if (!caseSearch.trim()) return true;
+      const q = caseSearch.toLowerCase();
+      const name = (c.name || '').toLowerCase();
+      const num = (c.caseNumber || '').toLowerCase();
+      const clientName = c.client ? `${c.client.lastName || ''} ${c.client.firstName || ''}`.toLowerCase() : '';
+      return name.includes(q) || num.includes(q) || clientName.includes(q);
+    })
+    .sort((a, b) => {
+      if (caseSort === 'newest') return new Date(b.createdAt) - new Date(a.createdAt);
+      if (caseSort === 'oldest') return new Date(a.createdAt) - new Date(b.createdAt);
+      if (caseSort === 'lastName') return (a.name || a.client?.lastName || '').localeCompare(b.name || b.client?.lastName || '');
+      return 0;
+    });
 
   if (loading) return (
     <div className="app-shell" style={{ display: 'grid', placeItems: 'center' }}>
@@ -5222,12 +5208,8 @@ function ClientCasesPage() {
             <h1 className="feed-header-title">{t('client.title')}</h1>
             <div className="feed-header-right" />
           </div>
-          <div className="cases-subheader">
-            <div className="cases-search-wrap" />
-            <div className="cases-subheader-row" style={{ flexWrap: 'wrap' }}>
-              <span className="cases-count">
-                {t('cases.count', { count: sortedCases.length, s: sortedCases.length !== 1 ? 's' : '' })}
-              </span>
+          <div className="cases-subheader" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
+            <div className="cases-subheader-row" style={{ flexWrap: 'wrap', width: '100%' }}>
               <div className="sort-pills">
                 {[
                   ['newest', t('cases.sort.recent')],
@@ -5239,7 +5221,18 @@ function ClientCasesPage() {
                   </button>
                 ))}
               </div>
+              <div className={`cases-search-wrap${caseSearchExpanded ? ' expanded' : ''}`} style={{ marginLeft: 'auto' }}>
+                <button type="button" className="cases-search-toggle" onClick={() => setCaseSearchExpanded(x => !x)} aria-label="Search">
+                  {Icons.search}
+                </button>
+                {caseSearchExpanded && (
+                  <input type="search" className="cases-search-input" placeholder={t('cases.search')} value={caseSearch} onChange={e => setCaseSearch(e.target.value)} autoFocus />
+                )}
+              </div>
             </div>
+            <span className="cases-count">
+              {t('cases.count', { count: sortedCases.length, s: sortedCases.length !== 1 ? 's' : '' })}
+            </span>
           </div>
           {sortedCases.length === 0 ? (
             <div className="client-empty-state">

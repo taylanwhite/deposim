@@ -2530,13 +2530,8 @@
   padding: 0;
 }
 .sim-grid .sim-post-card {
-  flex: 0 0 calc((100% - 28px) / 3);
+  flex: 0 0 calc((100% - 14px) / 2);
   min-width: 0;
-}
-@media (max-width: 768px) {
-  .sim-grid .sim-post-card {
-    flex: 0 0 calc((100% - 14px) / 2);
-  }
 }
 
 /* Sim card: compact tile, gradient from score (red→green), white text */
