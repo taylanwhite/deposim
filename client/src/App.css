@@ -2577,30 +2577,50 @@
   0%, 100% { opacity: 1; }
   50% { opacity: 0.7; }
 }
-.sim-processing-banner {
+.sim-pending-status {
   display: flex;
   align-items: center;
-  justify-content: center;
   gap: 10px;
-  padding: 12px 16px;
+  padding: 10px 14px;
   margin: 0 16px 12px;
-  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
-  border-radius: 12px;
-  color: #fff;
-  font-size: 14px;
-  font-weight: 600;
-  animation: sim-card-pulse 2s ease-in-out infinite;
+  border: 1px solid var(--border, rgba(255,255,255,0.12));
+  border-radius: 10px;
+  color: var(--muted, #aaa);
+  font-size: 13px;
+  font-weight: 500;
 }
-.sim-processing-spinner {
-  width: 16px;
-  height: 16px;
-  border: 2px solid rgba(255,255,255,0.3);
-  border-top-color: #fff;
+.sim-pending-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border, rgba(255,255,255,0.15));
+  border-top-color: var(--accent, #6366f1);
   border-radius: 50%;
-  animation: sim-proc-spin 0.8s linear infinite;
+  animation: sim-pending-spin 0.8s linear infinite;
+  flex-shrink: 0;
 }
-@keyframes sim-proc-spin {
+@keyframes sim-pending-spin {
   to { transform: rotate(360deg); }
+}
+.sim-pending-action {
+  margin-left: auto;
+  padding: 5px 12px;
+  background: none;
+  border: 1px solid var(--accent, #6366f1);
+  border-radius: 6px;
+  color: var(--accent, #6366f1);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+.sim-pending-action:hover {
+  background: var(--accent, #6366f1);
+  color: #fff;
+}
+.sim-pending-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .sim-post-scores {
   display: flex;

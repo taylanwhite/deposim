@@ -306,10 +306,11 @@ model SimulationStage {
   bodyScore         Int?     @map("body_score")    // derived body-language score 0-100
   recordingS3Key    String?  @map("recording_s3_key")
   stageSummary      String?  @map("stage_summary")
-  retakeRecommended Boolean  @default(false) @map("retake_recommended")
-  personaId         String?  @map("persona_id")
-  createdAt         DateTime @default(now()) @map("created_at")
-  updatedAt         DateTime @updatedAt @map("updated_at")
+  retakeRecommended Boolean   @default(false) @map("retake_recommended")
+  pendingReviewAt   DateTime? @map("pending_review_at")
+  personaId         String?   @map("persona_id")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
 
   simulation Simulation @relation(fields: [simulationId], references: [id], onDelete: Cascade)
   persona    Persona?   @relation(fields: [personaId], references: [id], onDelete: SetNull)

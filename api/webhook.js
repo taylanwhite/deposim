@@ -220,6 +220,7 @@ async function handleElevenLabsWebhook(req, res, prisma) {
   }
 
   // ---------- Upsert SimulationStage row ----------
+  const now = new Date();
   await prisma.simulationStage.upsert({
     where: { simulationId_stage: { simulationId: simulation.id, stage } },
     create: {
@@ -227,6 +228,7 @@ async function handleElevenLabsWebhook(req, res, prisma) {
       stage,
       conversationId,
       status: 'completed',
+      pendingReviewAt: now,
       score,
       scoreReason,
       fullAnalysis,
@@ -240,6 +242,7 @@ async function handleElevenLabsWebhook(req, res, prisma) {
     update: {
       conversationId,
       status: 'completed',
+      pendingReviewAt: now,
       score,
       scoreReason,
       fullAnalysis,

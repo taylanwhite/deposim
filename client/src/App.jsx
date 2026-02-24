@@ -718,6 +718,7 @@ function parseTimestamp(ts) {
   return isNaN(sec) ? 0 : Math.max(0, sec);
 }
 
+
 /* ===== Moment popup — native <video>, robust seek across multiple events ===== */
 function MomentVideoPopup({ moment, simulationId, stage, onClose }) {
   const videoRef = useRef(null);
@@ -816,9 +817,44 @@ function SimulationDetail({ d: initialSim, tab, switchTab, goBack, centerAction,
     setD(initialSim);
   }, [initialSim]);
 
-  // Poll for score updates while this stage is still processing
+  // Pending review: track transcript and body analysis separately
   const stageHasStarted = !!(d.conversationId || d.callDurationSecs != null);
-  const stageIsProcessing = stageHasStarted && (d.stageScore == null || getBodyScore(d) == null);
+  const transcriptPending = stageHasStarted && d.stageScore == null;
+  const bodyPending = stageHasStarted && getBodyScore(d) == null;
+  const stageIsProcessing = transcriptPending || bodyPending;
+
+  const [pendingElapsed, setPendingElapsed] = useState(false);
+  const [reanalyzing, setReanalyzing] = useState(null);
+  useEffect(() => {
+    if (!stageIsProcessing) { setPendingElapsed(false); return; }
+    const pendingStart = d.pendingReviewAt ? new Date(d.pendingReviewAt).getTime() : Date.now();
+    const alreadyElapsed = Date.now() - pendingStart >= 60_000;
+    if (alreadyElapsed) { setPendingElapsed(true); return; }
+    const remaining = 60_000 - (Date.now() - pendingStart);
+    const timer = setTimeout(() => setPendingElapsed(true), remaining);
+    return () => clearTimeout(timer);
+  }, [stageIsProcessing, d.pendingReviewAt]);
+
+  const handleReanalyze = useCallback(async (type) => {
+    if (!d?.id || reanalyzing) return;
+    setReanalyzing(type);
+    try {
+      const resp = await fetch(`${API}/simulations/${d.id}/reanalyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ stage: d.selectedStage || 1, type }),
+      });
+      if (resp.ok) {
+        const stage = d.selectedStage || 1;
+        let detailResp = await fetch(`${API}/simulations/${d.id}?stage=${stage}`, { credentials: 'include' });
+        if (!detailResp.ok) detailResp = await fetch(`${API}/client/simulations/${d.id}?stage=${stage}`, { credentials: 'include' });
+        if (detailResp.ok) setD(await detailResp.json());
+      }
+    } catch (_) {}
+    setReanalyzing(null);
+  }, [d?.id, d?.selectedStage, reanalyzing]);
+
   useEffect(() => {
     if (!stageIsProcessing || !d?.id) return;
     const poll = setInterval(async () => {
@@ -939,13 +975,6 @@ function SimulationDetail({ d: initialSim, tab, switchTab, goBack, centerAction,
             </div>
           </div>
 
-          {stageIsProcessing && (
-            <div className="sim-processing-banner">
-              <div className="sim-processing-spinner" />
-              <span>Analyzing your simulation…</span>
-            </div>
-          )}
-
           {Array.isArray(d?.stages) && d.stages.length > 0 && (
             <StageProgressDonuts
               stages={d.stages}
@@ -982,7 +1011,7 @@ function SimulationDetail({ d: initialSim, tab, switchTab, goBack, centerAction,
             </div>
           )}
 
-          {!d.stageStatus && !d.conversationId && transcript.length === 0 && !d.bodyAnalysis ? (
+          {!d.stageStatus && !d.conversationId && transcript.length === 0 && !d.bodyAnalysis && !stageIsProcessing ? (
             <div className="sim-stage-not-performed">
               <p>This stage has not been simulated yet.</p>
             </div>
@@ -999,11 +1028,22 @@ function SimulationDetail({ d: initialSim, tab, switchTab, goBack, centerAction,
 
           {simTab === 'transcript' && (
             <div className="sim-transcript-view">
-              {transcript.length === 0 ? (
+              {transcriptPending && (
+                <div className="sim-pending-status">
+                  <div className="sim-pending-spinner" />
+                  <span>Analyzing transcript…</span>
+                  {pendingElapsed && (
+                    <button type="button" className="sim-pending-action" disabled={reanalyzing === 'transcript'} onClick={() => handleReanalyze('transcript')}>
+                      {reanalyzing === 'transcript' ? 'Analyzing…' : 'Analyze Transcript'}
+                    </button>
+                  )}
+                </div>
+              )}
+              {transcript.length === 0 && !transcriptPending ? (
                 <div className="sim-transcript-empty">
                   {d.transcriptSummary ? <p className="sim-detail-text">{d.transcriptSummary}</p> : <p>No transcript available.</p>}
                 </div>
-              ) : (
+              ) : transcript.length > 0 ? (
                 <div className="sim-transcript-bubbles">
                   {transcript.map((t, i) => {
                     const role = (t.role || t.speaker || '').toLowerCase();
@@ -1057,7 +1097,7 @@ function SimulationDetail({ d: initialSim, tab, switchTab, goBack, centerAction,
                     </div>
                   )}
                 </div>
-              )}
+              ) : null}
               {transcript.length > 3 && showScrollTop && (
                 <button
                   type="button"
@@ -1090,13 +1130,22 @@ function SimulationDetail({ d: initialSim, tab, switchTab, goBack, centerAction,
 
           {simTab === 'body' && (
             <div className="sim-body-view">
-              {!d.bodyAnalysis ? (
-                <p className="sim-body-empty">
-                  {d.bodyAnalysisModel ? 'Processing body analysis…' : 'No body language recording was captured for this simulation.'}
-                </p>
-              ) : !bodyData ? (
+              {bodyPending && (
+                <div className="sim-pending-status">
+                  <div className="sim-pending-spinner" />
+                  <span>Analyzing body language…</span>
+                  {pendingElapsed && (
+                    <button type="button" className="sim-pending-action" disabled={reanalyzing === 'body'} onClick={() => handleReanalyze('body')}>
+                      {reanalyzing === 'body' ? 'Analyzing…' : 'Analyze Body Language'}
+                    </button>
+                  )}
+                </div>
+              )}
+              {!d.bodyAnalysis && !bodyPending ? (
+                <p className="sim-body-empty">No body language recording was captured for this simulation.</p>
+              ) : !bodyData && d.bodyAnalysis ? (
                 <AnalysisDisplay data={d.bodyAnalysis} />
-              ) : (
+              ) : bodyData ? (
                 <>
                   <div className="sim-body-categories">
                     {BODY_CATEGORIES.map(({ key, label }) => {
@@ -1135,7 +1184,7 @@ function SimulationDetail({ d: initialSim, tab, switchTab, goBack, centerAction,
                     </div>
                   )}
                 </>
-              )}
+              ) : null}
             </div>
           )}
           </>)}

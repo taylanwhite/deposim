@@ -127,6 +127,7 @@ const ROUTE_DESCRIPTIONS = [
   ['POST',   '/api/simulations/video/upload-complete', 'Completed simulation video upload'],
   ['POST',   '/api/simulations/:id/video',         'Uploaded simulation video'],
   ['POST',   '/api/simulations/:id/evaluate-stage','Evaluated simulation stage'],
+  ['POST',   '/api/simulations/:id/reanalyze',    'Re-triggered simulation analysis'],
   // Sim
   ['POST',   '/api/sim/signed-url',               'Generated sim signed URL'],
   ['GET',    '/api/sim/:caseId',                   'Opened sim page'],
@@ -3483,6 +3484,7 @@ function projectSimFromStages(sim, stageNum = null) {
     bodyAnalysisModel: row.bodyAnalysisModel || null,
     bodyScore: row.bodyScore ?? null,
     recordingS3Key: row.recordingS3Key || null,
+    pendingReviewAt: row.pendingReviewAt || null,
   };
   const progress = getStageProgressFromRows(stageRows, sim.id);
   return { ...projected, ...progress };
@@ -3753,16 +3755,81 @@ app.post('/api/simulations/:id/evaluate-stage', async (req, res) => {
     const sim = await prisma.simulation.findUnique({ where: { id: req.params.id } });
     if (!sim) return res.status(404).json({ error: 'Simulation not found' });
     const stageNum = clampStage(req.body?.stage || sim.selectedStage || 1);
+    const now = new Date();
     await prisma.simulationStage.upsert({
       where: { simulationId_stage: { simulationId: sim.id, stage: stageNum } },
-      create: { simulationId: sim.id, stage: stageNum, status: 'completed' },
-      update: { status: 'completed' },
+      create: { simulationId: sim.id, stage: stageNum, status: 'completed', pendingReviewAt: now },
+      update: { status: 'completed', pendingReviewAt: now },
     });
 
     res.json({ ok: true });
   } catch (err) {
     betterstack.logApiError('POST /api/simulations/:id/evaluate-stage', err);
     res.status(500).json({ error: err.message || 'Failed to mark stage completed' });
+  }
+});
+
+// ---------- Stage: manually (re)trigger transcript or body analysis ----------
+app.post('/api/simulations/:id/reanalyze', async (req, res) => {
+  try {
+    const sim = await prisma.simulation.findUnique({
+      where: { id: req.params.id },
+      include: { case: true, stages: true },
+    });
+    if (!sim) return res.status(404).json({ error: 'Simulation not found' });
+    const stageNum = clampStage(req.body?.stage || sim.selectedStage || 1);
+    const type = req.body?.type; // 'transcript' | 'body'
+    if (!type || !['transcript', 'body'].includes(type)) {
+      return res.status(400).json({ error: 'type must be "transcript" or "body"' });
+    }
+
+    const stageRow = (sim.stages || []).find((r) => r.stage === stageNum);
+
+    if (type === 'transcript') {
+      const transcript = Array.isArray(stageRow?.transcript) ? stageRow.transcript : [];
+      if (transcript.length === 0) return res.status(400).json({ error: 'No transcript available' });
+
+      const { analyzeDeposition } = require('./openai');
+      const scorePrompt = await prisma.prompt
+        .findFirst({ where: { type: 'score', isActive: true }, orderBy: { updatedAt: 'desc' } })
+        .then((p) => p?.content || null);
+      const result = await analyzeDeposition(transcript, scorePrompt, stageNum);
+      if (!result.success) return res.status(502).json({ error: result.error || 'Analysis failed' });
+
+      await prisma.simulationStage.upsert({
+        where: { simulationId_stage: { simulationId: sim.id, stage: stageNum } },
+        create: { simulationId: sim.id, stage: stageNum, score: result.score, scoreReason: result.scoreReason, fullAnalysis: result.fullAnalysis, turnScores: result.turnScores || [] },
+        update: { score: result.score, scoreReason: result.scoreReason, fullAnalysis: result.fullAnalysis, turnScores: result.turnScores || [] },
+      });
+      await computeSimScore(prisma, sim.id);
+      return res.json({ ok: true, score: result.score });
+    }
+
+    if (type === 'body') {
+      const s3Key = stageRow?.recordingS3Key;
+      if (!s3Key) return res.status(400).json({ error: 'No recording available for body analysis' });
+
+      const tmpPath = await downloadToTemp(s3Key);
+      try {
+        const promptText = getBodyAnalysisPrompt();
+        const mimeType = s3Key.endsWith('.mp4') ? 'video/mp4' : 'video/webm';
+        const result = await analyzeVideoFile(tmpPath, mimeType, promptText);
+        const bodyScore = computeBodyScoreFromAnalysis(result.text);
+
+        await prisma.simulationStage.upsert({
+          where: { simulationId_stage: { simulationId: sim.id, stage: stageNum } },
+          create: { simulationId: sim.id, stage: stageNum, bodyAnalysis: String(result.text || ''), bodyAnalysisModel: String(result.model || 'gemini-2.5-flash'), bodyScore },
+          update: { bodyAnalysis: String(result.text || ''), bodyAnalysisModel: String(result.model || 'gemini-2.5-flash'), bodyScore },
+        });
+        await computeSimScore(prisma, sim.id);
+        return res.json({ ok: true, bodyScore });
+      } finally {
+        fs.unlink(tmpPath, () => {});
+      }
+    }
+  } catch (err) {
+    betterstack.logApiError('POST /api/simulations/:id/reanalyze', err);
+    res.status(500).json({ error: err.message || 'Analysis failed' });
   }
 });
 
