@@ -3265,14 +3265,21 @@ async function ensureDefaultTemplate(prisma) {
   if (existingDefault) {
     if (defaultT && Array.isArray(defaultT.stages) && defaultT.stages.length > 0) {
       const dbStages = Array.isArray(existingDefault.stages) ? existingDefault.stages : [];
-      const needsPatch = dbStages.some((s) => s.stage != null && (s.first_message == null || s.first_message === ''));
-      if (needsPatch) {
-        const merged = dbStages.map((s) => {
-          const fromFile = defaultT.stages.find((f) => f.stage === s.stage);
-          return fromFile && typeof fromFile.first_message === 'string'
-            ? { ...s, first_message: fromFile.first_message, first_message_by_persona: fromFile.first_message_by_persona }
-            : s;
-        });
+      const merged = dbStages.map((s) => {
+        const fromFile = defaultT.stages.find((f) => f.stage === s.stage);
+        if (!fromFile) return s;
+        const patched = { ...s };
+        if (typeof fromFile.first_message === 'string' && !s.first_message) {
+          patched.first_message = fromFile.first_message;
+          patched.first_message_by_persona = fromFile.first_message_by_persona;
+        }
+        if (typeof fromFile.prompt === 'string' && fromFile.prompt !== s.prompt) {
+          patched.prompt = fromFile.prompt;
+        }
+        return patched;
+      });
+      const stagesChanged = JSON.stringify(merged) !== JSON.stringify(dbStages);
+      if (stagesChanged) {
         await prisma.depositionTemplate.update({
           where: { id: existingDefault.id },
           data: { stages: merged },

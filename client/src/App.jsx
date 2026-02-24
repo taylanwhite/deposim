@@ -718,10 +718,10 @@ function parseTimestamp(ts) {
   return isNaN(sec) ? 0 : Math.max(0, sec);
 }
 
-/* ===== Moment popup — native controls, seek once on load ===== */
+/* ===== Moment popup — native <video>, robust seek across multiple events ===== */
 function MomentVideoPopup({ moment, simulationId, stage, onClose }) {
   const videoRef = useRef(null);
-  const hasSeeked = useRef(false);
+  const didSeek = useRef(false);
   const [videoUrl, setVideoUrl] = useState(null);
   const [loading, setLoading] = useState(!!simulationId);
   const [error, setError] = useState(null);
@@ -738,12 +738,26 @@ function MomentVideoPopup({ moment, simulationId, stage, onClose }) {
       .finally(() => setLoading(false));
   }, [simulationId, stage]);
 
-  const handleCanPlay = useCallback(() => {
+  const trySeek = useCallback(() => {
     const v = videoRef.current;
-    if (!v || hasSeeked.current || seekSec <= 0) return;
-    v.currentTime = seekSec;
-    hasSeeked.current = true;
+    if (!v || didSeek.current || seekSec <= 0) return;
+    try { v.currentTime = seekSec; didSeek.current = true; } catch (_) {}
   }, [seekSec]);
+
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || seekSec <= 0) return;
+    didSeek.current = false;
+    const attempt = () => trySeek();
+    v.addEventListener('loadedmetadata', attempt);
+    v.addEventListener('durationchange', attempt);
+    v.addEventListener('canplay', attempt);
+    return () => {
+      v.removeEventListener('loadedmetadata', attempt);
+      v.removeEventListener('durationchange', attempt);
+      v.removeEventListener('canplay', attempt);
+    };
+  }, [videoUrl, seekSec, trySeek]);
 
   return (
     <div className="sim-body-popup-overlay" onClick={onClose}>
@@ -765,7 +779,6 @@ function MomentVideoPopup({ moment, simulationId, stage, onClose }) {
                 playsInline
                 preload="auto"
                 className="sim-moment-video"
-                onCanPlay={handleCanPlay}
               />
               <a href={videoUrl} target="_blank" rel="noopener noreferrer" className="btn btn-sm secondary sim-moment-open-link">
                 Open full recording

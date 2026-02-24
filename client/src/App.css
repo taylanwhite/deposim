@@ -3160,6 +3160,9 @@
 .sim-body-popup {
   width: 100%;
   max-width: 400px;
+  max-height: calc(100dvh - 40px);
+  display: flex;
+  flex-direction: column;
   background: var(--bg);
   border-radius: 16px;
   border: 1px solid var(--border);
@@ -3183,18 +3186,19 @@
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
-.sim-body-popup-body { padding: 16px; font-size: 15px; line-height: 1.65; color: var(--text); }
+.sim-body-popup-body { padding: 16px; font-size: 15px; line-height: 1.65; color: var(--text); overflow-y: auto; flex: 1 1 auto; }
 .sim-body-popup-body p { margin-bottom: 10px; }
 .sim-body-popup-body p:last-child { margin-bottom: 0; }
 
 /* Moment popup with video */
-.sim-body-popup.sim-body-popup-video { max-width: 560px; }
+.sim-body-popup.sim-body-popup-video { max-width: 560px; max-height: calc(100dvh - 40px); }
 .sim-moment-video {
   width: 100%;
-  aspect-ratio: 4/3;
+  max-height: 60dvh;
   background: #000;
   border-radius: 8px;
   margin-bottom: 12px;
+  object-fit: contain;
 }
 .sim-moment-loading { color: var(--muted); font-size: 14px; }
 .sim-moment-error { color: #ed4956; font-size: 14px; }

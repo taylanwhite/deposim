@@ -16,6 +16,73 @@ function stopStreamTracks(stream) {
   });
 }
 
+/**
+ * Create an audio mixer that captures both microphone input and the
+ * ElevenLabs agent voice into a single MediaStream for recording.
+ *
+ * The ElevenLabs SDK plays agent audio through a hidden <audio> element
+ * appended to document.body, with srcObject set to a MediaStreamDestination
+ * stream. We detect that element (via MutationObserver + polling) and feed
+ * its stream into our AudioContext mixer alongside the mic tracks.
+ */
+function createAudioCapture(micTracks) {
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AudioCtx();
+  const dest = ctx.createMediaStreamDestination();
+  const ownMicTracks = [...micTracks];
+
+  if (micTracks.length > 0) {
+    const micSource = ctx.createMediaStreamSource(new MediaStream(micTracks));
+    micSource.connect(dest);
+  }
+
+  let agentConnected = false;
+
+  function tryConnectAgentAudio(el) {
+    if (agentConnected) return;
+    const stream = el.srcObject;
+    if (!(stream instanceof MediaStream)) return;
+    if (stream.getAudioTracks().length === 0) return;
+    try {
+      const src = ctx.createMediaStreamSource(stream);
+      src.connect(dest);
+      agentConnected = true;
+      console.log('[DepoSim] Agent audio connected to recording mixer');
+    } catch (e) {
+      console.warn('[DepoSim] Failed to connect agent audio:', e);
+    }
+  }
+
+  function scan() {
+    if (agentConnected) return;
+    document.querySelectorAll('audio').forEach(tryConnectAgentAudio);
+  }
+
+  const observer = new MutationObserver(() => scan());
+  observer.observe(document.body, { childList: true, subtree: true });
+
+  const pollId = setInterval(() => {
+    scan();
+    if (agentConnected) clearInterval(pollId);
+  }, 150);
+
+  const pollTimeout = setTimeout(() => {
+    clearInterval(pollId);
+    observer.disconnect();
+  }, 30_000);
+
+  return {
+    stream: dest.stream,
+    cleanup() {
+      observer.disconnect();
+      clearInterval(pollId);
+      clearTimeout(pollTimeout);
+      ownMicTracks.forEach((t) => { try { t.stop(); } catch (_) {} });
+      try { ctx.close(); } catch (_) {}
+    },
+  };
+}
+
 function SimPage() {
   const { caseId, stage: stageParam } = useParams();
   const navigate = useNavigate();
@@ -49,6 +116,7 @@ function SimPage() {
   const sessionActive = useRef(false);
   const endingRef = useRef(false);
   const finishRecordingRef = useRef(null);
+  const audioCaptureRef = useRef(null);
 
   // When user leaves the tab/page (close, navigate away, or browser back), stop camera
   useEffect(() => {
@@ -189,16 +257,19 @@ function SimPage() {
       const stream = cameraStreamRef.current;
       if (stream) {
         try {
-          const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
-            ? 'video/webm;codecs=vp9'
-            : MediaRecorder.isTypeSupported('video/webm')
-              ? 'video/webm'
-              : 'video/mp4';
+          const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
+            ? 'video/webm;codecs=vp9,opus'
+            : MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
+              ? 'video/webm;codecs=vp8,opus'
+              : MediaRecorder.isTypeSupported('video/webm')
+                ? 'video/webm'
+                : 'video/mp4';
           const videoTracks = stream.getVideoTracks().filter(t => t.readyState === 'live');
+          const audioTracks = audioCaptureRef.current?.stream.getAudioTracks() || [];
           if (videoTracks.length === 0) {
             console.error('[DepoSim] No live video tracks for recording');
           } else {
-            const recordingStream = new MediaStream(videoTracks);
+            const recordingStream = new MediaStream([...videoTracks, ...audioTracks]);
             mediaRecorder.current = new MediaRecorder(recordingStream, { mimeType });
             mediaRecorder.current.ondataavailable = (e) => {
               if (e.data && e.data.size > 0) recordedChunks.current.push(e.data);
@@ -226,6 +297,8 @@ function SimPage() {
     stopStreamTracks(stream);
     cameraStreamRef.current = null;
     setCameraStream(null);
+    audioCaptureRef.current?.cleanup();
+    audioCaptureRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
   }, []);
 
@@ -444,10 +517,14 @@ function SimPage() {
       return;
     }
     try {
-      // Release camera's audio tracks so the SDK can claim the mic exclusively
+      // Set up audio capture (mic + agent output) before releasing mic for the SDK
       const stream = cameraStreamRef.current;
       if (stream) {
+        const micClones = stream.getAudioTracks()
+          .filter((t) => t.readyState === 'live')
+          .map((t) => t.clone());
         stream.getAudioTracks().forEach((t) => t.stop());
+        audioCaptureRef.current = createAudioCapture(micClones);
       }
 
       conversationIdRef.current = null;
