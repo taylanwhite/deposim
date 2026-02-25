@@ -1163,10 +1163,10 @@ app.post('/api/cases/:id/notify-deposim-sent', ...authAndStaff, async (req, res)
       });
     }
     const simLink = `${base}/s/${link.slug}`;
-
+// '9175979964'
     const moderatorPhones = process.env.NODE_ENV === 'development'
       ? ['8018366183']
-      : ['8018366183', '9175979964'];
+      : ['8018366183'];
     const moderatorEmails = ['t@vsfy.com'];
     const name = targetClient ? `${targetClient.lastName}, ${targetClient.firstName}` : 'Deponent';
     const clientFirstName = targetClient?.firstName || 'your';
