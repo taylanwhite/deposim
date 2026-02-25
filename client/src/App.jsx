@@ -1438,14 +1438,24 @@ function ClientAutocomplete({ selectedClients = [], onChange, placeholder = 'Sea
   return (
     <div className="client-autocomplete" ref={wrapRef}>
       {selectedClients.length > 0 && (
-        <div className="client-chips">
-          {selectedClients.map(c => (
-            <span key={c.id} className="client-chip">
-              {c.lastName}, {c.firstName}
-              <button type="button" className="client-chip-x" onClick={() => removeClient(c.id)}>&times;</button>
-            </span>
-          ))}
-        </div>
+        <table className="client-selected-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Phone</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {selectedClients.map(c => (
+              <tr key={c.id}>
+                <td>{c.lastName}, {c.firstName}</td>
+                <td className="client-selected-phone">{c.phone ? formatPhone(c.phone) : '—'}</td>
+                <td><button type="button" className="case-client-remove" onClick={() => removeClient(c.id)} title="Remove">&times;</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
       <input
         className="input client-autocomplete-input"
