@@ -7,6 +7,7 @@ import { useT, useLangPrefix } from './i18n/LanguageContext';
 const API = '/api';
 const CONSENT_KEY = (caseId) => `deposim_consent_${caseId}`;
 
+
 function stopStreamTracks(stream) {
   if (!stream || typeof stream.getTracks !== 'function') return;
   stream.getTracks().forEach((track) => {
@@ -100,7 +101,9 @@ function SimPage() {
   const [userRole, setUserRole] = useState(null);
   const [isStarting, setIsStarting] = useState(false);
   const [manualStageSelect, setManualStageSelect] = useState(false);
+  const [rulesPaused, setRulesPaused] = useState(false);
   const messagesEndRef = useRef(null);
+  const rulesAudioRef = useRef(null);
 
   const mediaRecorder = useRef(null);
   const recordedChunks = useRef([]);
@@ -117,6 +120,7 @@ function SimPage() {
   const endingRef = useRef(false);
   const finishRecordingRef = useRef(null);
   const audioCaptureRef = useRef(null);
+  const messagesRef = useRef([]);
 
   // When user leaves the tab/page (close, navigate away, or browser back), stop camera
   useEffect(() => {
@@ -184,6 +188,7 @@ function SimPage() {
   }, [caseId, stageNum, stageData?.simulationId]);
 
   useEffect(() => { configRef.current = config; }, [config]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
 
   useEffect(() => {
     if (!caseId) return;
@@ -318,6 +323,32 @@ function SimPage() {
     };
   }, [stopCamera]);
 
+  // Auto-play deposition rules audio on Stage 1 ready page
+  useEffect(() => {
+    if (phase !== 'ready' || stageNum !== 1) {
+      rulesAudioRef.current?.pause();
+      return;
+    }
+    if (!rulesAudioRef.current) {
+      rulesAudioRef.current = new Audio('/deposition-rules.mp3');
+    }
+    const audio = rulesAudioRef.current;
+    audio.currentTime = 0;
+    audio.play().catch(() => {});
+    return () => { audio.pause(); };
+  }, [phase, stageNum]);
+
+  useEffect(() => {
+    const audio = rulesAudioRef.current;
+    if (!audio) return;
+    if (rulesPaused) audio.pause();
+    else audio.play().catch(() => {});
+  }, [rulesPaused]);
+
+  const stopRulesAudio = useCallback(() => {
+    rulesAudioRef.current?.pause();
+  }, []);
+
   const fireAndForgetEvaluation = useCallback(() => {
     const capturedCaseId = caseId;
     const capturedStage = stageNum;
@@ -372,6 +403,25 @@ function SimPage() {
   }, [caseId, stageNum]);
   doVideoUploadRef.current = doVideoUpload;
 
+  const saveTranscriptBackup = useCallback(() => {
+    const finalMessages = messagesRef.current.filter(
+      (m) => m.role === 'user' || m.role === 'agent',
+    );
+    if (finalMessages.length === 0) return;
+    const convId = conversationIdRef.current || conversationRef.current?.getId?.() || '';
+    fetch(`${API}/simulations/save-transcript`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        simulationId: configRef.current?.simulationId || undefined,
+        conversationId: convId || undefined,
+        caseId,
+        stage: stageNum,
+        transcript: finalMessages,
+      }),
+    }).catch((err) => console.warn('[DepoSim] Transcript backup failed:', err));
+  }, [caseId, stageNum]);
+
   const finishRecording = useCallback(async () => {
     if (endingRef.current) return;
     endingRef.current = true;
@@ -393,6 +443,7 @@ function SimPage() {
       });
 
       doVideoUploadRef.current?.();
+      saveTranscriptBackup();
 
       sessionActive.current = false;
       try { conversationRef.current?.endSession?.(); } catch (_) {}
@@ -405,7 +456,7 @@ function SimPage() {
       stopCamera();
       setPhase('saving');
     }
-  }, [stopCamera, fireAndForgetEvaluation]);
+  }, [stopCamera, fireAndForgetEvaluation, saveTranscriptBackup]);
   finishRecordingRef.current = finishRecording;
 
   const handleDisconnect = useCallback(() => {
@@ -507,6 +558,7 @@ function SimPage() {
   const startCall = async () => {
     if (startingRef.current || isStarting) return;
     if (!config?.signedUrl || !config?.dynamicVariables) return;
+    stopRulesAudio();
     startingRef.current = true;
     setIsStarting(true);
     const dv = config.dynamicVariables;
@@ -623,6 +675,47 @@ function SimPage() {
           <a href="https://deposim.com" target="_blank" rel="noopener noreferrer">
             <img src="/DepoSim-logo-wide-1200.png" alt="DepoSim" className="sim-logo" />
           </a>
+          {stageNum === 1 && (
+            <div className="sim-rules-card">
+              <div className="sim-rules-header">
+                <span className="sim-rules-title">Instructions</span>
+                <div className="sim-rules-actions">
+                  <button
+                    type="button"
+                    className="sim-mute-btn"
+                    onClick={() => {
+                      const audio = rulesAudioRef.current;
+                      if (audio) { audio.currentTime = 0; audio.play(); }
+                    }}
+                    aria-label="Restart audio"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
+                      <polyline points="1 4 1 10 7 10" />
+                      <path d="M3.51 15a9 9 0 105.64-11.36L1 10" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className="sim-mute-btn"
+                    onClick={() => setRulesPaused((p) => !p)}
+                    aria-label={rulesPaused ? 'Play' : 'Pause'}
+                  >
+                    {rulesPaused ? (
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18">
+                        <polygon points="5 3 19 12 5 21 5 3" />
+                      </svg>
+                    ) : (
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18">
+                        <rect x="6" y="4" width="4" height="16" />
+                        <rect x="14" y="4" width="4" height="16" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              </div>
+             
+            </div>
+          )}
           {!hasStream && cameraError ? (
             <>
               <div className="sim-camera-denied">

@@ -135,6 +135,9 @@ model Client {
   brandings    Branding[]   @relation("BrandingClient")
   prompts      Prompt[]
 
+  @@unique([organizationId, firstName, lastName, phone])
+  @@unique([organizationId, email])
+  @@unique([locationId, phone])
   @@map("clients")
 }
 
@@ -191,6 +194,7 @@ model Case {
   simulations     Simulation[]
   prompts         Prompt[]
 
+  @@unique([organizationId, caseNumber])
   @@map("cases")
 }
 

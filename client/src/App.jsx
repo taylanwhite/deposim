@@ -818,9 +818,10 @@ function SimulationDetail({ d: initialSim, tab, switchTab, goBack, centerAction,
   }, [initialSim]);
 
   // Pending review: track transcript and body analysis separately
-  const stageHasStarted = !!(d.conversationId || d.callDurationSecs != null);
+  const stageHasStarted = !!(d.conversationId || d.callDurationSecs != null || d.stageStatus);
   const transcriptPending = stageHasStarted && d.stageScore == null;
-  const bodyPending = stageHasStarted && getBodyScore(d) == null;
+  const recentlyFinished = !!(d.pendingReviewAt && (Date.now() - new Date(d.pendingReviewAt).getTime()) < 5 * 60 * 1000);
+  const bodyPending = stageHasStarted && getBodyScore(d) == null && (!!d.recordingS3Key || recentlyFinished);
   const stageIsProcessing = transcriptPending || bodyPending;
 
   const [pendingElapsed, setPendingElapsed] = useState(false);
@@ -1296,7 +1297,7 @@ function DepoSimSentToast({ sending, caseId, shortUrl, stage = 1, onDismiss }) {
   const displayUrl = shortUrl || fullUrl;
   const handleLinkClick = (e) => {
     e.preventDefault();
-    if (displayUrl) window.open(displayUrl, '_self');
+    if (displayUrl) window.open(displayUrl, '_blank', 'noopener,noreferrer');
   };
   const handleCopy = (e) => {
     e.preventDefault();
@@ -1314,14 +1315,10 @@ function DepoSimSentToast({ sending, caseId, shortUrl, stage = 1, onDismiss }) {
     <div className="deposim-sent-toast">
       <p className="deposim-sent-toast-message">The DepoSim has been prepared and sent to the client.</p>
       {displayUrl && (
-        <div className="deposim-sent-toast-link-row">
-          <div className="deposim-sent-toast-link-outer">
-            <div className="deposim-sent-toast-link-wrap">
-              <a href={displayUrl} className="deposim-sent-toast-link" onClick={handleLinkClick}>
-                {displayUrl}
-              </a>
-            </div>
-          </div>
+        <div className="deposim-sent-toast-link-wrap">
+          <a href={displayUrl} className="deposim-sent-toast-link" target="_blank" rel="noopener noreferrer" onClick={handleLinkClick}>
+            {displayUrl}
+          </a>
           <button type="button" className="deposim-sent-toast-copy" onClick={handleCopy} title="Copy link" aria-label="Copy link">
             {Icons.copy}
           </button>
@@ -4935,6 +4932,269 @@ function ShortLinkManager({ showToast }) {
   );
 }
 
+/* ===== Client Manager (settings table with search, edit popup, delete confirmation) ===== */
+function ClientManager({ showToast, access }) {
+  const { t } = useT();
+  const [clients, setClients] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(0);
+  const [editing, setEditing] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [createForm, setCreateForm] = useState({ firstName: '', lastName: '', phone: '', email: '' });
+  const [createError, setCreateError] = useState(null);
+  const debounceRef = useRef(null);
+  const ROWS = 4;
+
+  const orgName = access?.organizations?.[0]?.name || 'this organization';
+
+  const loadClients = useCallback((q = '') => {
+    setLoading(true);
+    const qs = q.trim() ? `?search=${encodeURIComponent(q.trim())}` : '';
+    fetch(`${API}/clients${qs}`)
+      .then(r => r.ok ? r.json() : [])
+      .then(data => { setClients(data); setPage(0); })
+      .catch(() => setClients([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { loadClients(); }, [loadClients]);
+
+  const handleSearch = (e) => {
+    const val = e.target.value;
+    setSearch(val);
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => loadClients(val), 300);
+  };
+
+  const totalPages = Math.max(1, Math.ceil(clients.length / ROWS));
+  const paged = clients.slice(page * ROWS, page * ROWS + ROWS);
+
+  const openEdit = (client) => {
+    if (client.externalId) return;
+    setEditing({
+      id: client.id,
+      firstName: client.firstName || '',
+      lastName: client.lastName || '',
+      phone: client.phone || '',
+      email: client.email || '',
+    });
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editing || saving) return;
+    if (!editing.firstName.trim() || !editing.lastName.trim()) return;
+    setSaving(true);
+    try {
+      const r = await fetch(`${API}/clients/${editing.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          firstName: editing.firstName.trim(),
+          lastName: editing.lastName.trim(),
+          phone: editing.phone.trim() || null,
+          email: editing.email.trim() || null,
+        }),
+      });
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to update');
+      }
+      loadClients(search);
+      setEditing(null);
+      showToast(t('clients.updated'));
+    } catch (err) {
+      showToast(t('common.error', { msg: err.message }));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!confirmDelete || deleting) return;
+    setDeleting(true);
+    try {
+      const r = await fetch(`${API}/clients/${confirmDelete.id}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error('Failed');
+      loadClients(search);
+      if (editing?.id === confirmDelete.id) setEditing(null);
+      setConfirmDelete(null);
+      showToast(t('clients.deleted'));
+    } catch {
+      showToast(t('clients.deleteError'));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleCreateClient = async () => {
+    if (!createForm.firstName.trim() || !createForm.lastName.trim()) return;
+    setCreateError(null);
+    if (!isValidClientEmail(createForm.email)) { setCreateError(t('common.error', { msg: 'Invalid email' })); return; }
+    if (!isValidClientPhone(createForm.phone)) { setCreateError(t('common.error', { msg: 'Invalid phone (min 10 digits)' })); return; }
+    setCreating(true);
+    try {
+      const r = await fetch(`${API}/clients`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          firstName: createForm.firstName.trim(),
+          lastName: createForm.lastName.trim(),
+          phone: createForm.phone.trim() || null,
+          email: createForm.email.trim() || null,
+        }),
+      });
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to create client');
+      }
+      setShowCreate(false);
+      setCreateForm({ firstName: '', lastName: '', phone: '', email: '' });
+      loadClients(search);
+      showToast(t('clients.created'));
+    } catch (err) {
+      setCreateError(t('common.error', { msg: err.message }));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  if (loading && clients.length === 0) return <p style={{ color: 'var(--muted)', padding: 12 }}>{t('common.loading')}</p>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <input
+          className="input"
+          type="text"
+          value={search}
+          onChange={handleSearch}
+          placeholder={t('clients.search')}
+          autoComplete="off"
+          style={{ maxWidth: 340, flex: 1 }}
+        />
+        <button type="button" className="btn primary btn-sm" onClick={() => { setShowCreate(true); setCreateError(null); }}>{t('clients.add')}</button>
+      </div>
+
+      <div style={{ overflowX: 'auto' }}>
+        <table className="short-links-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid rgba(128,128,128,0.3)', textAlign: 'left' }}>
+              <th style={{ padding: '8px 10px', fontWeight: 600 }}>{t('clients.name')}</th>
+              <th style={{ padding: '8px 10px', fontWeight: 600 }}>{t('clients.phone')}</th>
+              <th style={{ padding: '8px 10px', fontWeight: 600 }}>{t('clients.email')}</th>
+              <th style={{ padding: '8px 10px', fontWeight: 600, width: 140 }}>{t('shortLinks.actions')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {paged.map(row => (
+              <tr key={row.id} style={{ borderBottom: '1px solid rgba(128,128,128,0.15)', cursor: row.externalId ? 'default' : 'pointer' }} onClick={() => openEdit(row)}>
+                <td style={{ padding: '8px 10px', fontWeight: 500 }}>
+                  {row.lastName}, {row.firstName}
+                  {row.externalId && <span className="client-imported-badge">{t('clients.imported')}</span>}
+                </td>
+                <td style={{ padding: '8px 10px', color: 'var(--muted)' }}>{row.phone ? formatPhone(row.phone) : '—'}</td>
+                <td style={{ padding: '8px 10px', color: 'var(--muted)', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.email || '—'}</td>
+                <td style={{ padding: '8px 10px' }} onClick={e => e.stopPropagation()}>
+                  {!row.externalId && (
+                    <button type="button" className="btn-link" onClick={() => openEdit(row)} style={{ marginRight: 8 }}>{t('common.edit')}</button>
+                  )}
+                  <button type="button" className="btn-link" onClick={() => setConfirmDelete(row)} style={{ color: '#ed4956' }}>{t('common.delete')}</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {clients.length === 0 && !loading && <p style={{ color: 'var(--muted)', fontSize: 13 }}>{t('clients.empty')}</p>}
+
+      {totalPages > 1 && (
+        <div className="client-mgr-pagination">
+          <button type="button" className="btn secondary btn-sm" disabled={page === 0} onClick={() => setPage(p => p - 1)}>&lsaquo;</button>
+          <span style={{ fontSize: 13, color: 'var(--muted)' }}>{page + 1} / {totalPages}</span>
+          <button type="button" className="btn secondary btn-sm" disabled={page >= totalPages - 1} onClick={() => setPage(p => p + 1)}>&rsaquo;</button>
+        </div>
+      )}
+
+      {editing && (
+        <div className="modal-overlay" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={(e) => e.target === e.currentTarget && setEditing(null)}>
+          <div className="card" style={{ maxWidth: 440, width: '90%', maxHeight: '90vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ marginBottom: 16 }}>{t('clients.edit')}</h3>
+            <label style={{ display: 'block', marginBottom: 12 }}>
+              <span className="label-text">{t('createCase.firstName')}</span>
+              <input className="input" value={editing.firstName} onChange={e => setEditing(o => ({ ...o, firstName: e.target.value }))} style={{ width: '100%' }} />
+            </label>
+            <label style={{ display: 'block', marginBottom: 12 }}>
+              <span className="label-text">{t('createCase.lastName')}</span>
+              <input className="input" value={editing.lastName} onChange={e => setEditing(o => ({ ...o, lastName: e.target.value }))} style={{ width: '100%' }} />
+            </label>
+            <label style={{ display: 'block', marginBottom: 12 }}>
+              <span className="label-text">{t('createCase.phone')}</span>
+              <input className="input" type="tel" value={editing.phone} onChange={e => setEditing(o => ({ ...o, phone: e.target.value }))} style={{ width: '100%' }} />
+            </label>
+            <label style={{ display: 'block', marginBottom: 16 }}>
+              <span className="label-text">{t('createCase.email')}</span>
+              <input className="input" type="email" value={editing.email} onChange={e => setEditing(o => ({ ...o, email: e.target.value }))} style={{ width: '100%' }} />
+            </label>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button type="button" className="btn secondary" onClick={() => setEditing(null)}>{t('common.cancel')}</button>
+              <button type="button" className="btn primary" onClick={handleSaveEdit} disabled={saving || !editing.firstName.trim() || !editing.lastName.trim()}>{saving ? t('common.loading') : t('common.save')}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDelete && (
+        <div className="modal-overlay" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={(e) => e.target === e.currentTarget && setConfirmDelete(null)}>
+          <div className="card" style={{ maxWidth: 400, width: '90%', textAlign: 'center' }} onClick={e => e.stopPropagation()}>
+            <p style={{ fontSize: 15, margin: '0 0 20px', lineHeight: 1.5 }}>
+              {t('clients.confirmDelete', { name: `${confirmDelete.firstName} ${confirmDelete.lastName}`, org: orgName })}
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+              <button type="button" className="btn secondary" onClick={() => setConfirmDelete(null)}>{t('common.cancel')}</button>
+              <button type="button" className="btn primary" style={{ background: '#ed4956' }} onClick={handleDelete} disabled={deleting}>{deleting ? t('common.loading') : t('common.delete')}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCreate && (
+        <div className="modal-overlay" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={(e) => e.target === e.currentTarget && setShowCreate(false)}>
+          <div className="card" style={{ maxWidth: 440, width: '90%', maxHeight: '90vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ marginBottom: 16 }}>{t('clients.add')}</h3>
+            <label style={{ display: 'block', marginBottom: 12 }}>
+              <span className="label-text">{t('createCase.firstName')}</span>
+              <input className="input" value={createForm.firstName} onChange={e => setCreateForm(o => ({ ...o, firstName: e.target.value }))} style={{ width: '100%' }} />
+            </label>
+            <label style={{ display: 'block', marginBottom: 12 }}>
+              <span className="label-text">{t('createCase.lastName')}</span>
+              <input className="input" value={createForm.lastName} onChange={e => setCreateForm(o => ({ ...o, lastName: e.target.value }))} style={{ width: '100%' }} />
+            </label>
+            <label style={{ display: 'block', marginBottom: 12 }}>
+              <span className="label-text">{t('createCase.phone')}</span>
+              <input className="input" type="tel" value={createForm.phone} onChange={e => { setCreateForm(o => ({ ...o, phone: e.target.value })); setCreateError(null); }} style={{ width: '100%' }} />
+            </label>
+            <label style={{ display: 'block', marginBottom: 16 }}>
+              <span className="label-text">{t('createCase.email')}</span>
+              <input className="input" type="email" value={createForm.email} onChange={e => { setCreateForm(o => ({ ...o, email: e.target.value })); setCreateError(null); }} style={{ width: '100%' }} />
+            </label>
+            {createError && <p style={{ margin: '0 0 12px', fontSize: 13, color: 'var(--error, #ed4956)' }}>{createError}</p>}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button type="button" className="btn secondary" onClick={() => setShowCreate(false)}>{t('common.cancel')}</button>
+              <button type="button" className="btn primary" onClick={handleCreateClient} disabled={creating || !createForm.firstName.trim() || !createForm.lastName.trim()}>{creating ? t('common.loading') : t('createCase.create')}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ===== Deposition Templates Manager (data table) ===== */
 function DepositionTemplatesManager({ showToast }) {
   const { t } = useT();
@@ -5193,6 +5453,12 @@ function SettingsPage() {
           )}
           {(access?.isAdmin || access?.isSuper) && (
             <div className="card">
+              <h3>{t('settings.clients')}</h3>
+              <ClientManager showToast={showToast} access={access} />
+            </div>
+          )}
+          {(access?.isAdmin || access?.isSuper) && (
+            <div className="card">
               <h3>{t('settings.templates')}</h3>
               <DepositionTemplatesManager showToast={showToast} />
             </div>
@@ -5433,7 +5699,7 @@ function ClientCaseDetailPage() {
           </div>
         </div>
       </div>
-      <ClientBottomBar tab="cases" onCenterClick={() => nav(`${prefix}/sim/${id}/stage/${launchStage}`)} />
+      <ClientBottomBar tab="cases" onCenterClick={() => window.open(`${prefix}/sim/${id}/stage/${launchStage}`, '_blank')} />
     </div>
   );
 }
@@ -5472,7 +5738,7 @@ function ClientSimDetailPage() {
       tab="cases"
       switchTab={() => {}}
       goBack={() => nav(`${prefix}/client/cases/${id}`)}
-      renderBottomBar={(t, ctx) => <ClientBottomBar tab={t} onCenterClick={() => nav(`${prefix}/sim/${id}/stage/${ctx?.selectedStage ?? sim?.selectedStage ?? 1}`)} />}
+      renderBottomBar={(t, ctx) => <ClientBottomBar tab={t} onCenterClick={() => window.open(`${prefix}/sim/${id}/stage/${ctx?.selectedStage ?? sim?.selectedStage ?? 1}`, '_blank')} />}
     />
   );
 }

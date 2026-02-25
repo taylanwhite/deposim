@@ -1084,6 +1084,13 @@ app.post('/api/cases', ...authAndWrite, async (req, res) => {
     });
     res.status(201).json(full);
   } catch (err) {
+    if (err.code === 'P2002') {
+      const fields = err.meta?.target || [];
+      if (fields.includes('case_number')) return res.status(409).json({ error: 'A case with this case number already exists.' });
+      if (fields.includes('email')) return res.status(409).json({ error: 'A client with this email already exists.' });
+      if (fields.includes('phone')) return res.status(409).json({ error: 'A client with this phone number already exists.' });
+      return res.status(409).json({ error: 'A client with this name and phone already exists.' });
+    }
     betterstack.logApiError('POST /api/cases', err);
     res.status(500).json({ error: err.message || 'Failed to create case' });
   }
@@ -2087,12 +2094,21 @@ app.post('/api/clients', ...authAndOrg, async (req, res) => {
     });
     res.status(201).json(c);
   } catch (err) {
+    if (err.code === 'P2002') {
+      const fields = err.meta?.target || [];
+      if (fields.includes('email')) return res.status(409).json({ error: 'A client with this email already exists.' });
+      if (fields.includes('phone')) return res.status(409).json({ error: 'A client with this phone number already exists.' });
+      return res.status(409).json({ error: 'A client with this name and phone already exists.' });
+    }
     betterstack.logApiError('POST /api/clients', err);
     res.status(500).json({ error: 'Failed to create client' });
   }
 });
 app.patch('/api/clients/:id', ...authAndOrg, async (req, res) => {
   try {
+    const existing = await prisma.client.findUnique({ where: { id: req.params.id } });
+    if (!existing) return res.status(404).json({ error: 'Client not found' });
+    if (existing.externalId) return res.status(403).json({ error: 'Imported clients cannot be edited.' });
     const { organizationId, locationId, firstName, lastName, email, phone, consentCamera, consentMicrophone } = req.body;
     const c = await prisma.client.update({
       where: { id: req.params.id },
@@ -2110,13 +2126,24 @@ app.patch('/api/clients/:id', ...authAndOrg, async (req, res) => {
     res.json(c);
   } catch (err) {
     if (err.code === 'P2025') return res.status(404).json({ error: 'Client not found' });
+    if (err.code === 'P2002') {
+      const fields = err.meta?.target || [];
+      if (fields.includes('email')) return res.status(409).json({ error: 'A client with this email already exists.' });
+      if (fields.includes('phone')) return res.status(409).json({ error: 'A client with this phone number already exists.' });
+      return res.status(409).json({ error: 'A client with this name and phone already exists.' });
+    }
     betterstack.logApiError('PATCH /api/clients/:id', err);
     res.status(500).json({ error: 'Failed to update client' });
   }
 });
 app.delete('/api/clients/:id', ...authAndOrg, async (req, res) => {
   try {
-    await prisma.client.delete({ where: { id: req.params.id } });
+    await prisma.$transaction(async (tx) => {
+      // Cases reference client with onDelete: Restrict, so remove them first.
+      // This cascades to simulations, simulation stages, case clients, etc.
+      await tx.case.deleteMany({ where: { clientId: req.params.id } });
+      await tx.client.delete({ where: { id: req.params.id } });
+    });
     res.status(204).send();
   } catch (err) {
     if (err.code === 'P2025') return res.status(404).json({ error: 'Client not found' });
@@ -2730,17 +2757,25 @@ app.post('/api/simulations/video/upload-complete', async (req, res) => {
       return res.status(404).json({ error: 'Simulation not found' });
     }
 
+    const stageNum = clampStage(req.body?.stage || sim.selectedStage || 1);
+
+    // Persist S3 key IMMEDIATELY so the recording is never lost, even if Gemini fails
+    await prisma.simulationStage.upsert({
+      where: { simulationId_stage: { simulationId: sim.id, stage: stageNum } },
+      create: { simulationId: sim.id, stage: stageNum, recordingS3Key: key },
+      update: { recordingS3Key: key },
+    });
+    console.log('[upload-complete] S3 key saved', { simulationId: sim.id, stage: stageNum, key });
+
     tmpPath = await downloadToTemp(key);
     const promptText = getBodyAnalysisPrompt();
     const mimeType = key.endsWith('.mp4') ? 'video/mp4' : 'video/webm';
     const result = await analyzeVideoFile(tmpPath, mimeType, promptText);
 
-    const stageNum = clampStage(req.body?.stage || sim.selectedStage || 1);
     const bodyScore = computeBodyScoreFromAnalysis(result.text);
-    await prisma.simulationStage.upsert({
+    await prisma.simulationStage.update({
       where: { simulationId_stage: { simulationId: sim.id, stage: stageNum } },
-      create: { simulationId: sim.id, stage: stageNum, bodyAnalysis: String(result.text || ''), bodyAnalysisModel: String(result.model || 'gemini-2.5-flash'), bodyScore, recordingS3Key: key },
-      update: { bodyAnalysis: String(result.text || ''), bodyAnalysisModel: String(result.model || 'gemini-2.5-flash'), bodyScore, recordingS3Key: key },
+      data: { bodyAnalysis: String(result.text || ''), bodyAnalysisModel: String(result.model || 'gemini-2.5-flash'), bodyScore },
     });
     await computeSimScore(prisma, sim.id);
     console.log('[upload-complete] Body analysis saved', { simulationId: sim.id, stage: stageNum, bodyScore });
@@ -2752,6 +2787,84 @@ app.post('/api/simulations/video/upload-complete', async (req, res) => {
     res.status(500).json({ error: err.message || 'Upload complete failed' });
   } finally {
     if (tmpPath) fs.unlink(tmpPath, () => {});
+  }
+});
+
+// ---------- Client-side transcript backup ----------
+// The client captures all conversation messages in real-time. This endpoint stores them
+// as a safety net so we can regenerate transcript analysis even if the ElevenLabs webhook
+// never fires. If the webhook already delivered a transcript, we keep the authoritative one.
+app.post('/api/simulations/save-transcript', async (req, res) => {
+  try {
+    const { simulationId, conversationId, caseId, stage, transcript } = req.body || {};
+    if (!caseId || typeof caseId !== 'string') return res.status(400).json({ error: 'caseId required' });
+    if (!Array.isArray(transcript) || transcript.length === 0) return res.status(400).json({ error: 'transcript required' });
+
+    const sim = await resolveSimForVideo(prisma, simulationId || null, conversationId, caseId);
+    if (!sim) return res.status(404).json({ error: 'Simulation not found' });
+
+    const stageNum = clampStage(stage || sim.selectedStage || 1);
+    const existing = await prisma.simulationStage.findUnique({
+      where: { simulationId_stage: { simulationId: sim.id, stage: stageNum } },
+    });
+
+    const webhookAlreadyDelivered = existing && Array.isArray(existing.transcript) && existing.transcript.length > 0;
+
+    // Normalize client messages to the same format ElevenLabs uses
+    const normalized = transcript.map((m) => ({
+      role: m.role === 'user' ? 'user' : 'agent',
+      message: m.text || m.message || '',
+    })).filter((m) => m.message);
+
+    if (normalized.length === 0) return res.json({ ok: true, saved: false, reason: 'empty transcript' });
+
+    if (webhookAlreadyDelivered) {
+      console.log('[save-transcript] Webhook transcript already exists, skipping client backup', { simulationId: sim.id, stage: stageNum });
+      return res.json({ ok: true, saved: false, reason: 'webhook transcript exists' });
+    }
+
+    // Save the client-side transcript and trigger analysis
+    await prisma.simulationStage.upsert({
+      where: { simulationId_stage: { simulationId: sim.id, stage: stageNum } },
+      create: { simulationId: sim.id, stage: stageNum, transcript: normalized, status: 'completed', pendingReviewAt: new Date() },
+      update: { transcript: normalized, status: 'completed', pendingReviewAt: new Date() },
+    });
+    console.log('[save-transcript] Client transcript saved as backup', { simulationId: sim.id, stage: stageNum, messageCount: normalized.length });
+    betterstack.info('[save-transcript] Client transcript saved (webhook missing)', { simulationId: sim.id, stage: stageNum, messageCount: normalized.length });
+
+    // Run transcript analysis in the background so the client doesn't block
+    (async () => {
+      try {
+        const { analyzeDeposition } = require('./openai');
+        const scorePrompt = await prisma.prompt
+          .findFirst({ where: { type: 'score', isActive: true }, orderBy: { updatedAt: 'desc' } })
+          .then((p) => p?.content || null);
+        const result = await analyzeDeposition(normalized, scorePrompt, stageNum);
+        if (result.success) {
+          // Only write scores if the webhook STILL hasn't delivered (race condition guard)
+          const fresh = await prisma.simulationStage.findUnique({
+            where: { simulationId_stage: { simulationId: sim.id, stage: stageNum } },
+          });
+          const webhookNowExists = fresh && fresh.score != null;
+          if (!webhookNowExists) {
+            await prisma.simulationStage.update({
+              where: { simulationId_stage: { simulationId: sim.id, stage: stageNum } },
+              data: { score: result.score, scoreReason: result.scoreReason, fullAnalysis: result.fullAnalysis, turnScores: result.turnScores || [] },
+            });
+            await computeSimScore(prisma, sim.id);
+            console.log('[save-transcript] Backup transcript analysis complete', { simulationId: sim.id, stage: stageNum, score: result.score });
+          }
+        }
+      } catch (err) {
+        console.error('[save-transcript] Background analysis failed:', err.message);
+        betterstack.error('[save-transcript] Background analysis failed', { simulationId: sim.id, error_message: err.message });
+      }
+    })();
+
+    res.json({ ok: true, saved: true });
+  } catch (err) {
+    betterstack.logApiError('POST /api/simulations/save-transcript', err);
+    res.status(500).json({ error: err.message || 'Failed to save transcript' });
   }
 });
 
@@ -3672,6 +3785,7 @@ app.post('/api/cases/:id/stage-summary', async (req, res) => {
       where: { id: simulationId },
       include: { case: { include: { client: true } }, stages: true },
     });
+    
     if (!sim) return res.status(404).json({ error: 'Simulation not found' });
 
     const stageNum = clampStage(stage || sim.selectedStage || 1);

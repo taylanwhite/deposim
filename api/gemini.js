@@ -29,33 +29,41 @@ In a deposition, the IDEAL deponent is calm, still, and measured. Unlike a job i
 Do NOT penalize a deponent for being "passive," "unexpressive," or "still." In deposition context, these are POSITIVE traits that protect the client's case. Only penalize behaviors that a jury would interpret negatively: visible nervousness, fidgeting, evasiveness, hostility, or emotional outbursts.
 
 VIDEO COMPLETENESS:
-- If the video is very short (under 2 minutes), the deponent likely quit early. Cap scores at 40 for very short videos since there is insufficient data.
-- For longer videos, evaluate the full duration.
+- If the video is very short (under 2 minutes), note the limited sample in score_reason fields but still score based on what IS observable. Do not artificially cap or flatten scores — a deponent who appears calm and composed in a short clip should still score well. Short duration alone is not a reason to lower scores.
+- For longer videos, evaluate the full duration and note behavioral changes over time.
 
-SCORING CATEGORIES:
+SCORING CATEGORIES — each score MUST reflect what you actually observe. Do NOT default all scores to the same number. Each category measures something different, so scores should naturally vary.
 
 1. overall_demeanor — How a jury would perceive this witness.
-   High scores (70-100): Calm, composed, still, patient, neutral expression, appears truthful. A deponent who sits quietly and answers without drama scores HIGH.
-   Medium scores (40-69): Mostly composed but with some visible nervousness, occasional fidgeting, or moments of visible frustration.
-   Low scores (0-39): Visibly anxious, hostile, dismissive, emotionally reactive, or appearing evasive. Only assign low scores for genuinely problematic behavior a jury would notice.
+   90-100: Exceptionally composed. Calm, patient, neutral expression throughout. A model deponent.
+   70-89: Calm and composed with only minor moments of visible tension. A jury would view favorably.
+   50-69: Mostly composed but with noticeable nervousness, occasional fidgeting, or moments of visible frustration.
+   30-49: Visibly uncomfortable for much of the video. Frequent signs of frustration, impatience, or anxiety.
+   0-29: Visibly anxious, hostile, dismissive, or emotionally reactive throughout. A jury would view very negatively.
 
 2. key_body_signals — Non-verbal cues that help or hurt credibility.
    Evaluate: posture, hand position, eye contact, facial expressions, head movement, shoulder tension.
-   High scores (70-100): Upright/relaxed posture, hands resting naturally, steady gaze, minimal unnecessary movement. Stillness is GOOD.
-   Medium scores (40-69): Generally okay posture with some fidgeting, occasional defensive gestures, inconsistent eye contact.
-   Low scores (0-39): Crossed arms throughout, persistent face/neck touching, avoiding all eye contact, slumped or aggressive posture.
+   90-100: Excellent posture, hands resting naturally, steady gaze, virtually no unnecessary movement. Textbook stillness.
+   70-89: Good posture and gaze with only minor fidgeting or hand movement. Stillness is GOOD in deposition context.
+   50-69: Generally okay posture with some fidgeting, occasional defensive gestures, or inconsistent eye contact.
+   30-49: Noticeable postural issues — frequent shifting, hand-to-face touching, or poor eye contact.
+   0-29: Crossed arms throughout, persistent self-touching, avoiding all eye contact, slumped or aggressive posture.
 
-3. stress_signals — Visible indicators of anxiety or discomfort.
+3. stress_signals — Visible indicators of anxiety or discomfort (higher score = LESS stress visible, which is good).
    Evaluate: fidgeting, self-soothing gestures, blink rate changes, lip compression, breathing changes, leg bouncing.
-   High scores (70-100): Few or no visible stress indicators. Appears comfortable under questioning. Calm and still = high score.
-   Medium scores (40-69): Some stress indicators present but controlled. Occasional fidgeting or self-soothing.
-   Low scores (0-39): Frequent, obvious stress responses that a jury would interpret as deceptive or unreliable.
+   90-100: No visible stress indicators. Appears completely comfortable under questioning.
+   70-89: Minimal stress cues. One or two brief moments of tension but quickly self-regulated. Calm and still = high score.
+   50-69: Some stress indicators present but generally controlled. Occasional fidgeting or self-soothing.
+   30-49: Multiple stress indicators visible. Frequent fidgeting, visible tension, or self-soothing throughout.
+   0-29: Frequent, obvious stress responses that a jury would interpret as deceptive or unreliable.
 
 4. credible_assessment — Would a jury believe this person?
    Evaluate: Does the person appear honest and reliable? Is their body language consistent with truthful testimony?
-   High scores (70-100): Appears steady, genuine, and believable. Calm demeanor reinforces credibility.
-   Medium scores (40-69): Mostly credible but some moments where body language seems inconsistent or forced.
-   Low scores (0-39): Appears evasive, deceptive, or performing. Obvious disconnects between words and behavior.
+   90-100: Highly believable. Steady, genuine, and consistent throughout. A jury would trust this person.
+   70-89: Credible and believable. Calm demeanor reinforces honesty. Minor moments don't undermine overall impression.
+   50-69: Mostly credible but some moments where body language seems inconsistent, rehearsed, or forced.
+   30-49: Credibility is questionable. Multiple moments where behavior seems evasive or disconnected.
+   0-29: Appears evasive, deceptive, or performing. Obvious disconnects between words and behavior.
 
 5. timeline_of_notable_moments — Key behavioral shifts with timestamps.
 
@@ -68,11 +76,11 @@ Each category (overall_demeanor, key_body_signals, stress_signals, credible_asse
 timeline_of_notable_moments MUST be an array of objects: { "moment": "description", "timestamp": "0:45" }
 
 {
-  "overall_demeanor": { "score": 75, "score_reason": "...", "summary": "..." },
-  "key_body_signals": { "score": 70, "score_reason": "...", "summary": "..." },
-  "stress_signals": { "score": 65, "score_reason": "...", "summary": "..." },
-  "credible_assessment": { "score": 80, "score_reason": "...", "summary": "..." },
-  "timeline_of_notable_moments": [{ "moment": "...", "timestamp": "0:45" }]
+  "overall_demeanor": { "score": 82, "score_reason": "Deponent remained calm and composed throughout, showing patience even during pointed questions.", "summary": "Strong overall presence. A jury would view this witness as steady and reliable." },
+  "key_body_signals": { "score": 74, "score_reason": "Good upright posture and natural hand placement, with minor fidgeting around the 3-minute mark.", "summary": "Mostly still with a few brief moments of hand movement when discussing the accident details." },
+  "stress_signals": { "score": 68, "score_reason": "Some lip compression and increased blink rate during questions about prior injuries, but self-regulated quickly.", "summary": "Visible but controlled stress responses on sensitive topics. Generally composed between those moments." },
+  "credible_assessment": { "score": 85, "score_reason": "Body language was consistent with verbal responses throughout. No signs of evasion or rehearsal.", "summary": "Highly believable witness. Calm demeanor and consistent behavior would serve well before a jury." },
+  "timeline_of_notable_moments": [{ "moment": "Brief posture shift and lip compression when asked about prior back injuries", "timestamp": "3:12" }, { "moment": "Relaxed and composed during employment history questions", "timestamp": "1:30" }]
 }
 
 Remember: This is a DEPOSITION. Calm and still = GOOD. Expressive and animated = RISKY.`;
