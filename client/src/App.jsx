@@ -1335,9 +1335,9 @@ function isValidClientEmail(value) {
   if (!s) return true;
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 }
-function isValidClientPhone(value) {
+function isValidClientPhone(value, required = false) {
   const s = (value || '').trim();
-  if (!s) return true;
+  if (!s) return !required;
   const digits = s.replace(/\D/g, '');
   return digits.length >= 10;
 }
@@ -1410,8 +1410,8 @@ function ClientAutocomplete({ selectedClients = [], onChange, placeholder = 'Sea
       setCreateError('Please enter a valid email address.');
       return;
     }
-    if (!isValidClientPhone(newPhone)) {
-      setCreateError('Please enter a valid phone number (at least 10 digits).');
+    if (!isValidClientPhone(newPhone, true)) {
+      setCreateError('Phone is required (at least 10 digits).');
       return;
     }
     setCreating(true);
@@ -1480,13 +1480,13 @@ function ClientAutocomplete({ selectedClients = [], onChange, placeholder = 'Sea
                 <input className="input input-sm" placeholder="Last Name *" value={newLast} onChange={e => setNewLast(e.target.value)} />
               </div>
               <div className="client-autocomplete-create-row">
-                <input className="input input-sm" type="tel" placeholder="Phone" value={newPhone} onChange={e => { setNewPhone(e.target.value); setCreateError(null); }} />
-                <input className="input input-sm" type="email" placeholder="Email" value={newEmail} onChange={e => { setNewEmail(e.target.value); setCreateError(null); }} />
+                <input className="input input-sm" type="tel" placeholder="Phone *" value={newPhone} onChange={e => { setNewPhone(e.target.value); setCreateError(null); }} />
+                <input className="input input-sm" type="email" placeholder="Email (optional)" value={newEmail} onChange={e => { setNewEmail(e.target.value); setCreateError(null); }} />
               </div>
               {createError && <p className="client-create-error" style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--error, #ed4956)' }}>{createError}</p>}
               <div className="client-autocomplete-create-actions">
                 <button type="button" className="btn secondary btn-sm" onClick={() => setShowCreate(false)}>Cancel</button>
-                <button type="button" className="btn primary btn-sm" onClick={handleCreateNew} disabled={creating || !newFirst.trim() || !newLast.trim()}>
+                <button type="button" className="btn primary btn-sm" onClick={handleCreateNew} disabled={creating || !newFirst.trim() || !newLast.trim() || !newPhone.trim()}>
                   {creating ? 'Creating…' : 'Create'}
                 </button>
               </div>
@@ -2300,18 +2300,28 @@ function CaseDetail({ caseData: d, tab, switchTab, goBack, goDetail, toast, curr
               <span className="case-clients-label">Clients</span>
               <button type="button" className="case-clients-add-btn" onClick={() => setShowAddClient(x => !x)} title="Add client">+</button>
             </div>
-            <div className="case-clients-list">
-              {caseClients.map(cc => (
-                <div key={cc.id || cc.clientId} className="case-client-row">
-                  <span className="case-client-name">{cc.client?.lastName}, {cc.client?.firstName}</span>
-                  {cc.client?.phone && <span className="case-client-phone">{formatPhone(cc.client.phone)}</span>}
-                  <span className="case-client-role">{cc.role}</span>
-                  {caseClients.length > 1 && (
-                    <button type="button" className="case-client-remove" onClick={() => removeClientFromCase(cc.clientId)} title="Remove">&times;</button>
-                  )}
-                </div>
-              ))}
-            </div>
+            <table className="case-clients-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Phone</th>
+                  <th>Role</th>
+                  {caseClients.length > 1 && <th></th>}
+                </tr>
+              </thead>
+              <tbody>
+                {caseClients.map(cc => (
+                  <tr key={cc.id || cc.clientId}>
+                    <td className="case-client-name">{cc.client?.lastName}, {cc.client?.firstName}</td>
+                    <td className="case-client-phone">{cc.client?.phone ? formatPhone(cc.client.phone) : '—'}</td>
+                    <td className="case-client-role">{cc.role}</td>
+                    {caseClients.length > 1 && (
+                      <td><button type="button" className="case-client-remove" onClick={() => removeClientFromCase(cc.clientId)} title="Remove">&times;</button></td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
             {showAddClient && (
               <div className="case-clients-add-area">
                 <ClientAutocomplete
@@ -5032,10 +5042,10 @@ function ClientManager({ showToast, access }) {
   };
 
   const handleCreateClient = async () => {
-    if (!createForm.firstName.trim() || !createForm.lastName.trim()) return;
+    if (!createForm.firstName.trim() || !createForm.lastName.trim() || !createForm.phone.trim()) return;
     setCreateError(null);
     if (!isValidClientEmail(createForm.email)) { setCreateError(t('common.error', { msg: 'Invalid email' })); return; }
-    if (!isValidClientPhone(createForm.phone)) { setCreateError(t('common.error', { msg: 'Invalid phone (min 10 digits)' })); return; }
+    if (!isValidClientPhone(createForm.phone, true)) { setCreateError(t('common.error', { msg: 'Phone is required (min 10 digits)' })); return; }
     setCreating(true);
     try {
       const r = await fetch(`${API}/clients`, {
@@ -5126,24 +5136,24 @@ function ClientManager({ showToast, access }) {
           <div className="card" style={{ maxWidth: 440, width: '90%', maxHeight: '90vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
             <h3 style={{ marginBottom: 16 }}>{t('clients.edit')}</h3>
             <label style={{ display: 'block', marginBottom: 12 }}>
-              <span className="label-text">{t('createCase.firstName')}</span>
+              <span className="label-text">{t('createCase.firstName')} *</span>
               <input className="input" value={editing.firstName} onChange={e => setEditing(o => ({ ...o, firstName: e.target.value }))} style={{ width: '100%' }} />
             </label>
             <label style={{ display: 'block', marginBottom: 12 }}>
-              <span className="label-text">{t('createCase.lastName')}</span>
+              <span className="label-text">{t('createCase.lastName')} *</span>
               <input className="input" value={editing.lastName} onChange={e => setEditing(o => ({ ...o, lastName: e.target.value }))} style={{ width: '100%' }} />
             </label>
             <label style={{ display: 'block', marginBottom: 12 }}>
-              <span className="label-text">{t('createCase.phone')}</span>
+              <span className="label-text">{t('createCase.phone')} *</span>
               <input className="input" type="tel" value={editing.phone} onChange={e => setEditing(o => ({ ...o, phone: e.target.value }))} style={{ width: '100%' }} />
             </label>
             <label style={{ display: 'block', marginBottom: 16 }}>
-              <span className="label-text">{t('createCase.email')}</span>
+              <span className="label-text">{t('createCase.email')} <span style={{ fontWeight: 400, color: 'var(--muted)' }}>(optional)</span></span>
               <input className="input" type="email" value={editing.email} onChange={e => setEditing(o => ({ ...o, email: e.target.value }))} style={{ width: '100%' }} />
             </label>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button type="button" className="btn secondary" onClick={() => setEditing(null)}>{t('common.cancel')}</button>
-              <button type="button" className="btn primary" onClick={handleSaveEdit} disabled={saving || !editing.firstName.trim() || !editing.lastName.trim()}>{saving ? t('common.loading') : t('common.save')}</button>
+              <button type="button" className="btn primary" onClick={handleSaveEdit} disabled={saving || !editing.firstName.trim() || !editing.lastName.trim() || !editing.phone.trim()}>{saving ? t('common.loading') : t('common.save')}</button>
             </div>
           </div>
         </div>
@@ -5168,25 +5178,25 @@ function ClientManager({ showToast, access }) {
           <div className="card" style={{ maxWidth: 440, width: '90%', maxHeight: '90vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
             <h3 style={{ marginBottom: 16 }}>{t('clients.add')}</h3>
             <label style={{ display: 'block', marginBottom: 12 }}>
-              <span className="label-text">{t('createCase.firstName')}</span>
+              <span className="label-text">{t('createCase.firstName')} *</span>
               <input className="input" value={createForm.firstName} onChange={e => setCreateForm(o => ({ ...o, firstName: e.target.value }))} style={{ width: '100%' }} />
             </label>
             <label style={{ display: 'block', marginBottom: 12 }}>
-              <span className="label-text">{t('createCase.lastName')}</span>
+              <span className="label-text">{t('createCase.lastName')} *</span>
               <input className="input" value={createForm.lastName} onChange={e => setCreateForm(o => ({ ...o, lastName: e.target.value }))} style={{ width: '100%' }} />
             </label>
             <label style={{ display: 'block', marginBottom: 12 }}>
-              <span className="label-text">{t('createCase.phone')}</span>
+              <span className="label-text">{t('createCase.phone')} *</span>
               <input className="input" type="tel" value={createForm.phone} onChange={e => { setCreateForm(o => ({ ...o, phone: e.target.value })); setCreateError(null); }} style={{ width: '100%' }} />
             </label>
             <label style={{ display: 'block', marginBottom: 16 }}>
-              <span className="label-text">{t('createCase.email')}</span>
+              <span className="label-text">{t('createCase.email')} <span style={{ fontWeight: 400, color: 'var(--muted)' }}>(optional)</span></span>
               <input className="input" type="email" value={createForm.email} onChange={e => { setCreateForm(o => ({ ...o, email: e.target.value })); setCreateError(null); }} style={{ width: '100%' }} />
             </label>
             {createError && <p style={{ margin: '0 0 12px', fontSize: 13, color: 'var(--error, #ed4956)' }}>{createError}</p>}
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button type="button" className="btn secondary" onClick={() => setShowCreate(false)}>{t('common.cancel')}</button>
-              <button type="button" className="btn primary" onClick={handleCreateClient} disabled={creating || !createForm.firstName.trim() || !createForm.lastName.trim()}>{creating ? t('common.loading') : t('createCase.create')}</button>
+              <button type="button" className="btn primary" onClick={handleCreateClient} disabled={creating || !createForm.firstName.trim() || !createForm.lastName.trim() || !createForm.phone.trim()}>{creating ? t('common.loading') : t('createCase.create')}</button>
             </div>
           </div>
         </div>

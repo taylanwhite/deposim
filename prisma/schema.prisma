@@ -137,7 +137,6 @@ model Client {
 
   @@unique([organizationId, firstName, lastName, phone])
   @@unique([organizationId, email])
-  @@unique([locationId, phone])
   @@map("clients")
 }
 

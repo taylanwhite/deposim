@@ -2075,8 +2075,8 @@ app.get('/api/clients/:id', ...authAndOrg, async (req, res) => {
 app.post('/api/clients', ...authAndOrg, async (req, res) => {
   try {
     const { locationId, firstName, lastName, email, phone, consentCamera, consentMicrophone } = req.body;
-    if (!firstName?.trim() || !lastName?.trim())
-      return res.status(400).json({ error: 'firstName and lastName are required' });
+    if (!firstName?.trim() || !lastName?.trim() || !phone?.trim())
+      return res.status(400).json({ error: 'firstName, lastName, and phone are required' });
     if (req.accessLevel === 'user' && locationId && !req.locationIds.includes(String(locationId))) {
       return res.status(403).json({ error: 'You are not assigned to this location.' });
     }
